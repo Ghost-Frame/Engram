@@ -106,20 +106,29 @@ impl AppState {
 /// { "aws": ["*.amazonaws.com"], "github": ["api.github.com"], "*": ["*"] }
 /// ```
 /// The wildcard category `"*"` matches any category. Domain entries support
-/// leading `*.` prefix for subdomain matching. Returns None if the file
-/// does not exist (proxy will deny all requests when `CREDD_PROXY_STRICT=1`).
+/// leading `*.` prefix for subdomain matching. Returns None if the file does
+/// not exist; with no allowlist the proxy denies by default (F09) unless
+/// `CREDD_PROXY_ALLOW_ANY=1` is set to opt back into forwarding to any host.
 fn load_proxy_domain_allowlist() -> Option<Arc<ProxyDomainAllowlist>> {
     let path = cred_config_dir().join("proxy-domains.json");
     if !path.exists() {
         tracing::info!(
-            "no proxy domain allowlist at {}; proxy domain enforcement disabled",
+            "no proxy domain allowlist at {}; proxy denies by default (set CREDD_PROXY_ALLOW_ANY=1 to allow any host)",
             path.display()
         );
         return None;
     }
     match std::fs::read_to_string(&path) {
         Ok(json) => match serde_json::from_str::<ProxyDomainAllowlist>(&json) {
-            Ok(list) => {
+            Ok(mut list) => {
+                // The proxy lowercases the target host before matching, so
+                // normalise the configured patterns too -- otherwise an operator
+                // who writes `*.AMAZONAWS.COM` would have it silently never match.
+                for patterns in list.values_mut() {
+                    for pattern in patterns.iter_mut() {
+                        *pattern = pattern.to_lowercase();
+                    }
+                }
                 tracing::info!(
                     categories = list.len(),
                     path = %path.display(),

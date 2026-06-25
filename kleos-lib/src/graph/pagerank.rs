@@ -340,6 +340,30 @@ pub async fn mark_pagerank_dirty(db: &Database, delta: i64) -> Result<()> {
     .await
 }
 
+/// Subtract a previously-taken dirty snapshot from the counter (clamped at
+/// zero) and stamp the refresh time. For callers that persist scores through a
+/// path other than [`persist_pagerank_with_snapshot`] -- e.g. the tenant
+/// refresh job, which also writes `memories.pagerank_score` -- and still need
+/// to clear the dirty increments they accounted for. The snapshot must be taken
+/// BEFORE compute so concurrent `mark_pagerank_dirty` calls that land during the
+/// compute survive to schedule the next cycle.
+#[tracing::instrument(skip(db))]
+pub async fn clear_pagerank_dirty(db: &Database, dirty_snapshot: i64) -> Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    db.write(move |conn| {
+        conn.execute(
+            "INSERT INTO pagerank_dirty (id, dirty_count, last_refresh) \
+             VALUES (1, 0, ?1) \
+             ON CONFLICT(id) DO UPDATE SET \
+               dirty_count = MAX(0, dirty_count - ?2), \
+               last_refresh = excluded.last_refresh",
+            rusqlite::params![now, dirty_snapshot],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
 // ============================================================================
 // INCREMENTAL PAGERANK -- delta updates without full recompute
 // ============================================================================

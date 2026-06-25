@@ -32,6 +32,7 @@ async fn enroll_soft_key(app: &axum::Router) -> RequestSigner {
         .method("POST")
         .uri("/identity-keys/enroll")
         .header("Content-Type", "application/json")
+        .header("X-Bootstrap-Secret", "test-bootstrap-secret")
         .body(Body::from(body.to_string()))
         .unwrap();
     let (status, resp) = send(app, request).await;

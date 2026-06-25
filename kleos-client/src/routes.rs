@@ -69,6 +69,45 @@ pub fn find_by_name(name: &str) -> Option<&'static Route> {
         .find(|r| r.name == name || r.aliases.contains(&name))
 }
 
+/// Resolve an MCP tool name to its route, accepting the canonical dot-name, any
+/// explicit alias, or the underscore-normalized form (`.` -> `_`).
+///
+/// Strict MCP clients (notably VS Code's, whose validator enforces
+/// `[a-z0-9_-]`) reject dot-notation tool names, so `tools/list` advertises the
+/// underscore form. Resolution is unambiguous because it reverses the
+/// deterministic `route.name.replace('.', '_')` used to generate those names --
+/// method segments that themselves contain underscores (e.g. `find_skills`,
+/// `search_preset`) round-trip correctly, which a naive `_`->`.` replace would
+/// not. Used at every MCP dispatch boundary so both forms invoke the same tool.
+pub fn resolve_tool_name(name: &str) -> Option<&'static Route> {
+    ROUTES.iter().find(|r| {
+        r.name == name
+            || r.aliases.contains(&name)
+            || r.name.replace('.', "_") == name
+            || r.aliases.iter().any(|a| a.replace('.', "_") == name)
+    })
+}
+
+/// Canonical names of routes that must never be reachable over MCP. These
+/// resolve or proxy raw credential values, so dispatching them through the
+/// MCP/model-context channel would land plaintext secrets in transcripts and
+/// logs. They remain available over the authenticated HTTP API, which is their
+/// intended surface.
+pub const MCP_BLOCKED_ROUTES: &[&str] = &["admin.cred_resolve", "admin.cred_proxy"];
+
+/// Returns true if `name` resolves to a route that is blocked from MCP
+/// dispatch. Both MCP dispatchers consult this before calling a tool so an
+/// unlisted-but-dispatchable secret route cannot be invoked by name.
+///
+/// Resolution goes through [`resolve_tool_name`], so the underscore form of a
+/// blocked route (e.g. `admin_cred_resolve`) is caught too -- otherwise the
+/// underscore alias added for strict clients would be a block-list bypass.
+pub fn is_mcp_blocked(name: &str) -> bool {
+    resolve_tool_name(name)
+        .map(|r| MCP_BLOCKED_ROUTES.contains(&r.name))
+        .unwrap_or(false)
+}
+
 /// Substitutes `{key}` segments in the template with values from `args`,
 /// removing those keys from `args` so they do not duplicate in the body.
 pub fn render_path(template: &str, args: &mut Value) -> Result<String, String> {
@@ -135,7 +174,7 @@ pub static ROUTES: &[Route] = &[
         "/store",
         "Store a new memory.",
         ["memory_store"],
-        r#"{"type":"object","properties":{"content":{"type":"string"},"category":{"type":"string"},"source":{"type":"string"},"importance":{"type":"integer"},"tags":{"type":"array","items":{"type":"string"}},"session_id":{"type":"string"},"is_static":{"type":"boolean"},"space_id":{"type":"integer"}},"required":["content"]}"#
+        r#"{"type":"object","properties":{"content":{"type":"string"},"category":{"type":"string"},"source":{"type":"string"},"importance":{"type":"integer"},"tags":{"type":"array","items":{"type":"string"}},"session_id":{"type":"string"},"is_static":{"type":"boolean"},"space_id":{"type":"integer"},"artifacts":{"type":"array","description":"Optional inline file attachments stored with the memory (max 10), each base64-encoded.","items":{"type":"object","properties":{"filename":{"type":"string"},"mime_type":{"type":"string"},"data_base64":{"type":"string","description":"Base64-encoded file contents"}},"required":["filename","data_base64"]}}},"required":["content"]}"#
     ),
     route!(
         Post,
@@ -579,6 +618,14 @@ pub static ROUTES: &[Route] = &[
         "/scratch/{session}/promote",
         "Promote a scratchpad session to durable memory.",
         r#"{"type": "object", "properties": {"session": {"type":"string"}}, "required": ["session"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "scratchpad.get",
+        "/scratchpad/get",
+        "Read one scratchpad ledger entry by namespace (agent) and key. Used by the ke edit-gate to verify spec-task coverage before allowing a file edit.",
+        r#"{"type": "object", "properties": {"namespace": {"type":"string"}, "key": {"type":"string"}}, "required": ["namespace", "key"]}"#
     ),
     // -- episodes ---------------------------------------------------------
     route!(
@@ -2017,6 +2064,161 @@ pub static ROUTES: &[Route] = &[
         "Deactivate a user account.",
         r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
     ),
+    // -- forge (agent-forge stateful operations) ----------------------------------
+    route!(
+        Post,
+        Write,
+        "forge.spec_task",
+        "/forge/spec-task",
+        "Create a new task spec with acceptance criteria and file coverage for gate enforcement.",
+        ["forge_spec_task"],
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"task_description":{"type":"string"},"task_type":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"interface_contract":{"type":"string"},"edge_cases":{"type":"array","items":{"type":"string"}},"files_to_touch":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"string"}},"required":["task_description","task_type","acceptance_criteria","interface_contract","edge_cases"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.update_spec",
+        "/forge/update-spec",
+        "Transition a spec to a new lifecycle status (active, completed, failed, blocked).",
+        ["forge_update_spec"],
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"status":{"type":"string"},"note":{"type":"string"}},"required":["spec_id","status"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.list_specs",
+        "/forge/specs",
+        "List forge specs for the authenticated user, optionally filtered by status.",
+        ["forge_list_specs"],
+        r#"{"type":"object","properties":{"status":{"type":"string"},"limit":{"type":"integer"}}}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.get_spec",
+        "/forge/spec/{id}",
+        "Fetch one full spec by ID including related sub-records.",
+        ["forge_get_spec"],
+        r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.log_hypothesis",
+        "/forge/log-hypothesis",
+        "Record a new hypothesis before touching code in response to a bug.",
+        ["forge_log_hypothesis"],
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"bug_description":{"type":"string"},"hypothesis":{"type":"string"},"confidence":{"type":"number"},"spec_id":{"type":"string"}},"required":["bug_description","hypothesis"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.log_outcome",
+        "/forge/log-outcome",
+        "Record the outcome of an existing hypothesis (correct, incorrect, or partial).",
+        ["forge_log_outcome"],
+        r#"{"type":"object","properties":{"hypothesis_id":{"type":"string"},"outcome":{"type":"string"},"notes":{"type":"string"}},"required":["hypothesis_id","outcome"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.recall_errors",
+        "/forge/recall-errors",
+        "Search past hypotheses by keyword across bug description and hypothesis text.",
+        ["forge_recall_errors"],
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.consider_approaches",
+        "/forge/consider-approaches",
+        "Store two or more named design alternatives and return a structured comparison prompt.",
+        ["forge_consider_approaches"],
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"problem":{"type":"string"},"approaches":{"type":"array","items":{"type":"object"}},"chosen_index":{"type":"integer"}},"required":["problem","approaches"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.verify",
+        "/forge/verify",
+        "Record the result of a client-side verification run against a spec criterion.",
+        ["forge_verify"],
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"command":{"type":"string"},"exit_code":{"type":"integer"},"success":{"type":"boolean"},"duration_ms":{"type":"integer"},"criteria_index":{"type":"integer"},"stdout":{"type":"string"},"stderr":{"type":"string"}},"required":["command","exit_code","success"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "forge.session_learn",
+        "/forge/session-learn",
+        "Persist a mid-session discovery to forge_session_learns.",
+        ["forge_session_learn"],
+        r#"{"type":"object","properties":{"discovery":{"type":"string"},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"spec_id":{"type":"string"}},"required":["discovery"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "forge.session_recall",
+        "/forge/session-recall",
+        "Search forge_session_learns by keyword in the discovery text.",
+        ["forge_session_recall"],
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+    ),
+    // -- forge compute (stateless, backed by agent_forge library) ---------
+    route!(
+        Post,
+        Read,
+        "forge.think",
+        "/forge/think",
+        "Pure structured-reasoning prompt builder. Accepts a problem statement, optional constraints, and optional context.",
+        ["forge_think"],
+        r#"{"type":"object","properties":{"problem":{"type":"string"},"constraints":{"type":"array","items":{"type":"string"}},"context":{"type":"string"}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.declare_unknowns",
+        "/forge/declare-unknowns",
+        "Partition unknowns into blocking and non-blocking sets and return a clear action directive.",
+        ["forge_declare_unknowns"],
+        r#"{"type":"object","properties":{"unknowns":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"blocking":{"type":"boolean"},"resolution_hint":{"type":"string"}},"required":["description","blocking"]}}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.comment_check",
+        "/forge/comment-check",
+        "Scan a source file for declarations that lack a preceding comment and return a coverage report.",
+        ["forge_comment_check"],
+        r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"extension":{"type":"string"}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.challenge_code",
+        "/forge/challenge-code",
+        "Build an adversarial review prompt for a source file, embedding a mechanical comment-coverage report.",
+        ["forge_challenge_code"],
+        r#"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"extension":{"type":"string"}}}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.repo_map",
+        "/forge/repo-map",
+        "Walk a directory tree, extract named symbols, and return a ranked symbol map within a configurable token budget.",
+        ["forge_repo_map"],
+        r#"{"type":"object","properties":{"path":{"type":"string"},"focus":{"type":"array","items":{"type":"string"}},"max_tokens":{"type":"integer"}},"required":["path"]}"#
+    ),
+    route!(
+        Post,
+        Read,
+        "forge.search_code",
+        "/forge/search-code",
+        "Walk a directory tree and return symbols whose names contain the supplied query string (case-insensitive).",
+        ["forge_search_code"],
+        r#"{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string"},"symbol_type":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]}"#
+    ),
     // ===== auto-generated long-tail entries (mechanical, refine schemas/descriptions over time) =====
     // -- admin (generated) --
     route!(
@@ -2345,7 +2547,7 @@ pub static ROUTES: &[Route] = &[
         Read,
         "artifacts.list_for_memory",
         "/artifacts/{memory_id}",
-        "Auto: GET /artifacts/{memory_id}.",
+        "List the file artifacts attached to a memory.",
         r#"{"type":"object","additionalProperties":true,"properties":{"memory_id":{}},"required":["memory_id"]}"#
     ),
     route!(
@@ -4065,6 +4267,91 @@ pub static ROUTES: &[Route] = &[
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Secret-bearing cred routes must be blocked from MCP dispatch (by
+    /// canonical name and alias), while ordinary tools stay dispatchable.
+    #[test]
+    fn mcp_blocks_secret_routes_only() {
+        assert!(is_mcp_blocked("admin.cred_resolve"));
+        assert!(is_mcp_blocked("admin.cred_proxy"));
+        assert!(!is_mcp_blocked("memory.store"));
+        assert!(!is_mcp_blocked("memory_store"));
+        assert!(!is_mcp_blocked("does.not.exist"));
+        // Every blocked name must resolve to a real route in the registry.
+        for name in MCP_BLOCKED_ROUTES {
+            assert!(
+                find_by_name(name).is_some(),
+                "blocked route {name} missing from registry"
+            );
+        }
+    }
+
+    /// `resolve_tool_name` must accept the underscore-normalized form that
+    /// strict MCP clients (VS Code) send, and resolve it to the same route as
+    /// the canonical dot-name -- including method segments that themselves
+    /// contain underscores, which a naive `_`->`.` replace would mis-resolve.
+    #[test]
+    fn resolve_tool_name_accepts_underscore_aliases() {
+        let canonical = find_by_name("memory.search").expect("memory.search exists");
+        assert_eq!(
+            resolve_tool_name("memory_search").map(|r| r.name),
+            Some(canonical.name),
+            "underscore form must resolve to the dot route"
+        );
+        // Dot form and explicit aliases still resolve unchanged.
+        assert_eq!(
+            resolve_tool_name("memory.search").map(|r| r.name),
+            Some(canonical.name)
+        );
+
+        // Method segment with an internal underscore must round-trip: the
+        // underscore name is derived as name.replace('.', '_'), so the reverse
+        // is an exact match, not a positional `_`->`.` guess.
+        let multi = find_by_name("memory.search_memories").expect("route exists");
+        assert_eq!(
+            resolve_tool_name("memory_search_memories").map(|r| r.name),
+            Some(multi.name),
+        );
+        // `memory.search.memories` (naive reverse) must NOT exist / mis-resolve.
+        assert!(resolve_tool_name("definitely_not_a_tool").is_none());
+    }
+
+    /// `memory.store` must advertise the inline `artifacts` attachment field so
+    /// MCP clients (which only ever see the tool schema) can store files with a
+    /// memory -- the standalone upload endpoint is multipart and unreachable
+    /// over MCP, so this inline path is the only way to attach via MCP.
+    #[test]
+    fn memory_store_schema_exposes_inline_artifacts() {
+        let route = find_by_name("memory.store").expect("memory.store exists");
+        let schema: serde_json::Value =
+            serde_json::from_str(route.input_schema).expect("schema parses");
+        let arts = &schema["properties"]["artifacts"];
+        assert_eq!(arts["type"], "array", "artifacts must be an array property");
+        let item_required = arts["items"]["required"]
+            .as_array()
+            .expect("artifact items declare required fields");
+        for field in ["filename", "data_base64"] {
+            assert!(
+                item_required.iter().any(|v| v == field),
+                "inline artifact must require {field}"
+            );
+        }
+        // The read-side artifact tools must resolve for MCP dispatch.
+        assert!(resolve_tool_name("artifacts_list_for_memory").is_some());
+        assert!(resolve_tool_name("artifacts_search").is_some());
+    }
+
+    /// The underscore alias must not become a block-list bypass: the underscore
+    /// form of a secret cred route has to be blocked just like the dot-name.
+    #[test]
+    fn underscore_form_does_not_bypass_mcp_block() {
+        assert!(is_mcp_blocked("admin.cred_resolve"));
+        assert!(
+            is_mcp_blocked("admin_cred_resolve"),
+            "underscore alias of a blocked route must also be blocked"
+        );
+        assert!(is_mcp_blocked("admin_cred_proxy"));
+    }
 
     /// Path-segment substitution must percent-encode `/`, `?`, `#`, and `%`
     /// so an LLM-supplied argument cannot pivot the request to another route

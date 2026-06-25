@@ -112,6 +112,39 @@ async fn gui_login_cookie(app: &axum::Router, api_key: &str) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
 
+/// Log in and return (combined Cookie header with both the session and CSRF
+/// cookies, csrf_token_value) for exercising cookie-authenticated writes.
+async fn gui_login_full(app: &axum::Router, api_key: &str) -> (String, String) {
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/gui/auth")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("api_key={api_key}")))
+                .unwrap(),
+        )
+        .await
+        .expect("gui/auth request");
+    assert!(res.status().is_success(), "gui/auth should succeed");
+
+    let mut session = None;
+    let mut csrf_kv = None;
+    for hv in res.headers().get_all("set-cookie") {
+        let kv = hv.to_str().unwrap().split(';').next().unwrap().to_string();
+        if kv.starts_with("engram_auth=") {
+            session = Some(kv);
+        } else if kv.starts_with("kleos_csrf=") {
+            csrf_kv = Some(kv);
+        }
+    }
+    let session = session.expect("session cookie set");
+    let csrf_kv = csrf_kv.expect("csrf cookie set");
+    let csrf_token = csrf_kv.strip_prefix("kleos_csrf=").unwrap().to_string();
+    (format!("{session}; {csrf_kv}"), csrf_token)
+}
+
 #[tokio::test]
 async fn gui_cookie_authenticates_safe_get() {
     let app = gui_app().await;
@@ -168,7 +201,72 @@ async fn gui_cookie_cannot_write() {
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "a cookie alone must not authorize a write"
+        "a cookie alone (no CSRF token) must not authorize a write"
+    );
+}
+
+#[tokio::test]
+async fn gui_cookie_with_valid_csrf_can_write() {
+    let app = gui_app().await;
+    let admin = bootstrap_admin_key(&app).await;
+    let (cookie, csrf) = gui_login_full(&app, &admin).await;
+
+    // Cookie + matching X-CSRF-Token authorizes a write, so the SPA no longer
+    // needs a raw API key in localStorage.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/projects")
+                .header("Cookie", &cookie)
+                .header("X-CSRF-Token", &csrf)
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({ "name": "csrf-ok", "status": "active" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.status().is_success(),
+        "cookie + valid CSRF must authorize a write, got {}",
+        res.status()
+    );
+}
+
+#[tokio::test]
+async fn gui_cookie_write_rejected_with_wrong_csrf() {
+    let app = gui_app().await;
+    let admin = bootstrap_admin_key(&app).await;
+    let (cookie, _csrf) = gui_login_full(&app, &admin).await;
+
+    // A forged / mismatched CSRF token must not authorize a write even with a
+    // valid session cookie.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/projects")
+                .header("Cookie", &cookie)
+                .header(
+                    "X-CSRF-Token",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({ "name": "csrf-bad", "status": "active" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::UNAUTHORIZED,
+        "a wrong CSRF token must not authorize a write"
     );
 }
 

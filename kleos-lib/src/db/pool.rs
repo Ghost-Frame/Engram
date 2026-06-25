@@ -392,13 +392,76 @@ fn migrate_plaintext_to_encrypted(
     let _ = std::fs::remove_file(format!("{db_path}-wal"));
     let _ = std::fs::remove_file(format!("{db_path}-shm"));
 
-    tracing::warn!(
-        db = db_path,
-        backup = backup_path,
-        "migrated plaintext database to encrypted (backup preserved)"
-    );
+    // Discard the plaintext backup by default: leaving it forever silently
+    // defeats the at-rest-encryption threat model (a disk-access attacker reads
+    // the unencrypted copy). Operators who want a rollback safety net retain it
+    // with KLEOS_KEEP_PLAINTEXT_BACKUP=1. We only delete after confirming the
+    // freshly-swapped encrypted DB actually opens and reads with the key, so a
+    // failed migration never destroys the only readable copy.
+    if should_keep_plaintext_backup(crate::kleos_env("KEEP_PLAINTEXT_BACKUP").ok().as_deref()) {
+        tracing::warn!(
+            db = db_path,
+            backup = backup_path,
+            "migrated plaintext database to encrypted (plaintext backup RETAINED via KLEOS_KEEP_PLAINTEXT_BACKUP)"
+        );
+    } else if !verify_encrypted_readable(db_path, key) {
+        tracing::error!(
+            db = db_path,
+            backup = backup_path,
+            "encrypted database failed post-migration verification; plaintext backup RETAINED for recovery -- investigate before removing it"
+        );
+    } else {
+        match std::fs::remove_file(&backup_path) {
+            Ok(()) => tracing::info!(
+                db = db_path,
+                "migrated plaintext database to encrypted (plaintext backup removed)"
+            ),
+            Err(e) => tracing::warn!(
+                db = db_path,
+                backup = backup_path,
+                error = %e,
+                "migrated to encrypted but could not remove plaintext backup; remove it manually"
+            ),
+        }
+    }
 
     Ok(())
+}
+
+/// Pure parse of `KLEOS_KEEP_PLAINTEXT_BACKUP`: retain the plaintext backup only
+/// when explicitly opted in. Absent or any non-truthy value means delete.
+fn should_keep_plaintext_backup(env_val: Option<&str>) -> bool {
+    match env_val {
+        Some(v) => {
+            let s = v.trim().to_ascii_lowercase();
+            s == "1" || s == "true" || s == "yes" || s == "on"
+        }
+        None => false,
+    }
+}
+
+/// Confirm the encrypted database at `db_path` opens and reads with `key`.
+/// Used to gate deletion of the plaintext backup so a botched migration never
+/// leaves the operator with no readable copy.
+fn verify_encrypted_readable(db_path: &str, key: &[u8; crate::encryption::KEY_SIZE]) -> bool {
+    use deadpool_sqlite::rusqlite::{Connection, OpenFlags};
+    use zeroize::Zeroize;
+    // READ_ONLY (no CREATE): a missing or unreadable file fails rather than
+    // being created as an empty DB that would spuriously verify.
+    let conn = match Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let pragma = crate::encryption::format_pragma_key(key);
+    let mut key_sql = format!("PRAGMA key = {};", pragma.as_str());
+    let keyed = conn.execute_batch(&key_sql).is_ok();
+    key_sql.zeroize();
+    if !keyed {
+        return false;
+    }
+    // Succeeds only when the cipher key decrypts the database header.
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -413,6 +476,30 @@ mod tests {
             .join(format!("{prefix}-{}.db", uuid::Uuid::new_v4()))
             .to_string_lossy()
             .into_owned()
+    }
+
+    #[test]
+    fn keep_plaintext_backup_defaults_to_delete() {
+        // Absent or non-truthy -> delete (do not retain plaintext).
+        assert!(!should_keep_plaintext_backup(None));
+        assert!(!should_keep_plaintext_backup(Some("0")));
+        assert!(!should_keep_plaintext_backup(Some("false")));
+        assert!(!should_keep_plaintext_backup(Some("")));
+        // Explicit opt-in retains.
+        for on in ["1", "true", "yes", "on", " TRUE "] {
+            assert!(should_keep_plaintext_backup(Some(on)), "{on} must retain");
+        }
+    }
+
+    #[test]
+    fn verify_encrypted_readable_false_for_missing_db() {
+        // A non-existent / unreadable path must never report verified, so the
+        // backup is never deleted on a failed migration.
+        let key = [7u8; crate::encryption::KEY_SIZE];
+        assert!(!verify_encrypted_readable(
+            &temp_db_path("nope-missing"),
+            &key
+        ));
     }
 
     #[tokio::test]

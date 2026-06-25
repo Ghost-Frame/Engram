@@ -95,9 +95,18 @@ pub fn generate_launchd_plist(
 </dict>
 </plist>
 "#,
-        binary = binary.display(),
-        toml_file = toml_file.display(),
+        // XML-escape the paths: an install/config path containing &, <, or >
+        // would otherwise produce an invalid or injected plist.
+        binary = xml_escape(&binary.display().to_string()),
+        toml_file = xml_escape(&toml_file.display().to_string()),
     )
+}
+
+/// Escape a string for inclusion in XML element content (launchd plists).
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Write a systemd user unit to `~/.config/systemd/user/` and optionally enable it.

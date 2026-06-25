@@ -14,6 +14,11 @@ use kleos_lib::tenant::{TenantConfig, TenantHandle, TenantRegistry};
 use rusqlite::params;
 use tempfile::tempdir;
 
+/// Owning user for the memories and artifacts these tests create. The artifact
+/// queries scope by `user_id`, so memory rows and artifact calls must agree on
+/// it; in a single-owner shard the value is otherwise arbitrary.
+const TEST_USER: i64 = 1;
+
 /// Spin up a single tenant against a fresh temp dir; leaks the dir so the
 /// handle outlives the helper (matches `tenant_isolation.rs::two_tenants`).
 async fn one_tenant() -> Arc<TenantHandle> {
@@ -31,9 +36,9 @@ async fn insert_memory(db: &kleos_lib::db::Database, content: &str) -> i64 {
     let content = content.to_string();
     db.write(move |conn| {
         conn.query_row(
-            "INSERT INTO memories (content, category, importance, embedding) \
-             VALUES (?1, 'test', 5, zeroblob(4)) RETURNING id",
-            params![content],
+            "INSERT INTO memories (content, category, importance, embedding, user_id) \
+             VALUES (?1, 'test', 5, zeroblob(4), ?2) RETURNING id",
+            params![content, TEST_USER],
             |row| row.get::<_, i64>(0),
         )
         .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
@@ -81,6 +86,7 @@ async fn indexable_artifact_creates_single_fts_row() {
 
     let artifact_id = store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "nginx.conf",
         "nginx.conf",
@@ -121,6 +127,7 @@ async fn indexable_artifact_is_searchable_by_content() {
 
     let artifact_id = store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "config.txt",
         "config.txt",
@@ -168,6 +175,7 @@ async fn binary_artifact_has_no_indexable_content() {
 
     let artifact_id = store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "logo.png",
         "logo.png",
@@ -217,6 +225,7 @@ async fn delete_artifact_removes_fts_row() {
 
     let artifact_id = store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "delete-me.conf",
         "delete-me.conf",
@@ -235,7 +244,7 @@ async fn delete_artifact_removes_fts_row() {
     // Sanity: FTS row exists before deletion.
     assert_eq!(fts_rowid_count(&db, artifact_id).await, 1);
 
-    let disk_path = kleos_lib::artifacts::delete_artifact(&db, artifact_id)
+    let disk_path = kleos_lib::artifacts::delete_artifact(&db, TEST_USER, artifact_id)
         .await
         .expect("delete artifact");
     assert!(disk_path.is_none(), "inline artifact has no disk path");
@@ -248,7 +257,7 @@ async fn delete_artifact_removes_fts_row() {
     );
 
     // Artifact must be unreachable.
-    let gone = kleos_lib::artifacts::get_artifact_by_id(&db, artifact_id)
+    let gone = kleos_lib::artifacts::get_artifact_by_id(&db, TEST_USER, artifact_id)
         .await
         .expect("get after delete");
     assert!(gone.is_none(), "artifact must be gone after delete");
@@ -260,7 +269,7 @@ async fn delete_nonexistent_artifact_returns_none() {
     let handle = one_tenant().await;
     let db = handle.database();
 
-    let result = kleos_lib::artifacts::delete_artifact(&db, 999999)
+    let result = kleos_lib::artifacts::delete_artifact(&db, TEST_USER, 999999)
         .await
         .expect("delete nonexistent");
     assert!(
@@ -287,6 +296,7 @@ async fn search_artifacts_finds_by_content() {
 
     let artifact_id = store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "quantum.txt",
         "quantum.txt",
@@ -302,7 +312,7 @@ async fn search_artifacts_finds_by_content() {
     .await
     .expect("store artifact");
 
-    let results = kleos_lib::artifacts::search_artifacts(&db, "entanglement", 10, None)
+    let results = kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "entanglement", 10, None)
         .await
         .expect("search artifacts");
 
@@ -327,6 +337,7 @@ async fn search_artifacts_empty_result() {
 
     store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "normal.txt",
         "normal.txt",
@@ -342,7 +353,7 @@ async fn search_artifacts_empty_result() {
     .await
     .expect("store artifact");
 
-    let results = kleos_lib::artifacts::search_artifacts(&db, "xylophone", 10, None)
+    let results = kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "xylophone", 10, None)
         .await
         .expect("search artifacts");
 
@@ -369,6 +380,7 @@ async fn search_artifacts_respects_memory_filter() {
 
     let id_a = store_artifact(
         &db,
+        TEST_USER,
         mem_a,
         "sync-a.txt",
         "sync-a.txt",
@@ -386,6 +398,7 @@ async fn search_artifacts_respects_memory_filter() {
 
     let _id_b = store_artifact(
         &db,
+        TEST_USER,
         mem_b,
         "sync-b.txt",
         "sync-b.txt",
@@ -402,15 +415,16 @@ async fn search_artifacts_respects_memory_filter() {
     .expect("store artifact on mem_b");
 
     // Unfiltered search should find both.
-    let all = kleos_lib::artifacts::search_artifacts(&db, "synchronization", 10, None)
+    let all = kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "synchronization", 10, None)
         .await
         .expect("unfiltered search");
     assert_eq!(all.len(), 2, "unfiltered search should find both artifacts");
 
     // Filtered search should find only mem_a's artifact.
-    let filtered = kleos_lib::artifacts::search_artifacts(&db, "synchronization", 10, Some(mem_a))
-        .await
-        .expect("filtered search");
+    let filtered =
+        kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "synchronization", 10, Some(mem_a))
+            .await
+            .expect("filtered search");
     assert_eq!(
         filtered.len(),
         1,
@@ -436,6 +450,7 @@ async fn storage_quota_allows_within_limit() {
 
     store_artifact(
         &db,
+        TEST_USER,
         memory_id,
         "small.bin",
         "small.bin",
@@ -497,4 +512,161 @@ async fn storage_quota_rejects_over_limit() {
 #[test]
 fn storage_quota_default_is_1gib() {
     assert_eq!(kleos_lib::quota::DEFAULT_STORAGE_BYTES_LIMIT, 1_073_741_824);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-tenant isolation (monolith mode)
+// ---------------------------------------------------------------------------
+
+/// Insert a memory row owned by a specific `user_id`. Models the shared-DB
+/// (monolith) layout where one database holds rows for multiple tenants.
+async fn insert_memory_for(db: &kleos_lib::db::Database, content: &str, user_id: i64) -> i64 {
+    let content = content.to_string();
+    db.write(move |conn| {
+        conn.query_row(
+            "INSERT INTO memories (content, category, importance, embedding, user_id) \
+             VALUES (?1, 'test', 5, zeroblob(4), ?2) RETURNING id",
+            params![content, user_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await
+    .expect("insert memory")
+}
+
+/// In shared (monolith) mode a single DB holds multiple tenants' rows. Every
+/// artifact operation must scope by `user_id` so one tenant cannot read,
+/// search, or destroy another tenant's artifact by guessing its ID, and
+/// cannot attach an artifact to a memory it does not own.
+#[tokio::test]
+async fn artifacts_are_isolated_across_tenants_in_shared_db() {
+    const OWNER: i64 = 1;
+    const INTRUDER: i64 = 2;
+
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    // Two tenants, two memories, in the same database.
+    let owner_mem = insert_memory_for(&db, "owner memory", OWNER).await;
+    let intruder_mem = insert_memory_for(&db, "intruder memory", INTRUDER).await;
+
+    let content = "confidential tenant-scoped artifact payload";
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+    let artifact_id = store_artifact(
+        &db,
+        OWNER,
+        owner_mem,
+        "owner-doc.txt",
+        "owner-doc.txt",
+        "text/plain",
+        content.len() as i64,
+        "0badc0de",
+        "inline",
+        Some(content.as_bytes().to_vec()),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("owner stores artifact");
+
+    // The intruder cannot read the owner's artifact by ID.
+    let by_id = kleos_lib::artifacts::get_artifact_by_id(&db, INTRUDER, artifact_id)
+        .await
+        .expect("get_artifact_by_id");
+    assert!(
+        by_id.is_none(),
+        "intruder must not read owner's artifact by id"
+    );
+
+    // The intruder cannot read its raw data.
+    let data = kleos_lib::artifacts::get_artifact_data(&db, INTRUDER, artifact_id)
+        .await
+        .expect("get_artifact_data");
+    assert!(
+        data.is_none(),
+        "intruder must not read owner's artifact data"
+    );
+
+    // The intruder cannot list it via the owner's memory.
+    let listed = kleos_lib::artifacts::get_artifacts_by_memory(&db, INTRUDER, owner_mem)
+        .await
+        .expect("get_artifacts_by_memory");
+    assert!(
+        listed.is_empty(),
+        "intruder must not list owner's artifacts"
+    );
+
+    // The intruder cannot find it via FTS.
+    let found = kleos_lib::artifacts::search_artifacts(&db, INTRUDER, "confidential", 10, None)
+        .await
+        .expect("search_artifacts");
+    assert!(
+        found.is_empty(),
+        "intruder must not search owner's artifacts"
+    );
+
+    // The intruder cannot attach an artifact to the owner's memory.
+    let cross_attach = store_artifact(
+        &db,
+        INTRUDER,
+        owner_mem,
+        "evil.txt",
+        "evil.txt",
+        "text/plain",
+        4,
+        "deadc0de",
+        "inline",
+        Some(b"evil".to_vec()),
+        None,
+        false,
+        &StoreArtifactOpts::default(),
+    )
+    .await;
+    assert!(
+        cross_attach.is_err(),
+        "intruder must not attach an artifact to the owner's memory"
+    );
+
+    // The intruder's delete is a no-op: returns None and leaves the row intact.
+    let deleted = kleos_lib::artifacts::delete_artifact(&db, INTRUDER, artifact_id)
+        .await
+        .expect("intruder delete");
+    assert!(deleted.is_none(), "intruder delete must affect no rows");
+    assert_eq!(
+        fts_rowid_count(&db, artifact_id).await,
+        1,
+        "owner's artifact (and its FTS row) must survive the intruder's delete"
+    );
+
+    // The owner retains full access throughout.
+    let owner_view = kleos_lib::artifacts::get_artifact_by_id(&db, OWNER, artifact_id)
+        .await
+        .expect("owner get")
+        .expect("owner sees own artifact");
+    assert_eq!(owner_view.id, artifact_id);
+    let owner_search = kleos_lib::artifacts::search_artifacts(&db, OWNER, "confidential", 10, None)
+        .await
+        .expect("owner search");
+    assert_eq!(owner_search.len(), 1, "owner can search own artifact");
+
+    // The owner can delete it; the intruder's own memory is untouched.
+    let owner_delete = kleos_lib::artifacts::delete_artifact(&db, OWNER, artifact_id)
+        .await
+        .expect("owner delete");
+    assert!(
+        owner_delete.is_none(),
+        "inline artifact carries no disk path"
+    );
+    assert_eq!(
+        fts_rowid_count(&db, artifact_id).await,
+        0,
+        "owner's delete removes the row and its FTS entry"
+    );
+    let _ = intruder_mem; // referenced for clarity of the two-tenant setup
 }

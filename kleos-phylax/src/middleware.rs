@@ -24,7 +24,15 @@ use crate::models::{approval, policy};
 use crate::state::{PhylaxState, DEFAULT_APPROVAL_TTL_SECS};
 
 /// Paths that are subject to policy-check interception.
-const RESOLVE_PATHS: &[&str] = &["/resolve/text", "/resolve/proxy", "/resolve/raw"];
+const RESOLVE_PATHS: &[&str] = &[
+    "/resolve/text",
+    "/resolve/proxy",
+    "/resolve/raw",
+    "/resolve/exec",
+    "/resolve/verify",
+    "/resolve/sign",
+    "/resolve/derive",
+];
 
 /// Policy-check middleware. Runs after auth but before credd's resolve handlers.
 ///
@@ -73,8 +81,46 @@ pub async fn policy_check_middleware(
         "/resolve/text" => "text",
         "/resolve/proxy" => "proxy",
         "/resolve/raw" => "raw",
+        "/resolve/exec" => "exec",
+        "/resolve/verify" => "verify",
+        "/resolve/sign" => "sign",
+        "/resolve/derive" => "derive",
         _ => return next.run(request).await,
     };
+    // The non-plaintext modes are new capabilities with no legacy users:
+    // they require an explicit allowing policy (deny by default), unlike
+    // proxy which keeps its no-policy pass-through compatibility.
+    let explicit_policy_required = matches!(resolve_mode, "exec" | "verify" | "sign" | "derive");
+
+    // No-plaintext rule: text and raw return secret material to the caller,
+    // so they are master-only. No policy can grant them to an agent and there
+    // is no approval escape hatch -- agents use the non-plaintext modes.
+    if matches!(resolve_mode, "text" | "raw") {
+        let _ = log_phylax_audit(
+            &state.inner.db,
+            auth.user_id(),
+            Some(&agent_name),
+            None,
+            None,
+            None,
+            None,
+            actions::PLAINTEXT_DENIED,
+            "unknown",
+            "unknown",
+            false,
+            None,
+        )
+        .await;
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!(
+                    "resolve mode '{resolve_mode}' returns plaintext and is master-only"
+                )
+            })),
+        )
+            .into_response();
+    }
 
     // We need to read the body to extract the secret reference, but the
     // downstream handler also needs it. Buffer the body.
@@ -96,9 +142,28 @@ pub async fn policy_check_middleware(
     let (category, secret_name) = match extract_secret_ref(resolve_mode, &body_bytes) {
         Some(pair) => pair,
         None => {
-            // Can't determine the secret -- pass through to credd.
-            let request = Request::from_parts(parts, Body::from(body_bytes));
-            return next.run(request).await;
+            // An undeterminable secret reference must not evade the policy
+            // layer: deny instead of forwarding to credd.
+            let _ = log_phylax_audit(
+                &state.inner.db,
+                auth.user_id(),
+                Some(&agent_name),
+                None,
+                None,
+                None,
+                None,
+                actions::POLICY_FAIL_CLOSED,
+                "unknown",
+                "unknown",
+                false,
+                None,
+            )
+            .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "secret reference could not be determined from the request"})),
+            )
+                .into_response();
         }
     };
 
@@ -115,16 +180,97 @@ pub async fn policy_check_middleware(
     {
         Ok(Some(p)) => p,
         Ok(None) => {
-            // No policy -- pass through to credd.
+            if explicit_policy_required {
+                // exec/verify/sign/derive are deny-by-default: without an
+                // explicit allowing policy the mode is not reachable.
+                let _ = log_phylax_audit(
+                    &state.inner.db,
+                    auth.user_id(),
+                    Some(&agent_name),
+                    None,
+                    None,
+                    None,
+                    None,
+                    actions::MODE_POLICY_DENIED,
+                    &category,
+                    &secret_name,
+                    false,
+                    None,
+                )
+                .await;
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": format!(
+                            "resolve mode '{resolve_mode}' requires an explicit allowing policy"
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+            // No policy -- pass through to credd (legacy proxy compatibility).
             let request = Request::from_parts(parts, Body::from(body_bytes));
             return next.run(request).await;
         }
-        Err(_) => {
-            // DB error -- pass through to credd (fail open for now).
-            let request = Request::from_parts(parts, Body::from(body_bytes));
-            return next.run(request).await;
+        Err(e) => {
+            // Policy store unavailable: fail CLOSED. No secret may move when
+            // the authority cannot be consulted.
+            tracing::error!("policy lookup failed, denying agent resolve: {e}");
+            let _ = log_phylax_audit(
+                &state.inner.db,
+                auth.user_id(),
+                Some(&agent_name),
+                None,
+                None,
+                None,
+                None,
+                actions::POLICY_FAIL_CLOSED,
+                &category,
+                &secret_name,
+                false,
+                None,
+            )
+            .await;
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "policy check unavailable"})),
+            )
+                .into_response();
         }
     };
+
+    // For the deny-by-default modes the allowed_modes check applies
+    // unconditionally: a policy that does not name the mode does not grant
+    // it, with or without an approval requirement.
+    if explicit_policy_required
+        && !matching_policy
+            .allowed_modes
+            .iter()
+            .any(|m| m == resolve_mode)
+    {
+        let _ = log_phylax_audit(
+            &state.inner.db,
+            auth.user_id(),
+            Some(&agent_name),
+            None,
+            None,
+            Some(matching_policy.id),
+            None,
+            actions::MODE_POLICY_DENIED,
+            &category,
+            &secret_name,
+            false,
+            None,
+        )
+        .await;
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                json!({"error": format!("resolve mode '{}' not allowed by policy", resolve_mode)}),
+            ),
+        )
+            .into_response();
+    }
 
     // Policy found and requires approval.
     if !matching_policy.require_approval {
@@ -227,8 +373,8 @@ fn extract_secret_ref(mode: &str, body: &[u8]) -> Option<(String, String)> {
             let slash = inner.find('/')?;
             Some((inner[..slash].to_string(), inner[slash + 1..].to_string()))
         }
-        "proxy" | "raw" => {
-            // Proxy/raw: extract from "category" and "name" fields.
+        "proxy" | "raw" | "exec" | "verify" | "sign" | "derive" => {
+            // All JSON-bodied modes carry "category" and "name" fields.
             let category = parsed.get("category")?.as_str()?.to_string();
             let name = parsed.get("name")?.as_str()?.to_string();
             Some((category, name))

@@ -152,50 +152,88 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
 }
 
 /// Mark a job completed and clear its error state.
+///
+/// `claimed_at` is the lease token the worker observed when it claimed the job
+/// (`Job::claimed_at`). The update is gated on `status='running' AND claimed_at=?`
+/// so a slow worker that was requeued by `recover_stuck_jobs` and reclaimed by a
+/// newer attempt cannot finalize the job after the new attempt took ownership
+/// (JOB-2: stale-worker clobber).
 #[tracing::instrument(skip(db))]
-pub async fn complete_job(db: &Database, id: i64) -> Result<()> {
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE jobs SET status = 'completed', completed_at = datetime('now'), error = NULL WHERE id = ?1",
-            params![id],
-        )?;
-        Ok(())
-    })
-    .await?;
-    debug!(job_id = id, "job completed");
+pub async fn complete_job(db: &Database, id: i64, claimed_at: &str) -> Result<()> {
+    let claimed_at = claimed_at.to_string();
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE jobs SET status = 'completed', completed_at = datetime('now'), error = NULL \
+                 WHERE id = ?1 AND status = 'running' AND claimed_at = ?2",
+                params![id, claimed_at],
+            )?)
+        })
+        .await?;
+    if affected == 0 {
+        warn!(job_id = id, "complete_job: lease lost (job reclaimed by another worker); terminal state not overwritten");
+    } else {
+        debug!(job_id = id, "job completed");
+    }
     Ok(())
 }
 
 /// Mark a job permanently failed with the final error message.
+///
+/// Lease-gated on `claimed_at` for the same reason as [`complete_job`] (JOB-2).
 #[tracing::instrument(skip(db, err_msg))]
-pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
+pub async fn fail_job(db: &Database, id: i64, claimed_at: &str, err_msg: &str) -> Result<()> {
     let err_msg = err_msg.to_string();
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE jobs SET status = 'failed', error = ?1, completed_at = datetime('now') WHERE id = ?2",
-            params![err_msg, id],
-        )?;
-        Ok(())
-    })
-    .await?;
-    error!(job_id = id, "job failed permanently");
+    let claimed_at = claimed_at.to_string();
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE jobs SET status = 'failed', error = ?1, completed_at = datetime('now') \
+                 WHERE id = ?2 AND status = 'running' AND claimed_at = ?3",
+                params![err_msg, id, claimed_at],
+            )?)
+        })
+        .await?;
+    if affected == 0 {
+        warn!(job_id = id, "fail_job: lease lost (job reclaimed by another worker); terminal state not overwritten");
+    } else {
+        error!(job_id = id, "job failed permanently");
+    }
     Ok(())
 }
 
 /// Return a running job to pending state after a retry delay.
+///
+/// Lease-gated on `claimed_at` for the same reason as [`complete_job`] (JOB-2):
+/// a stale worker must not requeue a job a newer attempt now owns.
 #[tracing::instrument(skip(db, err_msg))]
-pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) -> Result<()> {
+pub async fn retry_job(
+    db: &Database,
+    id: i64,
+    claimed_at: &str,
+    err_msg: &str,
+    delay_sec: i64,
+) -> Result<()> {
     let err_msg = err_msg.to_string();
+    let claimed_at = claimed_at.to_string();
     let modifier = format!("+{} seconds", delay_sec);
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE jobs SET status = 'pending', error = ?1, next_retry_at = datetime('now', ?3) WHERE id = ?2",
-            params![err_msg, id, modifier],
-        )?;
-        Ok(())
-    })
-    .await?;
-    warn!(job_id = id, retry_in = delay_sec, "job scheduled for retry");
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE jobs SET status = 'pending', error = ?1, next_retry_at = datetime('now', ?3), claimed_at = NULL \
+                 WHERE id = ?2 AND status = 'running' AND claimed_at = ?4",
+                params![err_msg, id, modifier, claimed_at],
+            )?)
+        })
+        .await?;
+    if affected == 0 {
+        warn!(
+            job_id = id,
+            "retry_job: lease lost (job reclaimed by another worker); not requeuing"
+        );
+    } else {
+        warn!(job_id = id, retry_in = delay_sec, "job scheduled for retry");
+    }
     Ok(())
 }
 
@@ -264,12 +302,34 @@ pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
 #[tracing::instrument(skip(db))]
 pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
     db.write(|conn| {
-        let n = conn
-            .execute(
-                "UPDATE jobs SET status = 'pending', claimed_at = NULL WHERE status = 'running' AND claimed_at < datetime('now', '-5 minutes')",
-                [],
-            )?;
-        Ok(n as u64)
+        // Recover a running job only after its OWN type's timeout (plus a grace
+        // margin) has elapsed, not a blanket 5 minutes. A long-running type like
+        // deprovision_teardown (~30 min) must not be requeued while still
+        // executing -- that would run the same destructive teardown twice.
+        const GRACE_SECS: u64 = 60;
+        let mut stmt = conn.prepare(
+            "SELECT id, type, \
+             CAST((julianday('now') - julianday(claimed_at)) * 86400 AS INTEGER) \
+             FROM jobs WHERE status = 'running' AND claimed_at IS NOT NULL",
+        )?;
+        let rows: Vec<(i64, String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+
+        let mut recovered = 0u64;
+        for (id, job_type, elapsed_secs) in rows {
+            let lease_secs = job_timeout_for(&job_type).as_secs() + GRACE_SECS;
+            if elapsed_secs >= 0 && (elapsed_secs as u64) > lease_secs {
+                let n = conn.execute(
+                    "UPDATE jobs SET status = 'pending', claimed_at = NULL \
+                     WHERE id = ?1 AND status = 'running'",
+                    params![id],
+                )?;
+                recovered += n as u64;
+            }
+        }
+        Ok(recovered)
     })
     .await
 }
@@ -434,16 +494,20 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
         registry.get(&job.job_type).cloned()
     };
 
+    // Lease token observed at claim time; threaded into every finalizer so a
+    // newer attempt's terminal state is never clobbered by this one (JOB-2).
+    let claimed_at = job.claimed_at.clone().unwrap_or_default();
+
     let Some(handler) = handler else {
         // Missing handlers can happen during startup or rolling deploys, so
         // they follow the same retry discipline as handler errors.
         let err_msg = format!("No handler registered for job type: {}", job.job_type);
         if job.attempts >= job.max_attempts {
-            fail_job(db, job.id, &err_msg).await?;
+            fail_job(db, job.id, &claimed_at, &err_msg).await?;
             error!(job_id = job.id, job_type = %job.job_type, "job handler missing -- giving up after max attempts");
         } else {
             let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
-            retry_job(db, job.id, &err_msg, delay_sec).await?;
+            retry_job(db, job.id, &claimed_at, &err_msg, delay_sec).await?;
             warn!(job_id = job.id, job_type = %job.job_type, "job handler missing -- scheduled for retry");
         }
         return Ok(true);
@@ -452,13 +516,12 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     let payload: Value = match serde_json::from_str(&job.payload) {
         Ok(v) => v,
         Err(e) => {
+            // A payload that does not parse as JSON is deterministically poison:
+            // it will never parse on retry. Retrying with delay 0 just hammers
+            // CPU and logs until max_attempts. Fail it permanently now (JOB-3).
             let err_msg = format!("invalid job payload JSON: {}", e);
-            if job.attempts >= job.max_attempts {
-                fail_job(db, job.id, &err_msg).await?;
-            } else {
-                retry_job(db, job.id, &err_msg, 0).await?;
-            }
-            error!(job_id = job.id, job_type = %job.job_type, "poison payload");
+            fail_job(db, job.id, &claimed_at, &err_msg).await?;
+            error!(job_id = job.id, job_type = %job.job_type, "poison payload -- failed permanently");
             return Ok(true);
         }
     };
@@ -466,25 +529,25 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
 
     match tokio::time::timeout(timeout, handler(payload)).await {
         Ok(Ok(())) => {
-            complete_job(db, job.id).await?;
+            complete_job(db, job.id, &claimed_at).await?;
             debug!(job_id = job.id, job_type = %job.job_type, attempt = job.attempts, "job completed");
         }
         Ok(Err(err)) => {
             let err_msg = err.to_string();
             if job.attempts >= job.max_attempts {
-                fail_job(db, job.id, &err_msg).await?;
+                fail_job(db, job.id, &claimed_at, &err_msg).await?;
             } else {
                 let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
-                retry_job(db, job.id, &err_msg, delay_sec).await?;
+                retry_job(db, job.id, &claimed_at, &err_msg, delay_sec).await?;
             }
         }
         Err(_) => {
             let err_msg = format!("Job timed out after {}ms", timeout.as_millis());
             if job.attempts >= job.max_attempts {
-                fail_job(db, job.id, &err_msg).await?;
+                fail_job(db, job.id, &claimed_at, &err_msg).await?;
             } else {
                 let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
-                retry_job(db, job.id, &err_msg, delay_sec).await?;
+                retry_job(db, job.id, &claimed_at, &err_msg, delay_sec).await?;
             }
         }
     }
@@ -697,6 +760,74 @@ mod tests {
             "missing handler must fail after exhausting max_attempts"
         );
         assert_eq!(stats.pending, 0);
+        assert_eq!(stats.running, 0);
+    }
+
+    /// JOB-2: a finalizer must not clobber a job whose lease has changed.
+    /// A stale worker holding the old `claimed_at` cannot complete/fail/retry a
+    /// row that a newer attempt has reclaimed.
+    #[tokio::test]
+    async fn finalizers_are_lease_gated_on_claimed_at() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        // Insert a running job with a known lease token.
+        let id = db
+            .write(|conn| {
+                conn.execute(
+                    "INSERT INTO jobs (type, payload, status, attempts, max_attempts, created_at, claimed_at) \
+                     VALUES ('lease.test', '{}', 'running', 1, 3, datetime('now'), 'LEASE_A')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })
+            .await
+            .expect("seed running job");
+
+        // Wrong lease token -> no-op, job stays running.
+        complete_job(&db, id, "LEASE_B")
+            .await
+            .expect("complete (stale)");
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.running, 1, "stale-lease complete must not finalize");
+        assert_eq!(stats.completed, 0);
+
+        // fail_job with the wrong token is equally a no-op.
+        fail_job(&db, id, "LEASE_B", "boom")
+            .await
+            .expect("fail (stale)");
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.running, 1, "stale-lease fail must not finalize");
+        assert_eq!(stats.failed, 0);
+
+        // Correct lease token -> completes.
+        complete_job(&db, id, "LEASE_A")
+            .await
+            .expect("complete (owner)");
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.completed, 1, "owner lease must finalize");
+        assert_eq!(stats.running, 0);
+    }
+
+    /// JOB-3: a payload that does not parse as JSON is deterministically poison
+    /// and must fail permanently on the first attempt, not retry in a hot loop
+    /// (which would re-enter pending with delay 0 until max_attempts).
+    #[tokio::test]
+    async fn poison_payload_fails_permanently_not_retried() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        register_job_handler("test.poison", |_payload| async move { Ok(()) }).await;
+
+        // max_attempts deliberately high: the old code would have requeued.
+        let job_id = enqueue_job(&db, "test.poison", "this is not json", 5)
+            .await
+            .expect("enqueue");
+        assert!(job_id > 0);
+
+        let processed = process_next_job(&db).await.expect("process");
+        assert!(processed, "worker should have claimed the poison job");
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.failed, 1, "poison payload must fail permanently");
+        assert_eq!(stats.pending, 0, "poison payload must not be requeued");
         assert_eq!(stats.running, 0);
     }
 }

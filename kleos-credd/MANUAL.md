@@ -73,6 +73,20 @@ Response shape:
 All require category-permissioned DB-backed agent keys. Audit rows are
 written to `cred_audit`.
 
+`POST /resolve/proxy` denies by default: with no per-category domain
+allowlist configured (`~/.config/cred/proxy-domains.json`), the proxy refuses
+to forward credentials to any host. Configure an allowlist, or set
+`CREDD_PROXY_ALLOW_ANY=1` to forward to any host. This is opt-in and does not
+affect normal credential resolution or first-time setup.
+
+Allowlist notes: domain patterns are matched case-insensitively (the target
+host and the configured patterns are both lowercased), so casing in the JSON
+does not matter. Supported forms are exact (`api.github.com`), subdomain
+wildcard (`*.amazonaws.com`, which matches the suffix and any subdomain), and
+the catch-all `*`. If the allowlist file exists but fails to parse, the proxy
+treats it as absent and **denies** (fail-closed) -- check the log for
+`proxy domain allowlist parse error`.
+
 ### Agents (DB-backed only)
 
 - `GET /agents` -- list

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-lib"
-version = "1.6.0"
+version = "1.7.3"
 edition = "2021"
 rust-version.workspace = true
 description = "Core library for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
@@ -53,6 +53,7 @@ hmac = { workspace = true }
 unicode-normalization = { workspace = true }
 rust-stemmers = { workspace = true }
 url = { workspace = true }
+ipnet = { workspace = true }
 ort = { workspace = true }
 tokenizers = { workspace = true }
 ndarray = { workspace = true }

@@ -42,7 +42,6 @@ fn is_read_only_post(path: &str) -> bool {
             | "/search/explain"
             | "/search/faceted"
             | "/recall"
-            | "/recall-due"
             | "/tags/search"
             | "/graph/search"
             | "/skills/search"
@@ -198,11 +197,14 @@ async fn validate_mcp_token(
     let key_row = state
         .db
         .read(move |conn| {
-            let mut stmt = conn.prepare(
+            let sql = format!(
                 "SELECT id, user_id, pubkey_pem, scopes
                      FROM identity_keys
-                     WHERE pubkey_fingerprint = ?1 AND is_active = 1",
-            )?;
+                     WHERE pubkey_fingerprint = ?1 AND is_active = 1
+                       AND user_id IN ({})",
+                kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
+            );
+            let mut stmt = conn.prepare(&sql)?;
             let row = stmt
                 .query_row(rusqlite::params![kid], |row| {
                     Ok((
@@ -280,7 +282,10 @@ async fn validate_mcp_token(
     {
         return Err("write scope required for this method".to_string());
     }
-    if !requires_write_scope(method)
+    // F34: read-only POSTs are POSTs, so requires_write_scope() is true and the
+    // write gate above lets them through; without this clause they would also
+    // skip the read gate and require no scope at all. Gate them on Read here.
+    if (!requires_write_scope(method) || is_read_only_post(path))
         && !token_scopes.contains(&Scope::Read)
         && !token_scopes.contains(&Scope::Admin)
     {
@@ -447,7 +452,10 @@ pub async fn auth_middleware(
                     {
                         return forbid("write scope required for this method");
                     }
-                    if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+                    // F34: also gate read-only POSTs on Read (see MCP-token path).
+                    if (!requires_write_scope(&method) || is_read_only_post(&path))
+                        && !auth_ctx.has_scope(&Scope::Read)
+                    {
                         return forbid("read scope required for this method");
                     }
 
@@ -522,22 +530,23 @@ pub async fn auth_middleware(
         let ik_row = match state
             .db
             .read(move |conn| {
-                conn.query_row(
+                let sql = format!(
                     "SELECT id, user_id, tier, algo, pubkey_pem, scopes
                      FROM identity_keys
-                     WHERE pubkey_fingerprint = ?1 AND is_active = 1",
-                    params![key_fp],
-                    |row| {
-                        Ok(IdentityKeyRow {
-                            id: row.get(0)?,
-                            user_id: row.get(1)?,
-                            tier: row.get(2)?,
-                            algo: row.get(3)?,
-                            pubkey_pem: row.get(4)?,
-                            scopes_json: row.get(5)?,
-                        })
-                    },
-                )
+                     WHERE pubkey_fingerprint = ?1 AND is_active = 1
+                       AND user_id IN ({})",
+                    kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
+                );
+                conn.query_row(&sql, params![key_fp], |row| {
+                    Ok(IdentityKeyRow {
+                        id: row.get(0)?,
+                        user_id: row.get(1)?,
+                        tier: row.get(2)?,
+                        algo: row.get(3)?,
+                        pubkey_pem: row.get(4)?,
+                        scopes_json: row.get(5)?,
+                    })
+                })
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => {
                         kleos_lib::EngError::Auth("unknown key fingerprint".into())
@@ -767,7 +776,10 @@ pub async fn auth_middleware(
         {
             return forbid("write scope required for this method");
         }
-        if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+        // F34: also gate read-only POSTs on Read (see MCP-token path).
+        if (!requires_write_scope(&method) || is_read_only_post(&path))
+            && !auth_ctx.has_scope(&Scope::Read)
+        {
             return forbid("read scope required for this method");
         }
 
@@ -832,7 +844,10 @@ pub async fn auth_middleware(
                 {
                     return forbid("write scope required for this method");
                 }
-                if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+                // F34: also gate read-only POSTs on Read (see MCP-token path).
+                if (!requires_write_scope(&method) || is_read_only_post(&path))
+                    && !auth_ctx.has_scope(&Scope::Read)
+                {
                     return forbid("read scope required for this method");
                 }
                 let user_id = auth_ctx.user_id;
@@ -850,20 +865,29 @@ pub async fn auth_middleware(
     }
 
     // ---------------------------------------------------------------
-    // Path 3c: GUI session cookie (read-only).
+    // Path 3c: GUI session cookie.
     //
     // An EventSource (SSE) cannot send an Authorization header, so the
     // realtime stream (/axon/stream) authenticates via the HMAC-signed,
     // SameSite=Strict GUI cookie that EventSource does send same-origin.
     // `get_gui_session` re-checks the underlying key is still active, so a
-    // revoked key's stale cookie stops working. Restricted to safe
-    // (non-mutating) methods so a cookie alone can never write: CSRF is
-    // already blocked by SameSite=Strict, and this is defense in depth.
+    // revoked key's stale cookie stops working.
+    //
+    // Safe methods need only Read scope (SameSite=Strict blocks cross-site
+    // sends). Mutating methods additionally require Write scope AND a valid
+    // X-CSRF-Token (a token HMAC-bound to the session cookie, double-submit),
+    // so cookie-authenticated writes are CSRF-safe. This lets the GUI SPA
+    // authenticate writes via the cookie instead of persisting a raw API key
+    // in localStorage.
     // ---------------------------------------------------------------
-    if !requires_write_scope(&method) {
+    {
+        let is_write = requires_write_scope(&method);
         if let Some(session) = crate::routes::gui::get_gui_session(&state, request.headers()).await
         {
-            if session.has_scope(&Scope::Read) {
+            let required_scope = if is_write { Scope::Write } else { Scope::Read };
+            let csrf_ok =
+                !is_write || crate::routes::gui::verify_gui_csrf(&state, request.headers()).await;
+            if session.has_scope(&required_scope) && csrf_ok {
                 let scopes_csv = kleos_lib::auth::scopes_to_string(&session.scopes);
                 let auth_ctx = AuthContext {
                     key: synthetic_key_for_identity_with_scopes(session.user_id, Some(&scopes_csv)),
@@ -905,6 +929,17 @@ pub async fn auth_middleware(
             pubkey_pem: String,
             host_label: String,
             sig_hex: String,
+            /// Carried in the full EnrollBody but not part of the bootstrap
+            /// proof message; accepted here so enrollment bodies that
+            /// include them still parse under deny_unknown_fields.
+            #[allow(dead_code)]
+            label: Option<String>,
+            /// See `label`.
+            #[allow(dead_code)]
+            serial: Option<String>,
+            /// See `label`.
+            #[allow(dead_code)]
+            nonce: Option<String>,
         }
 
         let proof: EnrollProof = match serde_json::from_slice(&body_bytes) {
@@ -957,12 +992,26 @@ pub async fn auth_middleware(
             );
         }
 
-        // Optional bootstrap secret: if KLEOS_BOOTSTRAP_SECRET is set, the
-        // caller must provide the matching value in X-Bootstrap-Secret.
-        // When the env var is unset, bootstrap proceeds unauthenticated
-        // (dev-friendly default). When set, the comparison is constant-time
-        // to prevent timing-based secret enumeration.
-        if let Ok(expected_secret) = std::env::var("KLEOS_BOOTSTRAP_SECRET") {
+        // Mandatory bootstrap secret: the caller must provide the matching
+        // value in X-Bootstrap-Secret. Resolved through kleos_env so the
+        // legacy ENGRAM_BOOTSTRAP_SECRET name is honored exactly like
+        // POST /bootstrap; reading only the KLEOS_ name silently skipped
+        // this check on legacy-configured deployments. When the secret is
+        // unset or empty, bootstrap enrollment is disabled entirely (fail
+        // closed, matching /bootstrap) rather than proceeding
+        // unauthenticated. The comparison is constant-time to prevent
+        // timing-based secret enumeration.
+        let expected_secret = match kleos_lib::kleos_env("BOOTSTRAP_SECRET") {
+            Ok(s) if !s.is_empty() => s,
+            _ => {
+                tracing::warn!(client_ip = %req_client_ip,
+                    "bootstrap enrollment rejected: no bootstrap secret configured");
+                return unauthorized(
+                    "bootstrap enrollment disabled: set KLEOS_BOOTSTRAP_SECRET to enable",
+                );
+            }
+        };
+        {
             use sha2::{Digest, Sha256};
             use subtle::ConstantTimeEq;
             let provided = parts
@@ -1041,26 +1090,27 @@ async fn resolve_identity_by_id(
     let row = state
         .db
         .read(move |conn| {
-            Ok(conn.query_row(
+            let sql = format!(
                 "SELECT i.identity_key_id, i.identity_hash, i.host_label, i.agent_label,
                         i.model_label, ik.user_id, ik.tier, ik.scopes
                  FROM identities i
                  JOIN identity_keys ik ON ik.id = i.identity_key_id
-                 WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1",
-                params![identity_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                    ))
-                },
-            )?)
+                 WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1
+                   AND ik.user_id IN ({})",
+                kleos_lib::auth::ACTIVE_USER_IDS_SUBQUERY
+            );
+            Ok(conn.query_row(&sql, params![identity_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })?)
         })
         .await
         .map_err(|e| e.to_string())?;

@@ -565,14 +565,18 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_digests_period ON digests(period);
         CREATE INDEX IF NOT EXISTS idx_digests_next ON digests(next_send_at) WHERE active = 1;
 
-        -- Sessions
+        -- Sessions (user_id scopes ownership in shared/monolith mode; a no-op
+        -- in a single-owner shard. Re-added to existing DBs by monolith
+        -- migration 89 / tenant migration 72.)
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             agent TEXT NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
         -- Session output lines
         CREATE TABLE IF NOT EXISTS session_output (
@@ -665,6 +669,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         -- Tier4: scratchpad
         CREATE TABLE IF NOT EXISTS scratchpad (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 1,
             agent TEXT NOT NULL DEFAULT 'unknown',
             session TEXT NOT NULL DEFAULT 'default',
             model TEXT NOT NULL DEFAULT '',
@@ -673,11 +678,12 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(session, agent, entry_key)
+            UNIQUE(user_id, session, agent, entry_key)
         );
         CREATE INDEX IF NOT EXISTS idx_scratchpad_agent ON scratchpad(agent);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_session ON scratchpad(session);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_scratchpad_user ON scratchpad(user_id);
 
         -- Skill system: skill records
         CREATE TABLE IF NOT EXISTS skill_records (

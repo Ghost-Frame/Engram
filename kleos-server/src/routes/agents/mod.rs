@@ -145,14 +145,21 @@ async fn get_passport(
         )));
     }
 
-    let issued_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    // Bound lifetime: a passport with a null expiry verified forever, so a
+    // revoked agent's previously issued passport stayed valid indefinitely.
+    // Issue with a 24h TTL; verify() also re-checks the agent is still active.
+    let now = chrono::Utc::now();
+    let issued_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    let expires_at = (now + chrono::Duration::hours(24))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     let payload = json!({
         "agent_id": agent.id,
         "user_id": auth.effective_user_id(),
         "name": agent.name,
         "trust_score": agent.trust_score,
         "issued_at": issued_at,
-        "expires_at": null,
+        "expires_at": expires_at,
     });
     let signature = sign_value(&payload)?;
     Ok(Json(json!({
@@ -161,7 +168,7 @@ async fn get_passport(
         "name": agent.name,
         "trust_score": agent.trust_score,
         "issued_at": issued_at,
-        "expires_at": null,
+        "expires_at": expires_at,
         "signature": signature,
     })))
 }
@@ -247,13 +254,18 @@ async fn verify(
     Json(body): Json<VerifyBody>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
     if let Some(passport) = body.passport {
-        let result = verify_signed_value(&passport).map_err(|e| {
+        let sig_ok = verify_signed_value(&passport).map_err(|e| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": e.0.to_string() })),
             )
         })?;
-        return Ok(Json(json!({ "type": "passport", "valid": result })));
+        // A valid signature is necessary but not sufficient: the passport must
+        // also be unexpired AND its agent still active. A missing/null/garbage
+        // expiry now fails closed (the old eternal-passport behavior), and a
+        // revoked agent (is_active = 0) invalidates any passport it was issued.
+        let valid = sig_ok && passport_is_current(&db, &passport).await;
+        return Ok(Json(json!({ "type": "passport", "valid": valid })));
     }
 
     if let Some(raw) = body.execution {
@@ -568,4 +580,75 @@ fn verify_signed_value(value: &Value) -> Result<bool, AppError> {
     }
     let computed = sign_value(&unsigned)?;
     Ok(computed.as_bytes().ct_eq(signature.as_bytes()).into())
+}
+
+/// A passport is current iff its expiry is in the future AND the agent it names
+/// is still active. Expiry must parse as "%Y-%m-%d %H:%M:%S" (UTC); anything
+/// missing or malformed fails closed, which retires the old null-expiry
+/// passports that verified forever. A revoked agent (is_active = 0, or a
+/// deleted row) invalidates the passport even before its TTL elapses.
+async fn passport_is_current(db: &kleos_lib::db::Database, passport: &Value) -> bool {
+    let now = chrono::Utc::now();
+    let not_expired = passport
+        .get("expires_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+        .map(|dt| dt.and_utc() > now)
+        .unwrap_or(false);
+    if !not_expired {
+        return false;
+    }
+    let Some(agent_id) = passport.get("agent_id").and_then(|v| v.as_i64()) else {
+        return false;
+    };
+    db.read(move |conn| {
+        conn.query_row(
+            "SELECT is_active FROM agents WHERE id = ?1",
+            [agent_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(kleos_lib::EngError::DatabaseMessage(other.to_string())),
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod passport_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// All three fail-closed paths return false: a past expiry, a missing
+    /// (null) expiry -- the old eternal-passport case -- and a valid future
+    /// expiry naming an agent that is absent/revoked in the DB.
+    #[tokio::test]
+    async fn passport_current_fails_closed() {
+        let db = kleos_lib::db::Database::connect_memory()
+            .await
+            .expect("memory db");
+
+        let past = json!({ "agent_id": 999, "expires_at": "2000-01-01 00:00:00" });
+        assert!(
+            !passport_is_current(&db, &past).await,
+            "expired passport must be invalid"
+        );
+
+        let null_exp = json!({ "agent_id": 999, "expires_at": null });
+        assert!(
+            !passport_is_current(&db, &null_exp).await,
+            "null-expiry passport must be invalid"
+        );
+
+        let future_unknown = json!({ "agent_id": 999, "expires_at": "2999-01-01 00:00:00" });
+        assert!(
+            !passport_is_current(&db, &future_unknown).await,
+            "future expiry but unknown/revoked agent must be invalid"
+        );
+    }
 }

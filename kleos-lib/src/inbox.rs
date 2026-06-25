@@ -22,20 +22,25 @@ pub struct PendingMemory {
     pub model: Option<String>,
 }
 
-#[tracing::instrument(skip(db), fields(limit, offset))]
-pub async fn list_pending(db: &Database, limit: i64, offset: i64) -> Result<Vec<PendingMemory>> {
+#[tracing::instrument(skip(db), fields(user_id, limit, offset))]
+pub async fn list_pending(
+    db: &Database,
+    user_id: i64,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<PendingMemory>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, category, source, session_id, importance, created_at, tags, confidence, decay_score, status, model \
                  FROM memories \
-                 WHERE status = 'pending' AND is_forgotten = 0 \
-                 ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+                 WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1 \
+                 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
             )
             ?;
 
         let rows = stmt
-            .query_map(rusqlite::params![limit, offset], |row| {
+            .query_map(rusqlite::params![user_id, limit, offset], |row| {
                 Ok(PendingMemory {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -66,8 +71,9 @@ pub async fn list_pending(db: &Database, limit: i64, offset: i64) -> Result<Vec<
 pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
         Ok(conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'pending' AND is_forgotten = 0",
-            [],
+            "SELECT COUNT(*) FROM memories \
+             WHERE status = 'pending' AND is_forgotten = 0 AND user_id = ?1",
+            rusqlite::params![user_id],
             |row| row.get::<_, i64>(0),
         )?)
     })
@@ -78,20 +84,22 @@ pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
 pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![id],
+            "UPDATE memories SET status = 'approved', updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![id, user_id],
         )?;
         Ok(())
     })
     .await
 }
 
-#[tracing::instrument(skip(db), fields(memory_id = id))]
-pub async fn reject_memory(db: &Database, id: i64) -> Result<()> {
+#[tracing::instrument(skip(db), fields(memory_id = id, user_id))]
+pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![id],
+            "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') \
+             WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![id, user_id],
         )
         ?;
         Ok(())
@@ -99,23 +107,24 @@ pub async fn reject_memory(db: &Database, id: i64) -> Result<()> {
     .await
 }
 
-#[tracing::instrument(skip(db, reason), fields(memory_id = id))]
-pub async fn set_forget_reason(db: &Database, id: i64, reason: &str) -> Result<()> {
+#[tracing::instrument(skip(db, reason), fields(memory_id = id, user_id))]
+pub async fn set_forget_reason(db: &Database, id: i64, user_id: i64, reason: &str) -> Result<()> {
     let reason = reason.to_string();
     db.write(move |conn| {
         conn.execute(
-            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
-            rusqlite::params![reason, id],
+            "UPDATE memories SET forget_reason = ?1 WHERE id = ?2 AND user_id = ?3",
+            rusqlite::params![reason, id, user_id],
         )?;
         Ok(())
     })
     .await
 }
 
-#[tracing::instrument(skip(db, content, tags), fields(memory_id = id, category = ?category, importance = ?importance))]
+#[tracing::instrument(skip(db, content, tags), fields(memory_id = id, user_id, category = ?category, importance = ?importance))]
 pub async fn edit_and_approve(
     db: &Database,
     id: i64,
+    user_id: i64,
     content: Option<&str>,
     category: Option<&str>,
     importance: Option<i64>,
@@ -147,11 +156,15 @@ pub async fn edit_and_approve(
         vals.push(rusqlite::types::Value::Text(t.to_string()));
         idx += 1;
     }
+    let id_idx = idx;
     vals.push(rusqlite::types::Value::Integer(id));
+    let user_idx = idx + 1;
+    vals.push(rusqlite::types::Value::Integer(user_id));
     let sql = format!(
-        "UPDATE memories SET {} WHERE id = ?{}",
+        "UPDATE memories SET {} WHERE id = ?{} AND user_id = ?{}",
         sets.join(", "),
-        idx
+        id_idx,
+        user_idx
     );
     db.write(move |conn| {
         conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))?;

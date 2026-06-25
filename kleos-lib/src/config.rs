@@ -132,6 +132,13 @@ fn default_backup_retention_daily() -> usize {
     30
 }
 
+/// Default pre-authentication per-IP rate limit (requests per minute).
+/// Kept in sync with the historical hardcoded value so behaviour is unchanged
+/// unless an operator overrides `KLEOS_PREAUTH_IP_RPM`.
+fn default_preauth_ip_rpm() -> i64 {
+    60
+}
+
 /// Default switch for the background dreamer task.
 fn default_dreamer_enabled() -> bool {
     true
@@ -289,6 +296,16 @@ pub struct SessionsConfig {
     pub buffer_size: usize,
     pub stream_timeout_secs: u64,
     pub scrub_secrets: bool,
+    /// Behavior when scrubbing is enabled but the secret list cannot be loaded
+    /// AND no prior list is cached to fall back on (e.g. credd down at cold
+    /// start). `true` (the default) fails OPEN: persist the message and log,
+    /// avoiding a hard dependency on credd for message writes (credd is
+    /// optional, and scrub_secrets defaults on). `false` fails CLOSED: reject
+    /// the write so a fault cannot persist an unscrubbed secret -- appropriate
+    /// for deployments that always run credd. Note: a transient outage with a
+    /// warm cache still scrubs using the last-known secret list, so this policy
+    /// only governs the cold-cache case.
+    pub scrub_fail_open: bool,
 }
 
 /// Default session streaming configuration.
@@ -300,6 +317,10 @@ impl Default for SessionsConfig {
             buffer_size: 4096,
             stream_timeout_secs: 1800,
             scrub_secrets: true,
+            // Fail open by default in the cold-cache case so message writes do
+            // not hard-depend on credd (which is optional). A warm cache still
+            // scrubs via the stale-list fallback; strict deployments set false.
+            scrub_fail_open: true,
         }
     }
 }
@@ -444,6 +465,9 @@ impl EidolonConfig {
         }
         if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_SCRUB_SECRETS") {
             c.sessions.scrub_secrets = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
+        if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_SCRUB_FAIL_OPEN") {
+            c.sessions.scrub_fail_open = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
         if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_MAX_TOKENS") {
             if let Ok(n) = v.parse() {
@@ -622,6 +646,21 @@ pub struct Config {
     /// the TCP peer address is always used.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Source networks exempt from BOTH the pre-auth per-IP limit and the
+    /// per-user limit. Entries are bare IPs ("10.50.0.1") or CIDRs
+    /// ("10.50.0.0/24", "127.0.0.0/8", "::1"). Empty (default) means no
+    /// exemption, so any public deployment behaves exactly as before.
+    ///
+    /// Intended for trusted local/mesh callers -- e.g. a VPN-only server where
+    /// a local multi-agent fleet shares one source IP and would otherwise
+    /// throttle itself against limits meant to stop internet brute-force.
+    #[serde(default)]
+    pub rate_limit_exempt_cidrs: Vec<String>,
+    /// Pre-authentication per-IP rate limit (requests per minute). High enough
+    /// for bursty MCP sessions while still blocking brute-force auth attempts.
+    /// Override via `KLEOS_PREAUTH_IP_RPM`.
+    #[serde(default = "default_preauth_ip_rpm")]
+    pub preauth_ip_rpm: i64,
     /// Optional server reference table shown in living prompts.
     #[serde(default)]
     pub servers: Vec<ServerEntry>,
@@ -650,7 +689,11 @@ impl Default for Config {
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
             reranker_enabled: true,
-            reranker_top_k: 12,
+            // SEC-recall-2.1: the reranker now sees a candidate pool sized to this window
+            // (see hybrid_search_reranked), so a larger value lets the cross-encoder pull
+            // more buried-but-relevant memories into the final top-k. Tunable via
+            // RERANKER_TOP_K env.
+            reranker_top_k: 24,
             reranker_model_dir: None,
             data_dir: dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -695,6 +738,8 @@ impl Default for Config {
             encryption: EncryptionConfig::default(),
             eidolon: EidolonConfig::default(),
             trusted_proxies: Vec::new(),
+            rate_limit_exempt_cidrs: Vec::new(),
+            preauth_ip_rpm: default_preauth_ip_rpm(),
             servers: Vec::new(),
             safety: SafetyConfig::default(),
         }
@@ -905,6 +950,19 @@ impl Config {
                     config.vector_dimensions
                 ),
             }
+        }
+        // Vector safety: the embedder output dimension and the vector-store schema
+        // dimension must match. A mismatch otherwise surfaces only later as a runtime
+        // InvalidInput that silently drops vectors from the index. Warn loudly at load so
+        // the misconfiguration is visible immediately rather than as missing recall.
+        if config.embedding_dim != config.vector_dimensions {
+            tracing::warn!(
+                "embedding_dim ({}) != vector_dimensions ({}); embeddings will fail to \
+                 index and semantic recall will silently degrade. Set EMBEDDING_DIM and \
+                 VECTOR_DIMENSIONS to the same value.",
+                config.embedding_dim,
+                config.vector_dimensions
+            );
         }
         if let Ok(v) = crate::kleos_env("USE_LANCE_INDEX") {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
@@ -1174,8 +1232,58 @@ impl Config {
                 tracing::info!("trusted proxies configured: {:?}", config.trusted_proxies);
             }
         }
+        // Source networks (bare IPs or CIDRs) exempt from rate limiting. Lets a
+        // trusted local/mesh agent fleet avoid throttling itself.
+        if let Ok(v) = crate::kleos_env("RATE_LIMIT_EXEMPT_CIDRS") {
+            config.rate_limit_exempt_cidrs = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !config.rate_limit_exempt_cidrs.is_empty() {
+                tracing::info!(
+                    "rate-limit exempt CIDRs configured: {:?}",
+                    config.rate_limit_exempt_cidrs
+                );
+            }
+        }
+        if let Ok(v) = crate::kleos_env("PREAUTH_IP_RPM") {
+            match v.trim().parse::<i64>() {
+                Ok(n) if n > 0 => config.preauth_ip_rpm = n,
+                _ => tracing::warn!(
+                    "ignoring invalid KLEOS_PREAUTH_IP_RPM={:?} (must be a positive integer)",
+                    v
+                ),
+            }
+        }
         config.eidolon = config.eidolon.apply_env();
         config
+    }
+
+    /// Returns true when `ip` (a resolved client-IP string) falls within any
+    /// configured `rate_limit_exempt_cidrs` entry.
+    ///
+    /// Entries may be bare IPs ("10.50.0.1") or CIDRs ("10.50.0.0/24").
+    /// Unparseable entries and unparseable inputs never match, so a
+    /// misconfigured CIDR fails closed (no exemption granted) rather than
+    /// silently exempting everything.
+    pub fn is_rate_limit_exempt(&self, ip: &str) -> bool {
+        if self.rate_limit_exempt_cidrs.is_empty() {
+            return false;
+        }
+        let addr: std::net::IpAddr = match ip.parse() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        self.rate_limit_exempt_cidrs.iter().any(|entry| {
+            if let Ok(net) = entry.parse::<ipnet::IpNet>() {
+                net.contains(&addr)
+            } else if let Ok(single) = entry.parse::<std::net::IpAddr>() {
+                single == addr
+            } else {
+                false
+            }
+        })
     }
 
     /// Returns the resolved model directory for a given model name.
@@ -1218,6 +1326,51 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// Empty exempt list (the default) never exempts anyone -- preserving the
+    /// pre-existing behaviour for public deployments.
+    #[test]
+    fn rate_limit_exempt_empty_never_matches() {
+        let cfg = Config::default();
+        assert!(cfg.rate_limit_exempt_cidrs.is_empty());
+        assert!(!cfg.is_rate_limit_exempt("10.50.0.4"));
+        assert!(!cfg.is_rate_limit_exempt("127.0.0.1"));
+    }
+
+    /// CIDR entries match addresses inside the range and reject those outside.
+    #[test]
+    fn rate_limit_exempt_cidr_and_bare_ip() {
+        let cfg = Config {
+            rate_limit_exempt_cidrs: vec![
+                "127.0.0.0/8".to_string(),
+                "10.50.0.0/24".to_string(),
+                "::1".to_string(), // bare IPv6 loopback (no prefix)
+            ],
+            ..Config::default()
+        };
+        // Loopback + mesh members are exempt.
+        assert!(cfg.is_rate_limit_exempt("127.0.0.1"));
+        assert!(cfg.is_rate_limit_exempt("10.50.0.4"));
+        assert!(cfg.is_rate_limit_exempt("10.50.0.6"));
+        assert!(cfg.is_rate_limit_exempt("::1"));
+        // Outside the configured ranges -- not exempt.
+        assert!(!cfg.is_rate_limit_exempt("10.50.1.1"));
+        assert!(!cfg.is_rate_limit_exempt("203.0.113.9"));
+    }
+
+    /// Garbage CIDR/IP inputs fail closed (never exempt) instead of panicking
+    /// or matching everything.
+    #[test]
+    fn rate_limit_exempt_invalid_fails_closed() {
+        let mut cfg = Config {
+            rate_limit_exempt_cidrs: vec!["not-an-ip".to_string(), "10.0.0.0/99".to_string()],
+            ..Config::default()
+        };
+        assert!(!cfg.is_rate_limit_exempt("10.0.0.1"));
+        // A non-parseable client IP is never exempt regardless of config.
+        cfg.rate_limit_exempt_cidrs = vec!["0.0.0.0/0".to_string()];
+        assert!(!cfg.is_rate_limit_exempt("garbage"));
+    }
+
     /// Runs a test body with credential-authority env vars isolated.
     fn with_credential_authority_env(test: impl FnOnce()) {
         let old_phylaxd = std::env::var("PHYLAXD_URL").ok();
@@ -1256,6 +1409,9 @@ mod tests {
         assert_eq!(c.sessions.max_concurrent, 64);
         assert_eq!(c.sessions.buffer_size, 4096);
         assert!(c.sessions.scrub_secrets);
+        // Cold-cache scrub policy defaults to fail-open so message writes do
+        // not hard-depend on credd; a warm cache still scrubs via stale fallback.
+        assert!(c.sessions.scrub_fail_open);
         assert_eq!(c.prompt.default_max_tokens, 4000);
         assert_eq!(c.prompt.max_tokens_cap, 128000);
         assert!(c.prompt.default_include_memories);

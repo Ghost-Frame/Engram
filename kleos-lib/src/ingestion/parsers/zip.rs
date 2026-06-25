@@ -76,8 +76,6 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
             None => continue,
         };
 
-        aggregate_bytes = aggregate_bytes.saturating_add(uncompressed_size);
-
         // Read the entry bytes
         let data = {
             let mut entry = archive.by_index(i).map_err(|e| {
@@ -95,6 +93,23 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
                 })?;
             buf
         };
+
+        // Enforce the aggregate cap on the bytes we ACTUALLY decompressed, not
+        // the central-directory uncompressed_size. A malicious archive can
+        // declare 0 (or any understated size) per entry while each entry still
+        // streams up to MAX_ZIP_ENTRY_SIZE real bytes, so trusting the declared
+        // size let the aggregate cap be bypassed entirely. Once the real total
+        // exceeds the limit, stop processing the archive.
+        aggregate_bytes = aggregate_bytes.saturating_add(data.len() as u64);
+        if aggregate_bytes > MAX_ZIP_AGGREGATE_SIZE_U64 {
+            tracing::warn!(
+                "ZIP: aggregate uncompressed size {} exceeded limit {} after reading {}; stopping",
+                aggregate_bytes,
+                MAX_ZIP_AGGREGATE_SIZE_U64,
+                name
+            );
+            break;
+        }
 
         // Dispatch to the correct parser
         let result = match format {
@@ -220,6 +235,32 @@ mod tests {
         assert_eq!(format_from_ext(".md"), Some(SupportedFormat::PlainText));
         assert_eq!(format_from_ext(".zip"), None);
         assert_eq!(format_from_ext(".exe"), None);
+    }
+
+    /// A normal multi-entry archive still parses every text entry after the
+    /// aggregate accounting switched from the declared central-directory size
+    /// to the bytes actually decompressed. Regression for the happy path of
+    /// the zip-bomb aggregate-guard fix.
+    #[test]
+    fn parse_reads_honest_multi_entry_archive() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::write::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("a.md", opts).expect("start a.md");
+            zw.write_all(b"alpha content").expect("write a.md");
+            zw.start_file("b.txt", opts).expect("start b.txt");
+            zw.write_all(b"beta content").expect("write b.txt");
+            zw.finish().expect("finish archive");
+        }
+
+        let docs = parse(&buf).expect("parse archive");
+        assert_eq!(docs.len(), 2, "both honest text entries should parse");
+        let sources: Vec<&str> = docs.iter().map(|d| d.source.as_str()).collect();
+        assert!(sources.contains(&"a.md"), "a.md missing: {sources:?}");
+        assert!(sources.contains(&"b.txt"), "b.txt missing: {sources:?}");
     }
 
     #[test]

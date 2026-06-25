@@ -19,8 +19,12 @@ pub struct AccessPolicy {
     pub secret_name: Option<String>,
     /// Whether approval is required for matching secrets.
     pub require_approval: bool,
-    /// Which resolve modes are allowed (text, proxy, raw).
+    /// Which resolve modes are allowed (text, proxy, raw, exec, verify,
+    /// sign, derive).
     pub allowed_modes: Vec<String>,
+    /// Absolute argv[0] paths exec mode may spawn. None = exec never
+    /// allowed by this policy, even when allowed_modes names "exec".
+    pub exec_allowlist: Option<Vec<String>>,
     /// When the policy was created.
     pub created_at: String,
 }
@@ -36,6 +40,7 @@ impl AccessPolicy {
             "secret_name": self.secret_name,
             "require_approval": self.require_approval,
             "allowed_modes": self.allowed_modes,
+            "exec_allowlist": self.exec_allowlist,
             "created_at": self.created_at,
         })
     }
@@ -58,7 +63,7 @@ pub async fn find_matching_policy(
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, user_id, namespace, category, secret_name,
-                    require_approval, allowed_modes, created_at
+                    require_approval, allowed_modes, created_at, exec_allowlist
              FROM phylax_access_policies
              WHERE user_id = ?1 AND namespace = ?2
                AND (category IS NULL OR category = ?3)
@@ -78,6 +83,9 @@ pub async fn find_matching_policy(
 }
 
 /// Create a new access policy.
+// Every column of the policy row is an explicit parameter; a builder would
+// add ceremony without removing the coupling to the schema.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_policy(
     db: &Database,
     user_id: i64,
@@ -86,12 +94,15 @@ pub async fn create_policy(
     secret_name: Option<&str>,
     require_approval: bool,
     allowed_modes: &[String],
+    exec_allowlist: Option<&[String]>,
 ) -> Result<AccessPolicy> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let ns = namespace.to_string();
     let cat = category.map(|s| s.to_string());
     let sec = secret_name.map(|s| s.to_string());
     let modes_json = serde_json::to_string(allowed_modes).unwrap_or_default();
+    let exec_json = exec_allowlist.map(|a| serde_json::to_string(a).unwrap_or_default());
+    let exec_json2 = exec_json.clone();
     let now2 = now.clone();
 
     let id = db
@@ -99,8 +110,8 @@ pub async fn create_policy(
             conn.execute(
                 "INSERT INTO phylax_access_policies
                  (user_id, namespace, category, secret_name,
-                  require_approval, allowed_modes, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                  require_approval, allowed_modes, created_at, exec_allowlist)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     user_id,
                     ns,
@@ -108,7 +119,8 @@ pub async fn create_policy(
                     sec,
                     require_approval as i32,
                     modes_json,
-                    now2
+                    now2,
+                    exec_json2
                 ],
             )?;
             Ok(conn.last_insert_rowid())
@@ -124,6 +136,7 @@ pub async fn create_policy(
         secret_name: secret_name.map(|s| s.to_string()),
         require_approval,
         allowed_modes: allowed_modes.to_vec(),
+        exec_allowlist: exec_allowlist.map(|a| a.to_vec()),
         created_at: now,
     })
 }
@@ -133,7 +146,7 @@ pub async fn list_policies(db: &Database, user_id: i64) -> Result<Vec<AccessPoli
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, user_id, namespace, category, secret_name,
-                    require_approval, allowed_modes, created_at
+                    require_approval, allowed_modes, created_at, exec_allowlist
              FROM phylax_access_policies
              WHERE user_id = ?1
              ORDER BY namespace, category, secret_name",
@@ -151,15 +164,17 @@ pub async fn update_policy(
     id: i64,
     require_approval: bool,
     allowed_modes: &[String],
+    exec_allowlist: Option<&[String]>,
 ) -> Result<()> {
     let modes_json = serde_json::to_string(allowed_modes).unwrap_or_default();
+    let exec_json = exec_allowlist.map(|a| serde_json::to_string(a).unwrap_or_default());
     let affected = db
         .write(move |conn| {
             Ok(conn.execute(
                 "UPDATE phylax_access_policies
-                 SET require_approval = ?1, allowed_modes = ?2
-                 WHERE id = ?3",
-                params![require_approval as i32, modes_json, id],
+                 SET require_approval = ?1, allowed_modes = ?2, exec_allowlist = ?3
+                 WHERE id = ?4",
+                params![require_approval as i32, modes_json, exec_json, id],
             )?)
         })
         .await
@@ -194,6 +209,11 @@ fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccessPolicy> {
     let modes_json: String = row.get(6)?;
     let allowed_modes: Vec<String> =
         serde_json::from_str(&modes_json).unwrap_or_else(|_| vec!["text".into()]);
+    // An unparseable allowlist degrades to None (exec denied), never to a
+    // broader permission.
+    let exec_allowlist: Option<Vec<String>> = row
+        .get::<_, Option<String>>(8)?
+        .and_then(|j| serde_json::from_str(&j).ok());
     Ok(AccessPolicy {
         id: row.get(0)?,
         user_id: row.get(1)?,
@@ -202,6 +222,7 @@ fn row_to_policy(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccessPolicy> {
         secret_name: row.get(4)?,
         require_approval: row.get::<_, i32>(5)? != 0,
         allowed_modes,
+        exec_allowlist,
         created_at: row.get(7)?,
     })
 }

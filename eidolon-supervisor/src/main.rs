@@ -91,16 +91,43 @@ fn load_rules() -> Vec<checks::Rule> {
                 .join("supervisor.json")
         });
 
-    if config_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            if let Ok(rules) = serde_json::from_str::<Vec<checks::Rule>>(&content) {
-                return rules;
+    let rules = if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => match serde_json::from_str::<Vec<checks::Rule>>(&content) {
+                Ok(rules) => rules,
+                Err(e) => {
+                    tracing::warn!(path = %config_path.display(), error = %e, "failed to parse rules, using defaults");
+                    checks::default_rules()
+                }
+            },
+            Err(e) => {
+                // A read failure previously fell through to defaults silently,
+                // hiding a misconfigured/inaccessible rules file.
+                tracing::warn!(path = %config_path.display(), error = %e, "failed to read rules file, using defaults");
+                checks::default_rules()
             }
-            tracing::warn!(path = %config_path.display(), "failed to parse rules, using defaults");
+        }
+    } else {
+        checks::default_rules()
+    };
+
+    // Surface invalid RuleMatch regexes at load time. An uncompilable pattern
+    // silently never matches (a security-monitoring blind spot), so warn loudly
+    // once here rather than failing quietly on every log entry.
+    for rule in &rules {
+        if matches!(rule.check_type, checks::CheckType::RuleMatch) {
+            if let Err(e) = regex::Regex::new(&rule.pattern) {
+                tracing::warn!(
+                    rule_id = %rule.id,
+                    pattern = %rule.pattern,
+                    error = %e,
+                    "supervisor rule has an invalid regex and will never match"
+                );
+            }
         }
     }
 
-    checks::default_rules()
+    rules
 }
 
 fn home_dir() -> Option<PathBuf> {

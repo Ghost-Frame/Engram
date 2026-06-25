@@ -488,8 +488,16 @@ pub async fn get_group(db: &Database, id: i64, user_id: i64) -> Result<Group> {
 /// listing scoped to the caller in single-DB mode.
 #[tracing::instrument(skip(db), fields(group_id, user_id))]
 pub async fn get_group_members(db: &Database, group_id: i64, user_id: i64) -> Result<Vec<Agent>> {
+    // Qualify EVERY column with the `a.` alias: `a.{AGENT_COLUMNS}` only
+    // prefixes the first column, leaving the rest (e.g. created_at, which
+    // soma_agent_groups also defines) ambiguous across the join.
+    let cols = AGENT_COLUMNS
+        .split(", ")
+        .map(|c| format!("a.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
-        "SELECT a.{AGENT_COLUMNS} FROM soma_agents a
+        "SELECT {cols} FROM soma_agents a
          INNER JOIN soma_agent_groups g ON g.agent_id = a.id
          WHERE g.group_id = ?1 AND a.user_id = ?2
          ORDER BY a.name ASC"
@@ -516,9 +524,16 @@ pub async fn add_agent_to_group(
     user_id: i64,
 ) -> Result<()> {
     db.write(move |conn| {
+        // soma_agent_groups has no user_id column by design (it joins to
+        // soma_agents/soma_groups which own tenant attribution). Guard the
+        // INSERT so membership is only created when the caller owns BOTH the
+        // agent and the group, which enforces tenant isolation in monolith
+        // mode and is a no-op within a single-tenant shard.
         conn.execute(
-            "INSERT OR IGNORE INTO soma_agent_groups (agent_id, group_id, user_id)
-             VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO soma_agent_groups (agent_id, group_id)
+             SELECT ?1, ?2
+             WHERE EXISTS (SELECT 1 FROM soma_agents WHERE id = ?1 AND user_id = ?3)
+               AND EXISTS (SELECT 1 FROM soma_groups WHERE id = ?2 AND user_id = ?3)",
             rusqlite::params![agent_id, group_id, user_id],
         )?;
         Ok(())
@@ -539,7 +554,8 @@ pub async fn remove_agent_from_group(
         .write(move |conn| {
             Ok(conn.execute(
                 "DELETE FROM soma_agent_groups
-                 WHERE agent_id = ?1 AND group_id = ?2 AND user_id = ?3",
+                 WHERE agent_id = ?1 AND group_id = ?2
+                   AND EXISTS (SELECT 1 FROM soma_groups WHERE id = ?2 AND user_id = ?3)",
                 rusqlite::params![agent_id, group_id, user_id],
             )?)
         })
@@ -860,7 +876,9 @@ pub async fn delete_group(db: &Database, group_id: i64, user_id: i64) -> Result<
         .write(move |conn| {
             let tx = conn.transaction()?;
             tx.execute(
-                "DELETE FROM soma_agent_groups WHERE group_id = ?1 AND user_id = ?2",
+                "DELETE FROM soma_agent_groups
+                 WHERE group_id = ?1
+                   AND EXISTS (SELECT 1 FROM soma_groups WHERE id = ?1 AND user_id = ?2)",
                 rusqlite::params![group_id, user_id],
             )?;
             let n = tx.execute(
@@ -991,5 +1009,64 @@ mod tests {
         .unwrap();
         let other = list_agents(&db, 2, None, None, 100).await.unwrap();
         assert!(other.is_empty());
+    }
+
+    /// Group membership add/remove/delete must work (the junction has no
+    /// user_id column, so binding one used to fail at prepare time, so every
+    /// group-mutation endpoint was broken) AND must stay tenant-scoped: a
+    /// caller cannot enroll an agent into, or out of, a group it does not own.
+    #[tokio::test]
+    async fn group_membership_lifecycle_and_isolation() {
+        let db = setup().await;
+        // user 1 owns agent a1 + group g1; user 2 owns group g2.
+        let a1 = register_agent(
+            &db,
+            RegisterAgentRequest {
+                name: "a1".into(),
+                type_: "llm".into(),
+                description: None,
+                capabilities: None,
+                config: None,
+                user_id: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        let g1 = create_group(&db, "g1".into(), None, 1).await.unwrap();
+        let g2 = create_group(&db, "g2".into(), None, 2).await.unwrap();
+
+        // Happy path: owner enrolls own agent -> membership visible.
+        add_agent_to_group(&db, a1.id, g1.id, 1).await.unwrap();
+        let members = get_group_members(&db, g1.id, 1).await.unwrap();
+        assert_eq!(members.len(), 1, "owner add should create membership");
+        assert_eq!(members[0].id, a1.id);
+
+        // Cross-tenant: user 2 cannot enroll user 1's agent into user 2's group
+        // (agent not owned by caller); guarded INSERT is a no-op.
+        add_agent_to_group(&db, a1.id, g2.id, 2).await.unwrap();
+        assert!(
+            get_group_members(&db, g2.id, 2).await.unwrap().is_empty(),
+            "cross-tenant enroll must not create membership"
+        );
+
+        // Cross-tenant remove: user 2 cannot evict from user 1's group.
+        assert!(
+            !remove_agent_from_group(&db, a1.id, g1.id, 2).await.unwrap(),
+            "non-owner remove must report no deletion"
+        );
+        assert_eq!(get_group_members(&db, g1.id, 1).await.unwrap().len(), 1);
+
+        // Owner remove works.
+        assert!(remove_agent_from_group(&db, a1.id, g1.id, 1).await.unwrap());
+        assert!(get_group_members(&db, g1.id, 1).await.unwrap().is_empty());
+
+        // delete_group on an owned group succeeds; non-owner delete is a no-op.
+        add_agent_to_group(&db, a1.id, g1.id, 1).await.unwrap();
+        assert!(
+            !delete_group(&db, g1.id, 2).await.unwrap(),
+            "non-owner delete"
+        );
+        assert!(delete_group(&db, g1.id, 1).await.unwrap(), "owner delete");
+        assert!(get_group(&db, g1.id, 1).await.is_err(), "group gone");
     }
 }

@@ -45,7 +45,7 @@ pub use vector_sync::{
 
 // -- Constants ---
 
-use crate::validation::MAX_CONTENT_SIZE;
+use crate::validation::{MAX_CONTENT_SIZE, MAX_SEARCH_LIMIT};
 
 // -- Helpers ---
 
@@ -240,8 +240,26 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
 }
 
 /// Encode a memory id and chunk index into the LanceDB chunk key space.
+///
+/// Guards the multiply so a pathologically large `memory_id` surfaces loudly
+/// rather than silently wrapping into another memory's key space (data
+/// corruption). Only reachable around i64::MAX/1000 memories, so this is
+/// defensive; the clamp keeps the value bounded if it ever fires.
 fn chunk_lance_key(memory_id: i64, chunk_idx: usize) -> i64 {
-    memory_id * 1000 + chunk_idx as i64
+    match memory_id
+        .checked_mul(1000)
+        .and_then(|v| v.checked_add(chunk_idx as i64))
+    {
+        Some(key) => key,
+        None => {
+            tracing::error!(
+                memory_id,
+                chunk_idx,
+                "chunk_lance_key overflow; clamping to i64::MAX"
+            );
+            i64::MAX
+        }
+    }
 }
 
 /// Decode a LanceDB chunk key back to the owning memory id.
@@ -446,17 +464,27 @@ pub async fn store(
     // 2. Compute simhash of content
     let content_hash = simhash::simhash(&content);
 
-    // 3. Check for duplicates within the owner's own memories. The user_id
+    // 3. Check for near-duplicates within the owner's own memories. The user_id
     // predicate keeps single-DB (shared) mode from deduping one user's write
     // against another user's content (and from leaking the other id back).
-    let dup_sql = "SELECT id, content FROM memories \
-        WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
-        ORDER BY id DESC LIMIT 1000";
-
-    let duplicate = db
-        .read(move |conn| {
+    //
+    // Two scoping rules avoid collapsing distinct writes:
+    //   - An explicit version update (parent_memory_id set) is a deliberate re-store
+    //     of evolving content and must NOT be short-circuited as a duplicate of its
+    //     own predecessor; skip the scan entirely.
+    //   - Scope the scan to the same space (`space_id IS ?2`, IS so NULL matches NULL)
+    //     so a write in one space is not deduped against an identical write in another.
+    let duplicate = if req.parent_memory_id.is_some() {
+        None
+    } else {
+        let dup_space_id = req.space_id;
+        let dup_sql = "SELECT id, content FROM memories \
+            WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+              AND space_id IS ?2 \
+            ORDER BY id DESC LIMIT 1000";
+        db.read(move |conn| {
             let mut stmt = conn.prepare(dup_sql)?;
-            let mut rows = stmt.query(rusqlite::params![user_id])?;
+            let mut rows = stmt.query(rusqlite::params![user_id, dup_space_id])?;
             while let Some(row) = rows.next()? {
                 let existing_id: i64 = row.get(0)?;
                 let existing_content: String = row.get(1)?;
@@ -467,7 +495,8 @@ pub async fn store(
             }
             Ok(None)
         })
-        .await?;
+        .await?
+    };
 
     if let Some(existing_id) = duplicate {
         return Ok(StoreResult {
@@ -813,6 +842,165 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
         Ok(memories)
     })
     .await
+}
+
+/// List the owner's static (pinned) memories, ordered by importance then recency.
+///
+/// Recall must always surface pinned/static memories regardless of how recently they
+/// were written. The previous recall path listed the newest N rows and filtered
+/// `is_static` afterwards, so any pinned memory outside that recency window silently
+/// vanished. This query selects on `is_static = 1` directly and orders by importance so
+/// the most important pinned facts come first. Owner scoping and visibility predicates
+/// mirror `list` (SEC-C3: owner filter is unconditional).
+pub async fn list_static(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+    limit: usize,
+) -> Result<Vec<Memory>> {
+    // Sequential parameters; the space branch adds `space_id = ?2` and shifts LIMIT to ?3.
+    let sql = if space_id.is_some() {
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+               AND space_id = ?2 \
+             ORDER BY importance DESC, created_at DESC LIMIT ?3",
+            cols = MEMORY_COLUMNS,
+        )
+    } else {
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+             ORDER BY importance DESC, created_at DESC LIMIT ?2",
+            cols = MEMORY_COLUMNS,
+        )
+    };
+    let cap = limit;
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let mut memories = Vec::with_capacity(cap);
+        let mut rows = match space_id {
+            Some(sid) => stmt.query(rusqlite::params![user_id, sid, limit as i64])?,
+            None => stmt.query(rusqlite::params![user_id, limit as i64])?,
+        };
+        while let Some(row) = rows.next()? {
+            memories.push(row_to_memory(row, user_id)?);
+        }
+        Ok(memories)
+    })
+    .await
+}
+
+/// List the owner's high-importance memories, ordered by importance then id.
+///
+/// The recall "important" tier must rank by importance, not recency. The previous path
+/// listed the newest N rows then filtered `importance >= min`, so a high-importance
+/// memory outside the recency window never surfaced; recency outranked importance,
+/// inverting the intended priority. This query selects on `importance >= min` directly
+/// and orders by importance. Owner scoping and visibility predicates mirror `list`.
+pub async fn list_important(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+    min_importance: i32,
+    limit: usize,
+) -> Result<Vec<Memory>> {
+    // Sequential parameters; the space branch adds `space_id = ?3` and shifts LIMIT to ?4.
+    let sql = if space_id.is_some() {
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
+               AND space_id = ?3 \
+             ORDER BY importance DESC, id DESC LIMIT ?4",
+            cols = MEMORY_COLUMNS,
+        )
+    } else {
+        format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
+             ORDER BY importance DESC, id DESC LIMIT ?3",
+            cols = MEMORY_COLUMNS,
+        )
+    };
+    let cap = limit;
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let mut memories = Vec::with_capacity(cap);
+        let mut rows = match space_id {
+            Some(sid) => stmt.query(rusqlite::params![
+                user_id,
+                min_importance,
+                sid,
+                limit as i64
+            ])?,
+            None => stmt.query(rusqlite::params![user_id, min_importance, limit as i64])?,
+        };
+        while let Some(row) = rows.next()? {
+            memories.push(row_to_memory(row, user_id)?);
+        }
+        Ok(memories)
+    })
+    .await
+}
+
+/// Compose recall tiers under `limit`, reserving up to `min_semantic_slots` for the
+/// query-relevant semantic tier so the always-on static/important tiers cannot starve it.
+///
+/// Emission order: always-on rows (static then important) fill up to `limit - reserve`, then
+/// semantic rows fill the reserved space, then any always-on rows the cap deferred backfill
+/// the remaining slots (in case semantic came up short), then recent filler closes out. The
+/// reserve is capped at the number of semantic items actually available, so no slot is wasted
+/// when the query produced few or no semantic hits. Inputs are assumed already deduplicated
+/// across tiers by the caller; this function only orders and truncates. Generic over the row
+/// payload so callers can compose either domain rows or serialized values.
+pub fn compose_recall_tiers<T>(
+    static_items: Vec<T>,
+    important_items: Vec<T>,
+    semantic_items: Vec<T>,
+    recent_items: Vec<T>,
+    limit: usize,
+    min_semantic_slots: usize,
+) -> Vec<T> {
+    // Reserve only as many semantic slots as there are semantic items to fill them.
+    let semantic_reserve = semantic_items.len().min(min_semantic_slots);
+    let always_on_cap = limit.saturating_sub(semantic_reserve);
+    let mut output: Vec<T> = Vec::with_capacity(limit);
+    let mut deferred_always_on: Vec<T> = Vec::new();
+
+    // Always-on rows first, but only up to the cap that protects the semantic reserve.
+    for item in static_items.into_iter().chain(important_items) {
+        if output.len() < always_on_cap {
+            output.push(item);
+        } else {
+            deferred_always_on.push(item);
+        }
+    }
+    // Semantic (query-relevant) rows fill the reserved space next.
+    for item in semantic_items {
+        if output.len() >= limit {
+            break;
+        }
+        output.push(item);
+    }
+    // Backfill always-on rows the cap deferred, in case semantic was short.
+    for item in deferred_always_on {
+        if output.len() >= limit {
+            break;
+        }
+        output.push(item);
+    }
+    // Recent filler closes out any remaining slots.
+    for item in recent_items {
+        if output.len() >= limit {
+            break;
+        }
+        output.push(item);
+    }
+    output
 }
 
 /// Soft-delete an owned memory by marking it forgotten.
@@ -1525,6 +1713,11 @@ pub async fn search_by_tags(
     match_all: bool,
     limit: usize,
 ) -> Result<Vec<Memory>> {
+    // MEM-4: cap the caller-supplied limit before it is interpolated into the
+    // SQL LIMIT clause (and used as the result-Vec capacity hint), matching the
+    // clamp every other search entry point applies. An uncapped limit lets a
+    // caller request an unbounded result set and exhaust memory.
+    let limit = limit.min(MAX_SEARCH_LIMIT);
     let normalized: Vec<String> = tags
         .iter()
         .map(|tag| tag.trim().to_lowercase())

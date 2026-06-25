@@ -9,6 +9,12 @@ use tokio_util::sync::CancellationToken;
 use crate::handler::handle_connection;
 use crate::provider::KeyProvider;
 
+/// Upper bound on concurrent connection handlers. Each handler can buffer up to
+/// a 10 MiB message, so without a cap a misbehaving (same-user) client could
+/// drive memory exhaustion by opening many connections. The socket is
+/// owner-only (0600), so this is defense in depth against a local foot-gun.
+const MAX_CONCURRENT_CONNS: usize = 64;
+
 /// The SSH agent server.
 ///
 /// Binds to a Unix socket (Linux/macOS) or Windows named pipe and serves
@@ -64,6 +70,8 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
 
         log::info!("SSH agent listening on {}", self.path);
 
+        let conn_limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNS));
+
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -73,10 +81,22 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let provider = Arc::clone(&self.provider);
-                            tokio::spawn(async move {
-                                handle_connection(stream, provider.as_ref()).await;
-                            });
+                            // Bound concurrent handlers; drop the connection when
+                            // at the limit rather than spawning unboundedly.
+                            match Arc::clone(&conn_limit).try_acquire_owned() {
+                                Ok(permit) => {
+                                    let provider = Arc::clone(&self.provider);
+                                    tokio::spawn(async move {
+                                        let _permit = permit;
+                                        handle_connection(stream, provider.as_ref()).await;
+                                    });
+                                }
+                                Err(_) => {
+                                    log::warn!(
+                                        "SSH agent at connection limit ({MAX_CONCURRENT_CONNS}); dropping connection"
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             log::warn!("SSH agent accept error: {e}");
@@ -98,6 +118,8 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
 
         log::info!("SSH agent listening on {}", self.path);
 
+        let conn_limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNS));
+
         loop {
             // Create a new pipe instance for each connection.
             let pipe = ServerOptions::new()
@@ -112,10 +134,22 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
                 connect_result = pipe.connect() => {
                     match connect_result {
                         Ok(()) => {
-                            let provider = Arc::clone(&self.provider);
-                            tokio::spawn(async move {
-                                handle_connection(pipe, provider.as_ref()).await;
-                            });
+                            // Bound concurrent handlers; drop the connection when
+                            // at the limit rather than spawning unboundedly.
+                            match Arc::clone(&conn_limit).try_acquire_owned() {
+                                Ok(permit) => {
+                                    let provider = Arc::clone(&self.provider);
+                                    tokio::spawn(async move {
+                                        let _permit = permit;
+                                        handle_connection(pipe, provider.as_ref()).await;
+                                    });
+                                }
+                                Err(_) => {
+                                    log::warn!(
+                                        "SSH agent at connection limit ({MAX_CONCURRENT_CONNS}); dropping connection"
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             log::warn!("SSH agent pipe connect error: {e}");

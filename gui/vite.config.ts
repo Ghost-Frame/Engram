@@ -20,6 +20,11 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:4200',
         rewrite: (path) => path.replace(/^\/api/, '')
+      },
+      // The cookie-login endpoint lives at the server root (not under /api), so
+      // proxy it through in dev so the auth flow works the same as production.
+      '/gui': {
+        target: 'http://localhost:4200'
       }
     }
   },

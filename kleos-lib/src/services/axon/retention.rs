@@ -20,33 +20,48 @@ use crate::Result;
 /// transactions and to minimise lock contention.
 pub async fn prune_expired_events(db: &Database) -> Result<usize> {
     db.write(move |conn| {
-        // Phase 1: collect all (name, retain_hours) pairs into a Vec so we can
-        // drop the statement before opening any DELETE statements. rusqlite
-        // does not allow two active statements on the same connection.
-        let channels: Vec<(String, i64)> = {
+        // Phase 1: map each registered channel to its retain_hours. rusqlite
+        // does not allow two active statements on the same connection, so each
+        // query is fully drained into an owned collection before the next.
+        let configured: std::collections::HashMap<String, i64> = {
             let mut stmt = conn.prepare("SELECT name, retain_hours FROM axon_channels")?;
-
             let rows = stmt.query_map([], |row| {
-                let name: String = row.get(0)?;
-                let retain_hours: i64 = row.get(1)?;
-                Ok((name, retain_hours))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })?;
+            let mut map = std::collections::HashMap::new();
+            for row in rows {
+                let (name, hours) = row?;
+                map.insert(name, hours);
+            }
+            map
+        };
 
+        // Phase 1b: enumerate the channels that actually have events. Events can
+        // be published to a channel that was never registered via ensure_channel
+        // (publish_event does no existence check), and those would otherwise grow
+        // unbounded because the configured-channel loop never matched them.
+        let event_channels: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT DISTINCT channel FROM axon_events")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             let mut collected = Vec::new();
             for row in rows {
                 collected.push(row?);
             }
             collected
-            // `stmt` is dropped here before Phase 2
         };
 
-        // Phase 2: delete expired events for each channel.
+        // Phase 2: delete expired events for each channel that has any, using the
+        // configured retention or the default window for unregistered channels.
         let mut total_deleted: usize = 0;
-        for (name, retain_hours) in channels {
+        for channel in event_channels {
+            let retain_hours = configured
+                .get(&channel)
+                .copied()
+                .unwrap_or(DEFAULT_RETAIN_HOURS);
             let interval = format!("-{} hours", retain_hours);
             let deleted = conn.execute(
                 "DELETE FROM axon_events WHERE channel = ?1 AND created_at < datetime('now', ?2)",
-                rusqlite::params![name, interval],
+                rusqlite::params![channel, interval],
             )?;
             total_deleted += deleted;
         }
@@ -55,6 +70,10 @@ pub async fn prune_expired_events(db: &Database) -> Result<usize> {
     })
     .await
 }
+
+/// Default retention window (7 days) applied to channels that have events but
+/// no `axon_channels` row -- mirrors the schema default for `retain_hours`.
+const DEFAULT_RETAIN_HOURS: i64 = 168;
 
 /// Unit tests.
 #[cfg(test)]
@@ -117,6 +136,34 @@ mod tests {
         assert_eq!(
             deleted, 0,
             "expected no events to be pruned for a fresh event"
+        );
+    }
+
+    /// An event on a channel that was never registered in axon_channels must
+    /// still be pruned via the default retention window (previously such events
+    /// grew unbounded because the prune loop only iterated registered channels).
+    #[tokio::test]
+    async fn prune_removes_old_events_on_unregistered_channel() {
+        let db = Database::connect_memory().await.expect("db");
+
+        let mut req = test_publish_req();
+        req.channel = "ad-hoc-never-registered".into();
+        let ev = publish_event(&db, req).await.expect("publish");
+
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE axon_events SET created_at = datetime('now', '-200 hours') WHERE id = ?1",
+                rusqlite::params![ev.id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("backdate");
+
+        let deleted = prune_expired_events(&db).await.expect("prune");
+        assert_eq!(
+            deleted, 1,
+            "expired event on unregistered channel must be pruned"
         );
     }
 }

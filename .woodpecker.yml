@@ -1,8 +1,15 @@
 # Woodpecker CI pipeline for Kleos
 # Runs on a self-hosted local runner (Podman backend)
 
+# Run exactly one pipeline per change: pull_request for PR branches, push only
+# on main, and tags. This avoids firing a push pipeline AND a pull_request
+# pipeline for the same PR-branch commit, which ran two full builds at once and
+# exhausted the 2-slot runner (SIGBUS in ld). See the per-step notes below.
 when:
-  - event: [push, pull_request, tag]
+  - event: pull_request
+  - event: push
+    branch: main
+  - event: tag
 
 variables:
   - &rust_image "rust:1.94-bookworm"
@@ -87,9 +94,11 @@ steps:
       - cargo build --profile release-prod -p kleos-cli -p kleos-sidecar
       - cargo build --profile release-prod --features kleos-cred/gui -p kleos-credd -p kleos-cred -p kleos-mcp
       - cargo build --profile release-prod -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      # kleos-ingest (transcript ingest daemon) + kleos-cleanup (operator junk pruner): linux-only release artifacts.
+      - cargo build --profile release-prod -p kleos-ingest -p kleos-cleanup
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kleos-ingest kleos-cleanup kr kw ke; do
           src="target/release-prod/$bin"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-linux-x64"

@@ -49,7 +49,13 @@ struct StepResult {
 fn run_step(step: &VerifyStep, timeout_secs: Option<u64>) -> Result<StepResult, ToolError> {
     // SECURITY (SEC-C1): parse command into argv and execute directly without
     // a shell. No shell injection from LLM-generated input.
-    let parts: Vec<&str> = step.command.split_whitespace().collect();
+    //
+    // FORGE-2 fix: use shlex::split instead of split_whitespace so that
+    // quoted arguments with embedded spaces are kept intact. For example,
+    // `grep "foo bar" file` must produce ["grep", "foo bar", "file"], not
+    // ["grep", "\"foo", "bar\"", "file"].
+    let parts: Vec<String> = shlex::split(&step.command)
+        .ok_or_else(|| ToolError::InvalidValue(format!("malformed command: {}", step.command)))?;
     if parts.is_empty() {
         return Err(ToolError::InvalidValue("empty command".into()));
     }
@@ -58,7 +64,7 @@ fn run_step(step: &VerifyStep, timeout_secs: Option<u64>) -> Result<StepResult, 
 
     if let Some(secs) = timeout_secs {
         // Timeout path: spawn child, wait on separate thread, kill by PID on timeout
-        let child = Command::new(parts[0])
+        let child = Command::new(&parts[0])
             .args(&parts[1..])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -101,7 +107,7 @@ fn run_step(step: &VerifyStep, timeout_secs: Option<u64>) -> Result<StepResult, 
         }
     } else {
         // No timeout: simple blocking execution
-        let output = Command::new(parts[0])
+        let output = Command::new(&parts[0])
             .args(&parts[1..])
             .output()
             .map_err(|e| ToolError::IoError(e.to_string()))?;
@@ -168,13 +174,17 @@ pub fn verify(db: &Database, input: VerifyInput) -> ToolResult {
         for r in &results {
             let id = format!("ver_{}", &Uuid::new_v4().to_string()[..8]);
             let now = Utc::now().timestamp();
+            // Clip on a char boundary: subprocess output is arbitrary bytes and
+            // a raw &s[..4096] panics when 4096 lands mid-multibyte-char.
+            let stdout_clip = clip_bytes(&r.stdout, 4096);
+            let stderr_clip = clip_bytes(&r.stderr, 4096);
             let _ = db.conn().execute(
                 "INSERT INTO verifications (id, spec_id, created_at, command, exit_code, success, duration_ms, criteria_index, stdout, stderr) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     id, sid, now, r.command, r.exit_code,
                     r.success as i32, r.duration_ms, criteria_index,
-                    &r.stdout[..r.stdout.len().min(4096)],
-                    &r.stderr[..r.stderr.len().min(4096)],
+                    stdout_clip,
+                    stderr_clip,
                 ],
             );
         }
@@ -375,4 +385,18 @@ pub fn session_diff(_db: &Database, input: SessionDiffInput) -> ToolResult {
     }));
 
     Ok(result)
+}
+
+/// Clip a string to at most `max` bytes without splitting a UTF-8 character.
+/// Subprocess output is arbitrary, so a raw byte slice can panic on a
+/// multibyte boundary; this walks back to the nearest char boundary.
+fn clip_bytes(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

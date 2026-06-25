@@ -98,4 +98,23 @@ pub mod actions {
     pub const SSH_CA_SIGN: &str = "ssh_ca_sign";
     /// An agent keypair + SSH certificate was minted by the SSH CA.
     pub const SSH_CA_MINT: &str = "ssh_ca_mint";
+    /// An agent requested a plaintext-returning resolve mode (text/raw),
+    /// which is master-only under the no-plaintext model.
+    pub const PLAINTEXT_DENIED: &str = "plaintext_mode_denied";
+    /// An agent resolve was denied because the policy layer could not rule
+    /// on it (unavailable policy store or undeterminable secret reference).
+    pub const POLICY_FAIL_CLOSED: &str = "policy_check_fail_closed";
+    /// A non-plaintext resolve mode was denied by policy (no explicit policy,
+    /// or the mode is not in the policy's allowed_modes).
+    pub const MODE_POLICY_DENIED: &str = "resolve_mode_policy_denied";
+    /// A signature was produced over a stored secret (success flag carries
+    /// the outcome; key material is never logged).
+    pub const SIGN_RESOLVED: &str = "sign_resolved";
+    /// A signature was checked against a stored secret.
+    pub const VERIFY_RESOLVED: &str = "verify_resolved";
+    /// Key material was derived from a stored secret via HKDF.
+    pub const DERIVE_RESOLVED: &str = "derive_resolved";
+    /// A command was executed with a secret injected into its environment
+    /// (argv recorded by the handler; output scrubbed before returning).
+    pub const EXEC_RESOLVED: &str = "exec_resolved";
 }

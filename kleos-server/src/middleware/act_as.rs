@@ -127,6 +127,7 @@ pub async fn act_as_middleware(
                 "shard",
                 &owner.to_string(),
                 Some(&actor.to_string()),
+                Some(actor),
                 None,
                 Some(json!({ "owner": owner, "actor": actor, "access": access })),
             )

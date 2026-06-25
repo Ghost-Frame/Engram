@@ -143,3 +143,47 @@ async fn search_with_bad_json_returns_error() {
         "expected 400 or 422 for bad JSON, got {status}"
     );
 }
+
+// GET /decay/scores and POST /decay/refresh are tenant-isolated
+#[tokio::test]
+async fn decay_scores_isolated_between_tenants() {
+    let (app, _state, _tmp) = test_app_with_sharding().await;
+    let admin_key = bootstrap_admin_key(&app).await;
+    let (_, alice_key) = common::seed_user(&app, &admin_key, "alice").await;
+    let (_, bob_key) = common::seed_user(&app, &admin_key, "bob").await;
+
+    // Alice stores a memory
+    post(
+        &app,
+        "/store",
+        &alice_key,
+        json!({ "content": "alice memory", "category": "test" }),
+    )
+    .await;
+
+    // Refresh decay for alice
+    let (status, body) = post(&app, "/decay/refresh", &alice_key, json!({})).await;
+    assert!(status.is_success(), "alice decay refresh failed: {body}");
+
+    // Bob shouldn't see alice's memories in decay scores
+    let (status, body) = common::get(&app, "/decay/scores", &bob_key).await;
+    assert!(status.is_success(), "bob decay scores list failed: {body}");
+    let memories = body["memories"].as_array().expect("memories array");
+    assert!(
+        memories.is_empty(),
+        "bob should not see alice's decay scores, got {body}"
+    );
+
+    // Alice SHOULD see her own
+    let (status, body) = common::get(&app, "/decay/scores", &alice_key).await;
+    assert!(
+        status.is_success(),
+        "alice decay scores list failed: {body}"
+    );
+    let memories = body["memories"].as_array().expect("memories array");
+    assert_eq!(
+        memories.len(),
+        1,
+        "alice should see her decay score, got {body}"
+    );
+}

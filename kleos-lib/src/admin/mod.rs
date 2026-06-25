@@ -59,10 +59,18 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
 
 #[tracing::instrument(skip(db))]
 pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
+    // Scope per-user GC to the caller: `gc(Some(uid))` must only reap that
+    // owner's rows. The arms were previously identical (the `_uid` param was
+    // dead), so a per-user GC ran an unscoped DELETE and reaped every tenant's
+    // forgotten/expired memories in shared (monolith) mode. The predicate is a
+    // no-op in a single-owner shard. `gc(None)` stays global maintenance.
     let forgotten: i64 = db
         .write(move |conn| {
-            let n = if let Some(_uid) = user_id {
-                conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])?
+            let n = if let Some(uid) = user_id {
+                conn.execute(
+                    "DELETE FROM memories WHERE is_forgotten = 1 AND user_id = ?1",
+                    rusqlite::params![uid],
+                )?
             } else {
                 conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])?
             };
@@ -72,10 +80,11 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
 
     let expired: i64 = db
         .write(move |conn| {
-            let n = if let Some(_uid) = user_id {
+            let n = if let Some(uid) = user_id {
                 conn.execute(
-                    "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
-                    [],
+                    "DELETE FROM memories WHERE forget_after IS NOT NULL \
+                     AND forget_after < datetime('now') AND user_id = ?1",
+                    rusqlite::params![uid],
                 )
                 ?
             } else {
@@ -370,6 +379,13 @@ pub async fn provision_tenant(
 /// when tenant_registry is None.
 #[tracing::instrument(skip(db))]
 pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
+    // F28 (defense-in-depth): never delete the reserved owner account, even if a
+    // caller reaches this layer directly without the route-level guard.
+    if user_id == 1 {
+        return Err(crate::EngError::Forbidden(
+            "cannot deprovision the owner account (user_id=1)".into(),
+        ));
+    }
     db.write(move |conn| {
         conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE user_id = ?1",
@@ -475,24 +491,30 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
 
 #[tracing::instrument(skip(db))]
 pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport> {
-    let memories = export_table(
+    // Every table here carries user_id in both the monolith and tenant-shard
+    // schemas, so the predicate is a no-op in a single-owner shard and the
+    // tenant boundary in shared (monolith) mode where this runs on state.db.
+    let memories = export_table_user(
         db,
         "SELECT id, content, category, source, importance, tags, \
          created_at, updated_at, space_id, is_archived \
-         FROM memories WHERE is_forgotten = 0 \
+         FROM memories WHERE is_forgotten = 0 AND user_id = ?1 \
          ORDER BY created_at DESC",
+        user_id,
     )
     .await?;
-    let conversations = export_table(
+    let conversations = export_table_user(
         db,
         "SELECT id, session_id, agent, title, metadata, started_at, updated_at \
-         FROM conversations ORDER BY started_at DESC",
+         FROM conversations WHERE user_id = ?1 ORDER BY started_at DESC",
+        user_id,
     )
     .await?;
-    let episodes = export_table(
+    let episodes = export_table_user(
         db,
         "SELECT id, title, summary, session_id, created_at \
-         FROM episodes ORDER BY created_at DESC",
+         FROM episodes WHERE user_id = ?1 ORDER BY created_at DESC",
+        user_id,
     )
     .await?;
     let entities = export_table_user(
@@ -510,16 +532,23 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
         user_id,
     )
     .await?;
-    let preferences = export_table(
+    let preferences = export_table_user(
         db,
         "SELECT id, key, value, created_at, updated_at \
-         FROM user_preferences ORDER BY key",
+         FROM user_preferences WHERE user_id = ?1 ORDER BY key",
+        user_id,
     )
     .await?;
+    // The real table is `skill_records`; there is no `skills` table in any
+    // schema, so the old query 500'd in sharded mode. `skill_records` has no
+    // `tags` column, so it is dropped from the projection; every remaining
+    // column exists in both the monolith and tenant-shard schemas. The
+    // `user_id` predicate scopes the export to the caller (a no-op in a
+    // single-owner shard, the tenant boundary in monolith).
     let skills = export_table_user(
         db,
-        "SELECT id, name, description, content, language, tags, created_at \
-         FROM skills WHERE user_id = ?1 ORDER BY name",
+        "SELECT id, name, description, content, language, created_at \
+         FROM skill_records WHERE user_id = ?1 ORDER BY name",
         user_id,
     )
     .await?;
@@ -546,51 +575,55 @@ async fn export_table_user(
     let sql_owned = sql.to_string();
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql_owned)?;
+        // Capture the real column names before stepping rows: `column_name`
+        // borrows the statement, so collect owned strings up front, then take
+        // the `&mut` borrow that `query` needs. These names become the JSON
+        // keys so the export round-trips through the named-key import reader.
+        let column_names: Vec<String> = (0..stmt.column_count())
+            .map(|i| stmt.column_name(i).map(str::to_string))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut rows = stmt.query(params![user_id])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             let mut obj = serde_json::Map::new();
-            for i in 0..20usize {
-                match row.get::<_, String>(i) {
-                    Ok(val) => {
-                        obj.insert(format!("col_{}", i), serde_json::Value::String(val));
-                    }
-                    Err(_) => break,
-                }
+            // Serialize every column by its real SQLite type. The old path read
+            // each cell as `String` and broke on the first non-text column (the
+            // integer `id` at column 0), which emptied every export array. No
+            // row is dropped now: a NULL becomes JSON null, not a missing key.
+            for (i, name) in column_names.iter().enumerate() {
+                obj.insert(name.clone(), sqlite_value_to_json(row.get_ref(i)?));
             }
-            if !obj.is_empty() {
-                result.push(serde_json::Value::Object(obj));
-            }
+            result.push(serde_json::Value::Object(obj));
         }
         Ok(result)
     })
     .await
 }
 
-/// Serialize all rows of one unscoped table into the export blob format.
-async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>> {
-    let sql_owned = sql.to_string();
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql_owned)?;
-        let mut rows = stmt.query([])?;
-        let mut result = Vec::new();
-        while let Some(row) = rows.next()? {
-            let mut obj = serde_json::Map::new();
-            for i in 0..20usize {
-                match row.get::<_, String>(i) {
-                    Ok(val) => {
-                        obj.insert(format!("col_{}", i), serde_json::Value::String(val));
-                    }
-                    Err(_) => break,
-                }
-            }
-            if !obj.is_empty() {
-                result.push(serde_json::Value::Object(obj));
-            }
+/// Convert one SQLite cell into its `serde_json::Value` equivalent, preserving
+/// the column's real storage class. Integers and reals map to JSON numbers,
+/// text to a string, NULL to JSON null, and a blob to a standard-base64 string
+/// so binary columns serialize deterministically. This replaces the prior
+/// read-everything-as-`String` path that errored on the integer `id` and
+/// dropped every row.
+fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(i) => serde_json::Value::Number(i.into()),
+        // `from_f64` is `None` only for NaN/Inf, which SQLite cannot store in a
+        // REAL column; fall back to null rather than fabricating a number.
+        ValueRef::Real(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ValueRef::Text(bytes) => {
+            serde_json::Value::String(String::from_utf8_lossy(bytes).into_owned())
         }
-        Ok(result)
-    })
-    .await
+        ValueRef::Blob(bytes) => {
+            use base64::Engine;
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes))
+        }
+    }
 }
 
 // --- Re-embed: clear embeddings so they get regenerated ---
@@ -603,11 +636,15 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
 #[tracing::instrument(skip(db))]
 pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     db.write(move |conn| {
-        let n = if let Some(_uid) = user_id {
+        // A per-user reembed must clear only that user's embeddings; in shared
+        // (monolith) mode the unscoped form would clear every tenant's. The
+        // user_id predicate is a no-op in a single-owner shard. user_id = None
+        // is the deliberate admin-wide reembed.
+        let n = if let Some(uid) = user_id {
             conn.execute(
                 "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
-                 WHERE is_forgotten = 0",
-                [],
+                 WHERE is_forgotten = 0 AND user_id = ?1",
+                params![uid],
             )?
         } else {
             conn.execute(
@@ -867,4 +904,182 @@ pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {
         "api_keys": key_count,
         "conversations": conv_count,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    /// `gc(Some(uid))` must reap only that owner's forgotten/expired rows, never
+    /// another tenant's. Pins the monolith-mode BOLA fix: the dead `_uid` param
+    /// previously ran an unscoped DELETE for every caller.
+    #[tokio::test]
+    async fn gc_scopes_deletes_to_the_requested_user() {
+        let db = Database::connect_memory().await.expect("memory db");
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, importance, user_id, is_forgotten) \
+                 VALUES ('mine', 'test', 5, 1, 1), ('theirs', 'test', 5, 2, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed forgotten rows for two users");
+
+        let res = gc(&db, Some(1)).await.expect("gc user 1");
+        assert_eq!(
+            res.breakdown.forgotten_memories, 1,
+            "only user 1's forgotten row should be reaped"
+        );
+
+        let survivors: i64 = db
+            .read(|conn| {
+                Ok(
+                    conn.query_row("SELECT COUNT(*) FROM memories WHERE user_id = 2", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .await
+            .expect("count user 2 rows");
+        assert_eq!(survivors, 1, "user 2's row must survive a scoped gc");
+    }
+
+    /// Exporting a row whose first column is the integer `id` and whose second
+    /// is the text `content` must populate BOTH keys. This pins the col-0 break
+    /// fix: the old serializer read `id` as `String`, errored, and dropped every
+    /// row, so each export array came back empty.
+    #[tokio::test]
+    async fn export_table_user_serializes_integer_and_text_columns() {
+        let db = Database::connect_memory().await.expect("memory db");
+
+        // Insert a synthetic memory owned by user 1 with known content.
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, importance, user_id) \
+                 VALUES ('synthetic content', 'test', 5, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed memory");
+
+        let rows = export_table_user(
+            &db,
+            "SELECT id, content FROM memories WHERE user_id = ?1 ORDER BY id",
+            1,
+        )
+        .await
+        .expect("export rows");
+
+        assert_eq!(rows.len(), 1, "the seeded row must not be dropped");
+        let obj = rows[0].as_object().expect("row is a json object");
+        assert!(
+            obj.get("id").and_then(|v| v.as_i64()).is_some(),
+            "integer id column must serialize to a json number, got {:?}",
+            obj.get("id"),
+        );
+        assert_eq!(
+            obj.get("content").and_then(|v| v.as_str()),
+            Some("synthetic content"),
+            "text content column must serialize to its string value",
+        );
+    }
+
+    /// A NULL cell serializes to JSON null (a present key), not a dropped key,
+    /// and a non-text column never aborts the row.
+    #[tokio::test]
+    async fn export_table_user_keeps_null_columns_as_null() {
+        let db = Database::connect_memory().await.expect("memory db");
+
+        // `session_id` is left unset, so it stays NULL in the row.
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, importance, user_id) \
+                 VALUES ('has null session', 'test', 5, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed memory");
+
+        let rows = export_table_user(
+            &db,
+            "SELECT id, session_id, content FROM memories WHERE user_id = ?1",
+            1,
+        )
+        .await
+        .expect("export rows");
+
+        assert_eq!(rows.len(), 1);
+        let obj = rows[0].as_object().expect("row is a json object");
+        assert!(
+            obj.contains_key("session_id"),
+            "null column must remain a present key",
+        );
+        assert!(
+            obj.get("session_id").map(|v| v.is_null()).unwrap_or(false),
+            "null column must serialize to json null",
+        );
+    }
+
+    /// F28: deprovisioning the reserved owner account (user_id=1) must be refused
+    /// with Forbidden, while a normal tenant is still deleted. Pins the guard that
+    /// prevents an admin call from tearing down the primary store.
+    #[tokio::test]
+    async fn deprovision_refuses_owner_but_allows_normal_tenant() {
+        let db = Database::connect_memory().await.expect("memory db");
+
+        // connect_memory() already seeds the owner (id=1); add only a non-owner
+        // tenant (id=2) so its deprovision can succeed.
+        db.write(|conn| {
+            conn.execute("INSERT INTO users (id, username) VALUES (2, 'tenant2')", [])?;
+            Ok(())
+        })
+        .await
+        .expect("seed non-owner user");
+
+        // Pin the assumption that connect_memory() seeds the owner, so the
+        // owner-survives assertion below is meaningful and the test fails loudly
+        // if that seeding ever changes.
+        let owner_before: i64 = db
+            .read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM users WHERE id = 1", [], |r| r.get(0))?)
+            })
+            .await
+            .expect("count owner rows before");
+        assert_eq!(
+            owner_before, 1,
+            "connect_memory() is expected to seed user id=1"
+        );
+
+        // The owner account is protected: deprovisioning user_id=1 is Forbidden.
+        let owner = deprovision_tenant(&db, 1).await;
+        assert!(
+            matches!(owner, Err(crate::EngError::Forbidden(_))),
+            "deprovisioning user_id=1 must return Forbidden, got {owner:?}",
+        );
+
+        // A normal tenant is unaffected by the guard and is removed.
+        let removed = deprovision_tenant(&db, 2)
+            .await
+            .expect("deprovision tenant 2");
+        assert!(removed, "a non-owner tenant must be deprovisioned");
+
+        // The owner row must still exist after the refused call.
+        let owner_rows: i64 = db
+            .read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM users WHERE id = 1", [], |r| r.get(0))?)
+            })
+            .await
+            .expect("count owner rows");
+        assert_eq!(
+            owner_rows, 1,
+            "owner account must survive the refused deprovision"
+        );
+    }
 }

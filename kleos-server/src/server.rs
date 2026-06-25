@@ -114,7 +114,7 @@ use crate::state::AppState;
 /// MCP dispatch router (bare, no middleware). Adding a route module here
 /// automatically makes it available via both HTTP and MCP.
 fn merge_api_routes() -> Router<AppState> {
-    Router::new()
+    let mut router = Router::new()
         .merge(routes::health::router())
         .merge(routes::handoffs::router())
         .merge(routes::docs::router())
@@ -147,6 +147,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::prompts::router())
         .merge(routes::scratchpad::router())
         .merge(routes::activity::router())
+        .merge(routes::forge::router())
         .merge(routes::gate::router())
         .merge(routes::supervisor::router())
         .merge(routes::growth::router())
@@ -171,7 +172,15 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::policy::router())
         .merge(routes::users::router())
         .merge(routes::mcp_schema::router())
-        .merge(routes::mcp_tokens::router())
+        .merge(routes::mcp_tokens::router());
+
+    // Frameshift growth routes ship behind a feature gate (default off). When
+    // disabled, `/frameshift-growth/*` is never mounted and returns 404.
+    if kleos_lib::frameshift_growth::enabled() {
+        router = router.merge(routes::frameshift_growth::router());
+    }
+
+    router
 }
 
 /// Build the Axum router with all routes and middleware applied.

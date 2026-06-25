@@ -25,10 +25,63 @@ use types::{CreateInviteBody, EnrollBody, ListParams, RevokeBody};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/identity-keys/enroll", post(enroll_handler))
+        .route(
+            "/identity-keys/enroll/challenge",
+            post(enroll_challenge_handler),
+        )
         .route("/identity-keys", get(list_handler))
         .route("/identity-keys/mine", get(list_mine_handler))
         .route("/identity-keys/{id}/revoke", post(revoke_handler))
         .route("/identity-keys/invite", post(create_invite_handler))
+}
+
+/// Lifetime of an enrollment challenge nonce in seconds.
+const ENROLL_CHALLENGE_TTL_SECS: i64 = 300;
+
+/// Issues a single-use enrollment challenge nonce bound to the caller.
+/// The nonce must be included in the proof-of-possession signature of a
+/// subsequent POST /identity-keys/enroll, which prevents a captured
+/// enrollment proof from being replayed by another principal.
+async fn enroll_challenge_handler(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    // 32 random bytes hex-encoded; collision-free for PRIMARY KEY purposes.
+    let mut nonce_bytes = [0u8; 32];
+    {
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut nonce_bytes)
+            .map_err(|e| AppError(kleos_lib::EngError::Internal(format!("CSPRNG: {e}"))))?;
+    }
+    let nonce = hex::encode(nonce_bytes);
+
+    let user_id = auth.user_id;
+    let nonce_for_insert = nonce.clone();
+    let expires_at = state
+        .db
+        .write(move |conn| {
+            // Opportunistic purge so abandoned challenges never accumulate.
+            conn.execute(
+                "DELETE FROM enrollment_challenges WHERE expires_at <= datetime('now')",
+                [],
+            )?;
+            Ok(conn.query_row(
+                "INSERT INTO enrollment_challenges (nonce, user_id, expires_at)
+                 VALUES (?1, ?2, datetime('now', ?3))
+                 RETURNING expires_at",
+                params![
+                    nonce_for_insert,
+                    user_id,
+                    format!("+{} seconds", ENROLL_CHALLENGE_TTL_SECS)
+                ],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .await?;
+
+    Ok(Json(json!({ "nonce": nonce, "expires_at": expires_at })))
 }
 
 /// Enrolls a new signing key for the authenticated user after verifying
@@ -46,10 +99,56 @@ async fn enroll_handler(
         )));
     }
 
-    let proof_msg = format!(
-        "KLEOS-ENROLL:{}:{}:{}:{}",
-        body.algo, body.tier, body.host_label, body.pubkey_pem
-    );
+    // The very first key (bootstrap, secret-gated in the auth middleware)
+    // may use the legacy nonce-less proof: no other principals exist yet,
+    // so there is no replay or squatting target. Every later enrollment
+    // must present a server-issued single-use nonce bound to the caller,
+    // making captured proofs worthless to anyone else.
+    let key_count: i64 = state
+        .db
+        .read(
+            |conn| Ok(conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))?),
+        )
+        .await?;
+
+    let proof_msg = if key_count == 0 {
+        format!(
+            "KLEOS-ENROLL:{}:{}:{}:{}",
+            body.algo, body.tier, body.host_label, body.pubkey_pem
+        )
+    } else {
+        let nonce = body.nonce.clone().ok_or_else(|| {
+            AppError(kleos_lib::EngError::InvalidInput(
+                "enrollment nonce required: request one via POST /identity-keys/enroll/challenge"
+                    .into(),
+            ))
+        })?;
+
+        // Atomic consume: the DELETE only succeeds for an unexpired nonce
+        // issued to this caller, and removing the row makes it single-use.
+        let caller_id = auth.user_id;
+        let nonce_for_consume = nonce.clone();
+        let consumed = state
+            .db
+            .write(move |conn| {
+                Ok(conn.execute(
+                    "DELETE FROM enrollment_challenges
+                     WHERE nonce = ?1 AND user_id = ?2 AND expires_at > datetime('now')",
+                    params![nonce_for_consume, caller_id],
+                )? > 0)
+            })
+            .await?;
+        if !consumed {
+            return Err(AppError(kleos_lib::EngError::Auth(
+                "invalid or expired enrollment challenge".into(),
+            )));
+        }
+
+        format!(
+            "KLEOS-ENROLL:{}:{}:{}:{}:{}",
+            body.algo, body.tier, body.host_label, body.pubkey_pem, nonce
+        )
+    };
     auth_piv::verify_signature(algo, &body.pubkey_pem, proof_msg.as_bytes(), &body.sig_hex)?;
 
     let pubkey_der = pem_to_der(&body.pubkey_pem)?;

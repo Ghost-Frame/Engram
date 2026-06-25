@@ -1,6 +1,8 @@
 //! Claude Code hook handlers -- thin shim that routes decisions to kleos-server.
 //! All handlers read JSON from stdin, call the server, emit hookSpecificOutput on stdout.
-//! Network failures are logged (eprintln) but never block -- fail open, exit 0.
+//! Network failures are logged (eprintln) and fail open by default (exit 0);
+//! set KLEOS_HOOK_GATE_FAIL_CLOSED=1 to deny tool use when the gate is
+//! unreachable. A reachable gate that omits `allowed` always denies.
 
 use clap::Subcommand;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -129,6 +131,128 @@ fn extract_session_id(input: &Value) -> String {
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
+/// Legacy fixed bootstrap query, kept as the fallback when no cwd is available.
+const LEGACY_BOOTSTRAP_QUERY: &str =
+    "session-bootstrap agent-rules infrastructure active-tasks recent-decisions";
+
+/// Reads the current git branch from `<cwd>/.git/HEAD` without spawning git.
+fn git_branch(cwd: &str) -> Option<String> {
+    let head = std::fs::read_to_string(std::path::Path::new(cwd).join(".git/HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(|b| b.to_string())
+}
+
+/// Builds the session-bootstrap brain query from the project the session
+/// actually starts in (cwd basename + git branch words) so /prompt/generate
+/// recalls task-relevant memories instead of the fixed keyword salad, which
+/// the brain answers with "No relevant patterns activated".
+fn bootstrap_task_query(input: &Value) -> String {
+    let cwd = input
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string())
+        });
+    let Some(cwd) = cwd else {
+        return LEGACY_BOOTSTRAP_QUERY.to_string();
+    };
+    let project = match std::path::Path::new(&cwd).file_name() {
+        Some(n) => n.to_string_lossy().to_string(),
+        None => return LEGACY_BOOTSTRAP_QUERY.to_string(),
+    };
+    let mut query = format!("{project} project");
+    if let Some(branch) = git_branch(&cwd) {
+        // Branch names like fix/ingestion-import-user-id carry strong task signal.
+        query.push(' ');
+        query.push_str(&branch.replace(['/', '-', '_'], " "));
+    }
+    query.push_str(" active-tasks recent-decisions agent-rules");
+    query
+}
+
+/// Returns the project label for the session: the basename of the working
+/// directory it started in. Used to scope the session.start activity record and
+/// the coordination read-back so Chiasm/Axon know which checkout this session
+/// is in (the record previously reported a useless "unknown").
+fn cwd_project(input: &Value) -> Option<String> {
+    let cwd = input
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string())
+        })?;
+    std::path::Path::new(&cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+}
+
+/// Formats the coordination banner from active tasks already open in the
+/// session's project. This is the read-back half of coordination: sessions
+/// register via /activity but never saw who else was working the same checkout,
+/// so two agents would collide on one git working tree. Injecting this banner
+/// every session makes the coordination state visible mechanically, rather than
+/// relying on the model to query it (which it does not). Empty when nobody else
+/// is active, so quiet by default.
+fn format_coordination_banner(project: &str, tasks: &[Value]) -> String {
+    if tasks.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![
+        format!(
+            "## Coordination -- {} active task(s) in project `{}`",
+            tasks.len(),
+            project
+        ),
+        "Another session may be working in this checkout. Coordinate, or use a \
+         separate git worktree -- two agents in one working tree race on HEAD \
+         and the index and will clobber each other's uncommitted work."
+            .to_string(),
+    ];
+    for t in tasks.iter().take(6) {
+        let agent = t.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
+        let status = t.get("status").and_then(|a| a.as_str()).unwrap_or("active");
+        let title: String = t
+            .get("title")
+            .and_then(|a| a.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(90)
+            .collect();
+        lines.push(format!("- {agent} ({status}): {title}"));
+    }
+    lines.join("\n")
+}
+
+/// Fetches active tasks in the session's project and renders the coordination
+/// banner. Best-effort: any error or absent project yields an empty banner.
+async fn fetch_coordination_banner(client: &Client, project: Option<&str>) -> String {
+    let Some(project) = project else {
+        return String::new();
+    };
+    let path = format!(
+        "/tasks?status=active&project={}&limit=10",
+        utf8_percent_encode(project, NON_ALPHANUMERIC)
+    );
+    match client.get_with_timeout(&path, DEFAULT_TIMEOUT).await {
+        Ok(v) => {
+            let tasks = v
+                .get("tasks")
+                .and_then(|t| t.as_array())
+                .cloned()
+                .unwrap_or_default();
+            format_coordination_banner(project, &tasks)
+        }
+        Err(_) => String::new(),
+    }
+}
+
 /// Resolves the agent identity for hook reporting and living-context generation.
 ///
 /// Prefers the `KLEOS_AGENT_LABEL` env var, which each harness sets to identify
@@ -205,6 +329,15 @@ fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
     raw.chars().take(max_chars).collect()
 }
 
+/// Whether a gate that cannot be reached should deny (fail closed) rather than
+/// allow (fail open). Defaults to false to preserve the documented fail-open
+/// behavior; security-conscious operators set KLEOS_HOOK_GATE_FAIL_CLOSED=1.
+fn gate_fail_closed() -> bool {
+    std::env::var("KLEOS_HOOK_GATE_FAIL_CLOSED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Builds a hook response that denies the current tool use with a reason.
 fn build_deny_output(event: &str, reason: &str) -> Value {
     json!({
@@ -253,10 +386,17 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 
 // --- Hook handlers ---
 
-async fn handle_session_start(client: &Client) {
+async fn handle_session_start(client: &Client, input: &Value) {
     let agent = resolve_agent();
+    let project = cwd_project(input);
 
-    // Register session with activity (best-effort)
+    // Read coordination state BEFORE registering this session, so the banner
+    // reflects who was already working in this project, not our own arrival.
+    let coordination = fetch_coordination_banner(client, project.as_deref()).await;
+
+    // Register session with activity (best-effort). Report the real project
+    // (working-directory basename) so Chiasm/Axon know which checkout this
+    // session is in; the record previously always said "unknown".
     let _ = client
         .post_with_timeout(
             "/activity",
@@ -264,7 +404,7 @@ async fn handle_session_start(client: &Client) {
                 "agent": agent.clone(),
                 "action": "session.start",
                 "summary": "session started",
-                "project": "unknown"
+                "project": project.clone().unwrap_or_else(|| "unknown".to_string())
             }),
             DEFAULT_TIMEOUT,
         )
@@ -293,9 +433,11 @@ async fn handle_session_start(client: &Client) {
             "/prompt/generate",
             json!({
                 "agent": agent,
-                "task": "session-bootstrap agent-rules infrastructure active-tasks recent-decisions",
+                "task": bootstrap_task_query(input),
                 "include_brain": true,
-                "include_growth": true,
+                // Growth context is appended separately from /growth/materialize
+                // below; include_growth=true here duplicated it (memory #27946).
+                "include_growth": false,
                 "include_personality": true,
             }),
             DEFAULT_TIMEOUT,
@@ -322,6 +464,10 @@ async fn handle_session_start(client: &Client) {
     if !growth_text.is_empty() {
         ctx.push_str("\n\n--- Growth Context ---\n");
         ctx.push_str(&growth_text);
+    }
+    if !coordination.is_empty() {
+        ctx.push_str("\n\n--- Coordination ---\n");
+        ctx.push_str(&coordination);
     }
     ctx.push_str("\n\n=== END EIDOLON CONTEXT ===");
 
@@ -455,15 +601,30 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
     {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
-            return; // Fail open
+            // The gate is unreachable. By default this fails open (see module
+            // doc): the same hook bundle also drives context injection and
+            // activity reporting, so a Kleos outage must not hard-block every
+            // tool use. Operators who want a gate outage to deny instead set
+            // KLEOS_HOOK_GATE_FAIL_CLOSED=1.
+            if gate_fail_closed() {
+                emit(&build_deny_output(
+                    "PreToolUse",
+                    "kleos gate unreachable and KLEOS_HOOK_GATE_FAIL_CLOSED is set",
+                ));
+            } else {
+                eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
+            }
+            return;
         }
     };
 
+    // A reachable gate that omits or malforms `allowed` must not be treated as
+    // an implicit allow -- default to deny so a partial response cannot bypass
+    // the gate.
     let allowed = result
         .get("allowed")
         .and_then(|a| a.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(false);
     let reason = result
         .get("reason")
         .and_then(|r| r.as_str())
@@ -528,7 +689,8 @@ async fn handle_post_tool(client: &Client, input: &Value) {
 pub async fn run_hook(cmd: &HookCommands, client: &Client) {
     match cmd {
         HookCommands::SessionStart => {
-            handle_session_start(client).await;
+            let input = read_stdin_json();
+            handle_session_start(client, &input).await;
         }
         HookCommands::UserPrompt => {
             let input = read_stdin_json();
@@ -554,6 +716,43 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// Verifies the bootstrap query derives from cwd and falls back when absent.
+    fn test_bootstrap_task_query() {
+        // No cwd in input and a current_dir always exists in tests, so build
+        // the derived form from a real temp dir to pin the cwd-driven shape.
+        let dir = std::env::temp_dir().join("kleos-bootstrap-query-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let input = serde_json::json!({ "cwd": dir.to_string_lossy() });
+        let q = bootstrap_task_query(&input);
+        assert!(q.starts_with("kleos-bootstrap-query-test project"));
+        assert!(q.ends_with("active-tasks recent-decisions agent-rules"));
+
+        // A cwd with no basename (filesystem root) falls back to the legacy query.
+        let root = serde_json::json!({ "cwd": "/" });
+        assert_eq!(bootstrap_task_query(&root), LEGACY_BOOTSTRAP_QUERY);
+    }
+
+    #[test]
+    /// Empty task list yields no banner (quiet when nobody else is working here).
+    fn test_coordination_banner_empty() {
+        assert!(format_coordination_banner("Kleos", &[]).is_empty());
+    }
+
+    #[test]
+    /// A non-empty task list renders agent + title lines under a project header.
+    fn test_coordination_banner_lists_active_tasks() {
+        let tasks = vec![
+            json!({"agent": "synapse", "status": "active", "title": "READ-ONLY security audit"}),
+            json!({"agent": "codex", "status": "active", "title": "migration backfill"}),
+        ];
+        let out = format_coordination_banner("Kleos", &tasks);
+        assert!(out.contains("2 active task(s) in project `Kleos`"));
+        assert!(out.contains("synapse (active): READ-ONLY security audit"));
+        assert!(out.contains("codex (active): migration backfill"));
+        assert!(out.contains("separate git worktree"));
+    }
 
     #[test]
     /// Verifies context hook output uses Claude's hookSpecificOutput shape.

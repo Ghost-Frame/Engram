@@ -54,7 +54,16 @@ impl PlatformInfo {
             xdg_config_dir().join("engram")
         };
 
-        let default_data_dir = PathBuf::from("./data");
+        // Derive from XDG_DATA_HOME (or ~/.local/share on Unix, ~/AppData/Local on
+        // Windows) so the path is absolute and stable regardless of the server's CWD.
+        let default_data_dir = if cfg!(windows) {
+            home.join("AppData")
+                .join("Local")
+                .join("kleos")
+                .join("data")
+        } else {
+            xdg_data_dir().join("engram").join("data")
+        };
 
         PlatformInfo {
             platform,
@@ -90,5 +99,19 @@ fn xdg_config_dir() -> PathBuf {
             dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".config")
+        })
+}
+
+/// Resolve the XDG data directory, falling back to `~/.local/share` if the
+/// environment variable is unset or empty.
+fn xdg_data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
         })
 }

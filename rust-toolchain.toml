@@ -1,0 +1,10 @@
+# Pin the toolchain for CI, local dev, and Docker builds to one exact version.
+# CI runs `cargo clippy -- -D warnings`, so an unpinned `stable` meant every
+# ~6-week Rust release could introduce new lints that fail CI on code that
+# previously compiled clean -- the "fixing it never fixes it" treadmill.
+# Bumping Rust is now a deliberate PR: change this channel, run clippy locally,
+# fix new lints, merge. Keep in sync with `rust-version` in Cargo.toml and the
+# `rust:<ver>-bookworm` base image in Dockerfile.
+[toolchain]
+channel = "1.94.0"
+components = ["clippy", "rustfmt"]

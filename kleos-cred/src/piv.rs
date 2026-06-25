@@ -221,7 +221,15 @@ pub fn generate_self_signed_cert(slot: PivSlot, subject: &str, pubkey_pem: &Path
 /// representation. Useful for `cred piv status` and for re-exporting
 /// when the cached pubkey file was deleted.
 pub fn export_pubkey_pem(slot: PivSlot) -> Result<String> {
-    let tmp = std::env::temp_dir().join(format!("cred-piv-{}-export.pem", slot.as_hex()));
+    // Write to a freshly-created private temp DIR (unpredictable, 0700) instead
+    // of a predictable /tmp path, so a local attacker cannot pre-create or
+    // symlink-race the export path. ykman creates the file inside; the TempDir
+    // auto-removes the dir and file on drop.
+    let dir = tempfile::Builder::new()
+        .prefix("cred-piv-export-")
+        .tempdir()
+        .map_err(|e| CredError::YubiKey(format!("create temp dir: {}", e)))?;
+    let tmp = dir.path().join("pubkey.pem");
     let out = Command::new("ykman")
         .args(["piv", "keys", "export", slot.as_hex()])
         .arg(&tmp)
@@ -230,7 +238,6 @@ pub fn export_pubkey_pem(slot: PivSlot) -> Result<String> {
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let _ = std::fs::remove_file(&tmp);
         return Err(CredError::YubiKey(format!(
             "ykman piv keys export {} failed: {}",
             slot.as_hex(),
@@ -240,21 +247,22 @@ pub fn export_pubkey_pem(slot: PivSlot) -> Result<String> {
 
     let pem = std::fs::read_to_string(&tmp)
         .map_err(|e| CredError::YubiKey(format!("read pubkey tempfile: {}", e)))?;
-    let _ = std::fs::remove_file(&tmp);
     Ok(pem)
 }
 
 /// Cheap probe of whether `slot` has a key provisioned. Discards stdout.
 pub fn slot_has_key(slot: PivSlot) -> bool {
-    let tmp = std::env::temp_dir().join(format!("cred-piv-probe-{}.pem", slot.as_hex()));
-    let ok = Command::new("ykman")
+    // Private temp dir (see export_pubkey_pem) instead of a predictable path.
+    let Ok(dir) = tempfile::Builder::new().prefix("cred-piv-probe-").tempdir() else {
+        return false;
+    };
+    let tmp = dir.path().join("probe.pem");
+    Command::new("ykman")
         .args(["piv", "keys", "export", slot.as_hex()])
         .arg(&tmp)
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false);
-    let _ = std::fs::remove_file(&tmp);
-    ok
+        .unwrap_or(false)
 }
 
 /// Builds the PIV ECDH (`calculate_secret`) Python script for `slot`.

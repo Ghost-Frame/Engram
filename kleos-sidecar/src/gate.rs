@@ -35,11 +35,12 @@ pub struct Verdict {
     pub summary: Option<String>,
 }
 
-/// Output of the gate for one input turn: the LLM verdict plus the original
-/// text and session/project context needed to construct a memory write.
+/// Output of the gate for one input turn: the LLM verdict plus the
+/// session/project context needed to construct a memory write. The raw turn
+/// text is intentionally not carried; `store_gate_results` persists only the
+/// gate's distilled summary to keep uncurated narration out of the indexes.
 pub struct GateResult {
     pub verdict: Verdict,
-    pub original_text: String,
     pub session_id: String,
     pub project: String,
 }
@@ -81,7 +82,6 @@ impl MemoryGate {
                 Ok(verdict) => {
                     results.push(GateResult {
                         verdict,
-                        original_text: turn.text,
                         session_id: turn.session_id,
                         project: turn.project,
                     });

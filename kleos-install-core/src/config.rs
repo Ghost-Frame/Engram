@@ -109,6 +109,51 @@ pub struct InstallerConfig {
     pub security: SecurityConfig,
 }
 
+/// Render a string as a fully-escaped TOML basic-string literal (including the
+/// surrounding quotes). Prevents a config value containing a quote or newline
+/// from breaking out of its field and injecting extra TOML -- e.g. a forged
+/// `[security]` table that flips `open_access`.
+fn toml_string(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
+/// Reject a config value that would corrupt the line-oriented `.env` format: a
+/// newline injects an additional `KEY=VALUE` line.
+fn env_value(s: &str) -> Result<&str, InstallError> {
+    if s.contains('\n') || s.contains('\r') {
+        return Err(InstallError::Config(
+            "config value contains a newline; refusing to write .env".to_string(),
+        ));
+    }
+    Ok(s)
+}
+
+/// Write a secrets file with owner-only permissions (0600 on Unix). The default
+/// umask leaves `std::fs::write` world-readable, which would expose the `.env`
+/// holding ENGRAM_DB_KEY, the API-key pepper, and the HMAC secret.
+fn write_private_file(path: &Path, contents: &str) -> Result<(), InstallError> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        // mode() only applies on creation; tighten an already-existing file too.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
+}
+
 impl InstallerConfig {
     /// Generate a complete `engram.toml` configuration file as a string.
     ///
@@ -119,12 +164,15 @@ impl InstallerConfig {
 
         if let Some(srv) = &self.server {
             out.push_str("[server]\n");
-            out.push_str(&format!("host = \"{}\"\n", srv.host));
+            out.push_str(&format!("host = {}\n", toml_string(&srv.host)));
             out.push_str(&format!("port = {}\n", srv.port));
-            out.push_str(&format!("data_dir = \"{}\"\n", srv.data_dir.display()));
-            out.push_str(&format!("db_path = \"{}\"\n", srv.db_path));
+            out.push_str(&format!(
+                "data_dir = {}\n",
+                toml_string(&srv.data_dir.display().to_string())
+            ));
+            out.push_str(&format!("db_path = {}\n", toml_string(&srv.db_path)));
             if let Some(origins) = &srv.cors_origins {
-                out.push_str(&format!("cors_origins = \"{origins}\"\n"));
+                out.push_str(&format!("cors_origins = {}\n", toml_string(origins)));
             }
             out.push('\n');
         }
@@ -137,7 +185,7 @@ impl InstallerConfig {
             }) => {
                 out.push_str("[embedding]\n");
                 out.push_str("provider = \"local_onnx\"\n");
-                out.push_str(&format!("model = \"{model}\"\n"));
+                out.push_str(&format!("model = {}\n", toml_string(model)));
                 out.push_str(&format!("dimension = {dimension}\n"));
                 out.push_str(&format!("auto_download = {auto_download}\n"));
                 out.push('\n');
@@ -150,9 +198,9 @@ impl InstallerConfig {
             }) => {
                 out.push_str("[embedding]\n");
                 out.push_str("provider = \"remote\"\n");
-                out.push_str(&format!("url = \"{url}\"\n"));
+                out.push_str(&format!("url = {}\n", toml_string(url)));
                 if let Some(m) = model {
-                    out.push_str(&format!("model = \"{m}\"\n"));
+                    out.push_str(&format!("model = {}\n", toml_string(m)));
                 }
                 out.push_str(&format!("dimension = {dimension}\n"));
                 out.push('\n');
@@ -171,8 +219,8 @@ impl InstallerConfig {
             }) => {
                 out.push_str("[reranker]\n");
                 out.push_str("provider = \"remote\"\n");
-                out.push_str(&format!("endpoint = \"{endpoint}\"\n"));
-                out.push_str(&format!("model = \"{model}\"\n"));
+                out.push_str(&format!("endpoint = {}\n", toml_string(endpoint)));
+                out.push_str(&format!("model = {}\n", toml_string(model)));
                 out.push('\n');
             }
             Some(RerankerConfig::Disabled) | None => {
@@ -210,13 +258,16 @@ impl InstallerConfig {
         ));
 
         if let Some(srv) = &self.server {
-            out.push_str(&format!("ENGRAM_HOST={}\n", srv.host));
+            out.push_str(&format!("ENGRAM_HOST={}\n", env_value(&srv.host)?));
             out.push_str(&format!("ENGRAM_PORT={}\n", srv.port));
         }
 
         if let Some(EmbeddingConfig::Remote { url, api_key, .. }) = &self.embedding {
-            out.push_str(&format!("KLEOS_EMBEDDING_URL={url}\n"));
-            out.push_str(&format!("KLEOS_EMBEDDING_API_KEY={api_key}\n"));
+            out.push_str(&format!("KLEOS_EMBEDDING_URL={}\n", env_value(url)?));
+            out.push_str(&format!(
+                "KLEOS_EMBEDDING_API_KEY={}\n",
+                env_value(api_key)?
+            ));
         }
 
         if let Some(RerankerConfig::Remote {
@@ -227,9 +278,18 @@ impl InstallerConfig {
         }) = &self.reranker
         {
             out.push_str("ENGRAM_RERANKER_BACKEND=http\n");
-            out.push_str(&format!("ENGRAM_RERANKER_HTTP_ENDPOINT={endpoint}\n"));
-            out.push_str(&format!("ENGRAM_RERANKER_HTTP_API_KEY={api_key}\n"));
-            out.push_str(&format!("ENGRAM_RERANKER_HTTP_MODEL={model}\n"));
+            out.push_str(&format!(
+                "ENGRAM_RERANKER_HTTP_ENDPOINT={}\n",
+                env_value(endpoint)?
+            ));
+            out.push_str(&format!(
+                "ENGRAM_RERANKER_HTTP_API_KEY={}\n",
+                env_value(api_key)?
+            ));
+            out.push_str(&format!(
+                "ENGRAM_RERANKER_HTTP_MODEL={}\n",
+                env_value(model)?
+            ));
         }
 
         Ok(out)
@@ -246,8 +306,33 @@ impl InstallerConfig {
         std::fs::write(config_dir.join("engram.toml"), toml_content)?;
 
         let env_content = self.generate_env()?;
-        std::fs::write(config_dir.join(".env"), env_content)?;
+        write_private_file(&config_dir.join(".env"), &env_content)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod injection_tests {
+    use super::{env_value, toml_string};
+
+    // A value crafted to break out of its quoted field and inject a forged
+    // table must round-trip back to exactly the original value -- whatever
+    // escaping form toml chooses -- and must not introduce a new key.
+    #[test]
+    fn toml_string_prevents_injection() {
+        let evil = "x\"\nopen_access = true";
+        let rendered = toml_string(evil);
+        let parsed: toml::Value = format!("v = {rendered}").parse().unwrap();
+        assert_eq!(parsed["v"].as_str().unwrap(), evil);
+        assert!(parsed.get("open_access").is_none());
+    }
+
+    // A newline in an env value would inject an extra KEY=VALUE line.
+    #[test]
+    fn env_value_rejects_newlines() {
+        assert!(env_value("ok-value").is_ok());
+        assert!(env_value("inject\nKEY=val").is_err());
+        assert!(env_value("inject\rKEY=val").is_err());
     }
 }

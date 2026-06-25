@@ -47,8 +47,10 @@ pub trait BrainBackend: Send + Sync {
     async fn decay_tick(&self, user_id: i64, ticks: u32) -> Result<()>;
     /// Per-tenant brain statistics.
     async fn stats(&self, user_id: i64) -> Result<BrainStats>;
-    /// Global dream cycle (admin-only at the route layer).
-    async fn dream_cycle(&self) -> Result<BrainResponse>;
+    /// Per-tenant dream cycle. `user_id` scopes the consolidation to one
+    /// tenant's pattern space. The route/dreamer layer fans out over all
+    /// active users; admin scope is still required at the route boundary.
+    async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse>;
     async fn feedback_signal(
         &self,
         user_id: i64,
@@ -162,6 +164,7 @@ pub enum BrainCommand {
         seq: Option<i64>,
     },
     DreamCycle {
+        user_id: i64,
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
@@ -318,7 +321,7 @@ impl BrainManager {
             BrainCommand::DecayTick { seq, .. } => *seq = Some(this_seq),
             BrainCommand::GetStats { seq, .. } => *seq = Some(this_seq),
             BrainCommand::Shutdown { seq, .. } => *seq = Some(this_seq),
-            BrainCommand::DreamCycle { seq, .. } => *seq = Some(this_seq),
+            BrainCommand::DreamCycle { seq, .. } => *seq = Some(this_seq), // user_id forwarded as-is
             BrainCommand::FeedbackSignal { seq, .. } => *seq = Some(this_seq),
             BrainCommand::EvolutionTrain { seq, .. } => *seq = Some(this_seq),
             BrainCommand::EvolutionStats { seq, .. } => *seq = Some(this_seq),
@@ -671,8 +674,8 @@ impl BrainManager {
         Ok(resp.data.unwrap_or(Value::Null))
     }
 
-    pub async fn dream_cycle(&self) -> Result<BrainResponse> {
-        self.send_command(BrainCommand::DreamCycle { seq: None })
+    pub async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse> {
+        self.send_command(BrainCommand::DreamCycle { user_id, seq: None })
             .await
     }
 
@@ -742,8 +745,8 @@ impl BrainBackend for BrainManager {
         self.stats().await
     }
 
-    async fn dream_cycle(&self) -> Result<BrainResponse> {
-        self.dream_cycle().await
+    async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse> {
+        self.dream_cycle(user_id).await
     }
 
     async fn feedback_signal(
@@ -962,14 +965,12 @@ impl BrainBackend for HopfieldBrainManager {
         }))
     }
 
-    async fn dream_cycle(&self) -> Result<BrainResponse> {
+    async fn dream_cycle(&self, user_id: i64) -> Result<BrainResponse> {
         use crate::brain::dream::run_dream_cycle;
 
-        // Dream is a global maintenance pass on the shared network. Per-tenant
-        // dream scoping needs the route layer to fan out per active user; for
-        // now this consolidates against pattern-owner 1 (operator namespace)
-        // and is gated to admin scope at the route boundary.
-        let user_id: i64 = 1;
+        // Dream scoped to a single tenant's pattern space. The route/dreamer
+        // layer fans out over all active users; admin scope required at the
+        // route boundary (H-R3-001).
         let mut network = self.network.write().await;
 
         // Full 6-stage consolidation: replay, merge, prune, discover, decorrelate, resolve.
@@ -1135,6 +1136,42 @@ async fn load_brain_memory(db: &Database, memory_id: i64) -> Result<BrainMemory>
     .await
 }
 
+/// Pure parse of the `TENANT_SHARDING` value. Sharding is the default (None),
+/// and only the explicit off-values disable it. Mirrors the parse in
+/// kleos-server/src/main.rs.
+fn parse_tenant_sharding(value: Option<&str>) -> bool {
+    match value {
+        Some(v) => {
+            let s = v.trim().to_ascii_lowercase();
+            !(s == "0" || s == "false" || s == "off" || s == "no")
+        }
+        None => true,
+    }
+}
+
+/// Whether the server is running with per-tenant sharding (the default).
+fn tenant_sharding_enabled() -> bool {
+    parse_tenant_sharding(crate::kleos_env("TENANT_SHARDING").ok().as_deref())
+}
+
+/// The subprocess brain backend's protocol carries no tenant identity, so a
+/// single global brain store is shared across every tenant -- a cross-tenant
+/// isolation failure. Permit it only when sharding is disabled (single-user
+/// mode); otherwise refuse (the server runs with no brain rather than a
+/// tenant-leaking one). Logs the refusal and the remedy.
+fn subprocess_brain_permitted() -> bool {
+    if tenant_sharding_enabled() {
+        warn!(
+            msg = "subprocess_brain_refused_under_sharding",
+            reason = "subprocess brain protocol has no tenant identity; one brain store would be shared across all tenants",
+            remedy = "build with the brain_hopfield feature, or set KLEOS_TENANT_SHARDING=0 for single-user mode"
+        );
+        false
+    } else {
+        true
+    }
+}
+
 /// Factory function to create the appropriate brain backend based on the
 /// `ENGRAM_BRAIN_MODE` environment variable.
 ///
@@ -1156,8 +1193,14 @@ pub async fn create_brain_backend(
                 Some(Arc::new(mgr))
             }
             Err(e) => {
+                // Only fall back to subprocess when it is safe to do so. Under
+                // sharding the silent fallback would drop tenant isolation, so
+                // refuse and run without a brain instead.
+                if !subprocess_brain_permitted() {
+                    warn!(msg = "hopfield_init_failed_no_safe_fallback", error = %e);
+                    return None;
+                }
                 warn!(msg = "hopfield_init_failed", error = %e, fallback = "subprocess");
-                // Fall back to subprocess
                 let mgr = BrainManager::new(data_dir.to_string());
                 if mgr.start().await {
                     Some(Arc::new(mgr))
@@ -1168,6 +1211,9 @@ pub async fn create_brain_backend(
             }
         },
         "subprocess" => {
+            if !subprocess_brain_permitted() {
+                return None;
+            }
             let mgr = BrainManager::new(data_dir.to_string());
             if mgr.start().await {
                 info!(msg = "brain_backend_selected", mode = "subprocess");
@@ -1204,6 +1250,11 @@ pub async fn create_brain_backend(
 ) -> Option<Arc<dyn BrainBackend>> {
     let mode = crate::kleos_env("BRAIN_MODE").unwrap_or_else(|_| "subprocess".into());
     if mode == "none" {
+        return None;
+    }
+    // Subprocess is the only backend in this build; refuse it under sharding
+    // (no tenant isolation) rather than silently sharing one brain store.
+    if !subprocess_brain_permitted() {
         return None;
     }
     let mgr = BrainManager::new(data_dir.to_string());
@@ -1359,6 +1410,19 @@ pub async fn verify_memory_ownership(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sharding is the default; only explicit off-values disable it. The
+    /// subprocess brain (no tenant isolation) is permitted iff sharding is off.
+    #[test]
+    fn tenant_sharding_parse_and_subprocess_gate() {
+        assert!(parse_tenant_sharding(None), "default is sharded");
+        for off in ["0", "false", "off", "no", "  Off  ", "FALSE"] {
+            assert!(!parse_tenant_sharding(Some(off)), "{off} disables sharding");
+        }
+        for on in ["1", "true", "yes", "anything"] {
+            assert!(parse_tenant_sharding(Some(on)), "{on} keeps sharding on");
+        }
+    }
 
     #[test]
     fn test_brain_query_state() {

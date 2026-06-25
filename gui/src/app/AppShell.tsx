@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { getMe } from '$lib/api/admin';
-import { currentToken, onUnauthorized } from '$lib/http';
+import { isAuthenticated, loginWithApiKey, onUnauthorized } from '$lib/http';
 import { SERVICES } from '$lib/services';
 import { AuthModal } from './AuthModal';
 import { ConnectionDot } from '../ui/ConnectionDot';
@@ -22,16 +22,20 @@ const ADMIN_NAV = [{ label: 'Spaces & Sharing', route: '/sharing' }];
 
 // Render the persistent dashboard chrome around route content.
 export function AppShell() {
-  const [authOpen, setAuthOpen] = useState(() => !currentToken());
+  const [authOpen, setAuthOpen] = useState(() => !isAuthenticated());
   // Resolve the caller's scopes so the admin nav only renders for admins.
   const me = useQuery({ queryFn: getMe, queryKey: ['me'], retry: false });
   const isAdmin = me.data?.is_admin === true;
 
   useEffect(() => onUnauthorized(() => setAuthOpen(true)), []);
 
-  const saveApiKey = (value: string) => {
-    localStorage.setItem('kleos_api_key', value);
-    setAuthOpen(false);
+  // Exchange the API key for a cookie session instead of persisting the raw
+  // key in localStorage. Keep the modal open on failure so the user can retry.
+  const saveApiKey = async (value: string) => {
+    if (await loginWithApiKey(value)) {
+      setAuthOpen(false);
+      me.refetch();
+    }
   };
 
   return (

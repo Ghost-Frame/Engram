@@ -67,9 +67,31 @@ fn extract_command(entry: &serde_json::Value) -> Option<String> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        // Take whole chars, not a byte slice: untrusted JSONL may contain
+        // multibyte text and `&s[..max]` panics on a non-char-boundary index.
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}...", truncated)
+    }
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate;
+
+    // Multibyte input must never panic on a non-char-boundary byte index and
+    // must truncate by whole chars.
+    #[test]
+    fn truncate_multibyte_does_not_panic() {
+        let s = "\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}"; // 6 CJK/kana chars
+        let out = truncate(s, 2);
+        assert_eq!(out, "\u{65e5}\u{672c}...");
+    }
+
+    #[test]
+    fn truncate_short_ascii_unchanged() {
+        assert_eq!(truncate("hello", 16), "hello");
     }
 }

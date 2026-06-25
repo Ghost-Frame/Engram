@@ -48,6 +48,16 @@ struct Approval {
     seconds_remaining: i64,
 }
 
+impl Approval {
+    /// Total approval window in seconds (`expires_at - created_at`), floored at
+    /// 1 to avoid division by zero. BF-5: the timer gauges divide by this real
+    /// window instead of a hardcoded 120s, so the bar stays accurate when the
+    /// server's approval timeout differs from 120s.
+    fn window_secs(&self) -> f64 {
+        (self.expires_at - self.created_at).num_seconds().max(1) as f64
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct PendingResponse {
@@ -67,6 +77,9 @@ struct App {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// Identity recorded in audit log for every approve/deny decision.
+    /// Defaults to the $USER environment variable, falling back to "tui-operator".
+    decided_by: String,
     approvals: Vec<Approval>,
     selected: usize,
     list_state: ListState,
@@ -78,10 +91,18 @@ impl App {
     fn new(url: String, api_key: String) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        // Resolve operator identity at startup for audit attribution (TUI-1).
+        let decided_by = std::env::var("USER").unwrap_or_else(|_| "tui-operator".to_string());
         Self {
-            client: reqwest::Client::new(),
+            // Bound requests so a stalled server cannot hang the TUI.
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: url,
             api_key,
+            decided_by,
             approvals: Vec::new(),
             selected: 0,
             list_state,
@@ -140,7 +161,9 @@ impl App {
 
         let req = DecideRequest {
             decision: decision.to_string(),
-            decided_by: Some("tui-operator".to_string()),
+            // Use the operator identity resolved at startup rather than a hardcoded literal
+            // so audit logs carry real attribution (TUI-1).
+            decided_by: Some(self.decided_by.clone()),
             reason: None,
         };
 
@@ -155,8 +178,6 @@ impl App {
             Ok(resp) => {
                 if resp.status().is_success() {
                     self.last_error = None;
-                    // Refresh list
-                    self.fetch_pending().await;
                 } else {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
@@ -167,6 +188,9 @@ impl App {
                 self.last_error = Some(format!("Request error: {}", e));
             }
         }
+        // Always refresh the pending list regardless of outcome so stale items
+        // do not remain in the display after a failed decide (TUI-2).
+        self.fetch_pending().await;
     }
 
     fn select_next(&mut self) {
@@ -202,7 +226,7 @@ fn ui(frame: &mut Frame, app: &App) {
 
     // Title bar
     let title = Paragraph::new(format!(
-        " ENGRAM APPROVAL CONSOLE                                    Pending: {}",
+        " KLEOS APPROVAL CONSOLE                                     Pending: {}",
         app.approvals.len()
     ))
     .style(Style::default().fg(Color::White).bg(Color::Blue).bold())
@@ -260,7 +284,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, a)| {
             let marker = if i == app.selected { ">" } else { " " };
-            let time_bar = make_time_bar(a.seconds_remaining);
+            let time_bar = make_time_bar(a.seconds_remaining, a.window_secs());
             ListItem::new(vec![
                 Line::from(vec![
                     Span::raw(format!("{} [{}] ", marker, i + 1)),
@@ -312,8 +336,8 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Timer gauge
-    let ratio = (approval.seconds_remaining as f64 / 120.0).clamp(0.0, 1.0);
+    // Timer gauge (BF-5: denominator is the real approval window, not 120s).
+    let ratio = (approval.seconds_remaining as f64 / approval.window_secs()).clamp(0.0, 1.0);
     let gauge = Gauge::default()
         .block(
             Block::default()
@@ -357,8 +381,10 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(detail, chunks[1]);
 }
 
-fn make_time_bar(seconds: i64) -> String {
-    let filled = ((seconds as f64 / 120.0) * 6.0).ceil() as usize;
+fn make_time_bar(seconds: i64, window_secs: f64) -> String {
+    // BF-5: scale against the real approval window rather than a hardcoded 120s.
+    let window = window_secs.max(1.0);
+    let filled = ((seconds as f64 / window) * 6.0).ceil() as usize;
     let filled = filled.min(6);
     let empty = 6 - filled;
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
@@ -382,6 +408,15 @@ async fn main() -> io::Result<()> {
             }
         }
     };
+
+    // Restore the terminal on panic: a crash mid-render would otherwise leave
+    // the user's shell in raw mode and the alternate screen.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
 
     // Setup terminal
     enable_raw_mode()?;

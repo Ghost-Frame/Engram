@@ -275,6 +275,34 @@ async fn main() {
         );
     }
 
+    // Eagerly create the reserved "frameshift-growth" tenant so the shard
+    // exists at first /frameshift-growth/* request (mirrors handoffs), but only
+    // when the feature gate is on. Default off keeps the reserved tenant from
+    // being created until KLEOS_FRAMESHIFT_GROWTH=1 opts in.
+    if !kleos_lib::frameshift_growth::enabled() {
+        tracing::info!(
+            "frameshift-growth feature gate off; tenant shard not pre-warmed, routes not mounted"
+        );
+    } else if let Some(reg) = tenant_registry.as_ref() {
+        if let Err(e) = reg
+            .get_or_create(kleos_lib::tenant::FRAMESHIFT_GROWTH_TENANT_ID)
+            .await
+        {
+            tracing::warn!(
+                "failed to pre-warm frameshift-growth tenant shard: {e}; routes will retry on first request"
+            );
+        } else {
+            tracing::info!(
+                "frameshift-growth tenant shard ready: tenants/{}/",
+                kleos_lib::tenant::FRAMESHIFT_GROWTH_TENANT_ID
+            );
+        }
+    } else {
+        tracing::warn!(
+            "tenant sharding disabled; /frameshift-growth/* routes will return 503 until enabled"
+        );
+    }
+
     // E1: recover orphaned deprovisions left in Deleting state from a previous crash.
     if let Some(ref reg) = tenant_registry {
         match kleos_lib::tenant::teardown::recover_orphans(reg.registry_db(), &db_arc).await {

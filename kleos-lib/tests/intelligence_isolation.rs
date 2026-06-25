@@ -5,6 +5,7 @@
 
 use kleos_lib::db::Database;
 use kleos_lib::intelligence::decomposition::decompose;
+use kleos_lib::intelligence::digests::generate_digest;
 use kleos_lib::intelligence::reconsolidation::run_reconsolidation_sweep;
 use kleos_lib::memory;
 use kleos_lib::memory::types::StoreRequest;
@@ -193,5 +194,39 @@ async fn intelligence_isolation_reconsolidation_cross_tenant_candidate_selection
         memory_updated_at(&db, bob_id).await,
         bob_updated_before,
         "cross-tenant candidate rows must remain untouched"
+    );
+}
+
+/// `generate_digest` must only summarize memories owned by the caller in shared-DB mode.
+#[tokio::test]
+async fn intelligence_isolation_generate_digest_cross_tenant_is_scoped() {
+    let db = monolith().await;
+    memory::store(
+        &db,
+        store_req("Alice discovered a new galaxy", 10),
+        None,
+        false,
+    )
+    .await
+    .expect("store alice memory");
+    memory::store(&db, store_req("Bob learned how to juggle", 20), None, false)
+        .await
+        .expect("store bob memory");
+
+    let digest = generate_digest(&db, 10, "daily")
+        .await
+        .expect("generate digest");
+
+    assert_eq!(
+        digest.memory_count, 1,
+        "digest must only count the caller's memories"
+    );
+    assert!(
+        digest.content.contains("galaxy"),
+        "digest must contain the caller's memory content"
+    );
+    assert!(
+        !digest.content.contains("juggle"),
+        "digest must not contain cross-tenant memory content"
     );
 }

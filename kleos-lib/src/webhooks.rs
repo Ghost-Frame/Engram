@@ -727,12 +727,19 @@ pub async fn get_changes_since(
 ) -> Result<Vec<SyncChange>> {
     let since_s = since.to_string();
     db.read(move |conn| {
+        // Scope the sync feed to the caller. memories carries user_id in both
+        // the monolith schema and the per-tenant shard (dropped at tenant v22,
+        // re-added at v55), so the predicate is a no-op in a single-owner shard
+        // and the tenant boundary in shared (monolith) mode, where ResolvedDb
+        // hands back state.db. Without it the sync path leaks every tenant's
+        // changed memories.
         let mut stmt = conn.prepare(
             "SELECT id, content, category, source, importance, tags, confidence, sync_id, \
                  is_static, is_forgotten, is_archived, version, created_at, updated_at \
-                 FROM memories WHERE updated_at > ?1 ORDER BY updated_at ASC LIMIT ?2",
+                 FROM memories WHERE updated_at > ?1 AND user_id = ?2 \
+                 ORDER BY updated_at ASC LIMIT ?3",
         )?;
-        let mut rows = stmt.query(rusqlite::params![since_s, limit])?;
+        let mut rows = stmt.query(rusqlite::params![since_s, user_id, limit])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             result.push(SyncChange {

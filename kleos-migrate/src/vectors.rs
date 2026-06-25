@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use arrow_array::cast::AsArray;
 use arrow_array::types::Float32Type;
 use arrow_array::{
-    Array, FixedSizeListArray, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
+    Array, FixedSizeListArray, Int64Array, PrimitiveArray, RecordBatch, RecordBatchIterator,
+    RecordBatchReader,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -314,15 +314,22 @@ pub async fn extract_from_source_lance(
     let mut source_eligible = 0usize;
 
     while let Some(batch) = stream.try_next().await? {
+        // Use checked downcasts so a schema change or corruption returns a
+        // structured error instead of a panic from the infallible AsArray
+        // trait methods.
         let mid_col = batch
             .column_by_name("memory_id")
             .ok_or_else(|| anyhow!("source lance missing memory_id column"))?
-            .as_primitive::<arrow_array::types::Int64Type>()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| anyhow!("memory_id column is not Int64 -- schema mismatch"))?
             .clone();
         let vec_col = batch
             .column_by_name("vector")
             .ok_or_else(|| anyhow!("source lance missing vector column"))?
-            .as_fixed_size_list()
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .ok_or_else(|| anyhow!("vector column is not FixedSizeList -- schema mismatch"))?
             .clone();
 
         for i in 0..batch.num_rows() {
@@ -336,7 +343,11 @@ pub async fn extract_from_source_lance(
 
             source_eligible += 1;
             let values = vec_col.value(i);
-            let floats = values.as_primitive::<Float32Type>();
+            // Checked downcast for inner float values; propagate on type mismatch.
+            let floats = values
+                .as_any()
+                .downcast_ref::<PrimitiveArray<Float32Type>>()
+                .ok_or_else(|| anyhow!("vector inner values are not Float32 -- schema mismatch"))?;
             if floats.len() != DIMENSIONS {
                 warn!(
                     "skipping memory {}: vector length {} != {}",
@@ -457,10 +468,13 @@ pub async fn dry_run_source_lance_count(
         let mut stream = src_table.query().execute().await?;
         let mut count = 0usize;
         while let Some(batch) = stream.try_next().await? {
+            // Checked downcast -- panic-free on schema mismatch.
             let mid_col = batch
                 .column_by_name("memory_id")
                 .ok_or_else(|| anyhow!("source lance missing memory_id column"))?
-                .as_primitive::<arrow_array::types::Int64Type>()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| anyhow!("memory_id column is not Int64 -- schema mismatch"))?
                 .clone();
             for i in 0..batch.num_rows() {
                 if allowed.contains(&mid_col.value(i)) {

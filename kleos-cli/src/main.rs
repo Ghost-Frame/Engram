@@ -193,6 +193,277 @@ enum Commands {
     /// Admin operations (require admin role, signed request, long timeouts)
     #[command(subcommand)]
     Admin(AdminCommands),
+    /// Agent-forge stateful operations (specs, hypotheses, approaches, verify, session learns)
+    #[command(subcommand)]
+    Forge(ForgeCommands),
+}
+
+/// Subcommands for `kleos-cli forge` -- agent-forge stateful operations.
+///
+/// Each subcommand maps 1:1 to a server-side HTTP route under `/forge/*`.
+/// All state is stored in the Kleos tenant database; no local DB is used.
+#[derive(Subcommand)]
+enum ForgeCommands {
+    /// Create a new task spec with acceptance criteria and file coverage for gate enforcement.
+    SpecTask {
+        /// Human-readable description of the task
+        #[arg(long)]
+        task_description: String,
+        /// Category of work: feature, bugfix, refactor, enhancement, test, docs
+        #[arg(long)]
+        task_type: String,
+        /// Acceptance criteria (pass multiple times, minimum 2)
+        #[arg(long = "criterion", required = true)]
+        acceptance_criteria: Vec<String>,
+        /// Stable public interface description for the change
+        #[arg(long)]
+        interface_contract: String,
+        /// Known failure modes and boundary conditions (pass multiple times, minimum 3)
+        #[arg(long = "edge-case", required = true)]
+        edge_cases: Vec<String>,
+        /// Optional agent session identifier for gate enforcement
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Paths the agent expects to write (pass multiple times)
+        #[arg(long = "file")]
+        files_to_touch: Vec<String>,
+        /// Free-text external dependencies or blockers
+        #[arg(long)]
+        dependencies: Option<String>,
+    },
+    /// Transition a spec to a new lifecycle status.
+    UpdateSpec {
+        /// ID of the spec to transition
+        #[arg(long)]
+        spec_id: String,
+        /// New lifecycle status: active, completed, failed, blocked
+        #[arg(long)]
+        status: String,
+        /// Optional human note recorded alongside the transition
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// List forge specs for the authenticated user, optionally filtered by status.
+    ListSpecs {
+        /// Filter by lifecycle status
+        #[arg(long)]
+        status: Option<String>,
+        /// Maximum rows to return
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+    /// Fetch one full spec by ID including related sub-records.
+    GetSpec {
+        /// Spec ID to fetch
+        id: String,
+    },
+    /// Record a new hypothesis before touching code in response to a bug.
+    LogHypothesis {
+        /// Description of the observed bug or failure
+        #[arg(long)]
+        bug_description: String,
+        /// Agent's proposed root cause
+        #[arg(long)]
+        hypothesis: String,
+        /// Optional agent session identifier
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Subjective confidence in [0.0, 1.0]
+        #[arg(long)]
+        confidence: Option<f64>,
+        /// Optional parent spec ID to link to
+        #[arg(long)]
+        spec_id: Option<String>,
+    },
+    /// Record the outcome of an existing hypothesis.
+    LogOutcome {
+        /// ID of the hypothesis to close
+        #[arg(long)]
+        hypothesis_id: String,
+        /// Verdict: correct, incorrect, or partial
+        #[arg(long)]
+        outcome: String,
+        /// Optional free-text notes about what was learned
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Search past hypotheses by keyword across bug description and hypothesis text.
+    RecallErrors {
+        /// Keyword to search in bug_description and hypothesis columns
+        #[arg(long)]
+        query: Option<String>,
+        /// Maximum rows to return
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+    /// Store two or more named design alternatives and return a structured comparison prompt.
+    ConsiderApproaches {
+        /// Short description of the design problem being evaluated
+        #[arg(long)]
+        problem: String,
+        /// Design alternatives as JSON objects (pass multiple times, minimum 2)
+        #[arg(long = "approach", required = true)]
+        approaches: Vec<String>,
+        /// Optional parent spec ID to link the approaches to
+        #[arg(long)]
+        spec_id: Option<String>,
+        /// Zero-based index of the chosen alternative, if decided
+        #[arg(long)]
+        chosen_index: Option<usize>,
+    },
+    /// Record the result of a client-side verification run against a spec criterion.
+    Verify {
+        /// The command string that was executed client-side
+        #[arg(long)]
+        command: String,
+        /// Process exit code
+        #[arg(long)]
+        exit_code: i32,
+        /// Whether the run is considered a success
+        #[arg(long)]
+        success: bool,
+        /// Optional parent spec ID to link the record to
+        #[arg(long)]
+        spec_id: Option<String>,
+        /// Wall-clock duration of the command in milliseconds
+        #[arg(long)]
+        duration_ms: Option<i64>,
+        /// Zero-based index into the spec's acceptance_criteria array
+        #[arg(long)]
+        criteria_index: Option<i64>,
+        /// Standard output (pre-clipped to 4096 bytes client-side)
+        #[arg(long)]
+        stdout: Option<String>,
+        /// Standard error (pre-clipped to 4096 bytes client-side)
+        #[arg(long)]
+        stderr: Option<String>,
+    },
+    /// Persist a mid-session discovery to forge_session_learns.
+    SessionLearn {
+        /// Discovery text to persist
+        #[arg(long)]
+        discovery: String,
+        /// Optional surrounding context (file name, function, etc.)
+        #[arg(long)]
+        context: Option<String>,
+        /// Optional tag list for future recall filtering (pass multiple times)
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Optional parent spec ID
+        #[arg(long)]
+        spec_id: Option<String>,
+    },
+    /// Search forge_session_learns by keyword in the discovery text.
+    SessionRecall {
+        /// Keyword to search in the discovery column
+        #[arg(long)]
+        query: Option<String>,
+        /// Maximum rows to return
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+    /// Pure structured-reasoning prompt builder; no filesystem access, no DB writes.
+    Think {
+        /// The problem statement to reason about
+        #[arg(long)]
+        problem: Option<String>,
+        /// Optional constraints that bound the solution space (pass multiple times)
+        #[arg(long = "constraint")]
+        constraints: Vec<String>,
+        /// Optional context the caller already holds
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Partition unknowns into blocking and non-blocking sets; returns a clear action directive.
+    DeclareUnknowns {
+        /// Unknowns as JSON objects: {"description":"...","blocking":true} (pass multiple times)
+        #[arg(long = "unknown", required = true)]
+        unknowns: Vec<String>,
+    },
+    /// Scan a source file for declarations that lack a preceding comment.
+    ///
+    /// Supply exactly one of --path (server-visible) or --content-file (local file).
+    CommentCheck {
+        /// Server-visible absolute path to the file to scan
+        #[arg(long, conflicts_with = "content_file")]
+        path: Option<String>,
+        /// Local file whose content is sent inline to the server
+        #[arg(long)]
+        content_file: Option<std::path::PathBuf>,
+        /// File extension hint when using --content-file (e.g. rs, ts)
+        #[arg(long)]
+        extension: Option<String>,
+    },
+    /// Build an adversarial review prompt for a source file.
+    ///
+    /// Supply exactly one of --path (server-visible) or --content-file (local file).
+    ChallengeCode {
+        /// Server-visible absolute path to the file to review
+        #[arg(long, conflicts_with = "content_file")]
+        path: Option<String>,
+        /// Local file whose content is sent inline to the server
+        #[arg(long)]
+        content_file: Option<std::path::PathBuf>,
+        /// File extension hint when using --content-file (e.g. rs, ts)
+        #[arg(long)]
+        extension: Option<String>,
+    },
+    /// Walk a directory tree, extract named symbols, and return a ranked symbol map.
+    ///
+    /// The path must resolve within KLEOS_FORGE_FS_ROOTS on the server.
+    RepoMap {
+        /// Absolute path to the directory root to scan (must be within server FS roots)
+        #[arg(long)]
+        path: String,
+        /// Path fragments to prioritise in the output (pass multiple times)
+        #[arg(long = "focus")]
+        focus: Vec<String>,
+        /// Token budget for the output (default 4000)
+        #[arg(long)]
+        max_tokens: Option<usize>,
+    },
+    /// Walk a directory tree and return symbols whose names match a query string (case-insensitive).
+    ///
+    /// The path must resolve within KLEOS_FORGE_FS_ROOTS on the server.
+    SearchCode {
+        /// Symbol name fragment to search for
+        #[arg(long)]
+        query: Option<String>,
+        /// Absolute path to the directory root to walk (must be within server FS roots)
+        #[arg(long)]
+        path: String,
+        /// Optional kind filter: function, class, enum, etc.
+        #[arg(long)]
+        symbol_type: Option<String>,
+        /// Maximum number of results to return (default 20)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Import specs from the local agent-forge SQLite database into the Kleos server.
+    ///
+    /// Opens ~/.agent-forge/forge.db (or --db path), reads the `specs` table,
+    /// and POSTs each row to /forge/spec-task. Rows that fail server validation
+    /// (4xx) are counted as skipped; import continues regardless.
+    ImportLocal {
+        /// Path to the local agent-forge SQLite file (default: ~/.agent-forge/forge.db)
+        #[arg(long)]
+        db: Option<String>,
+        /// Session ID to record on each imported spec (default: "import-local")
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Include specs whose status is not 'active' (completed, failed, blocked, etc.)
+        #[arg(long)]
+        include_completed: bool,
+    },
+    /// Show a git diff summary for the current working directory.
+    ///
+    /// Runs `git diff --stat` and `git diff --name-only` against the optional
+    /// base ref (default: uncommitted working-tree changes). No server call is made.
+    SessionDiff {
+        /// Base git ref to diff against (e.g. HEAD~5, main, a commit SHA)
+        #[arg(long)]
+        base: Option<String>,
+    },
 }
 
 /// Subcommands for `kleos-cli admin` -- long-running admin operations.
@@ -308,10 +579,12 @@ fn parse_ttl(s: &str) -> Result<u64, String> {
     let s = s.trim();
     if let Some(days) = s.strip_suffix('d') {
         let n: u64 = days.parse().map_err(|_| format!("invalid TTL: {}", s))?;
-        Ok(n * 86400)
+        n.checked_mul(86400)
+            .ok_or_else(|| format!("TTL too large: {}", s))
     } else if let Some(hours) = s.strip_suffix('h') {
         let n: u64 = hours.parse().map_err(|_| format!("invalid TTL: {}", s))?;
-        Ok(n * 3600)
+        n.checked_mul(3600)
+            .ok_or_else(|| format!("TTL too large: {}", s))
     } else {
         s.parse::<u64>()
             .map_err(|_| format!("invalid TTL: {} (use Nd or Nh)", s))
@@ -1638,6 +1911,10 @@ async fn main() {
         Commands::Admin(admin_cmd) => {
             handle_admin_command(&client, admin_cmd).await;
         }
+
+        Commands::Forge(forge_cmd) => {
+            handle_forge_command(&client, forge_cmd).await;
+        }
     }
 }
 
@@ -1768,14 +2045,46 @@ async fn handle_identity_init(
         }
     }
 
-    let sig_hex = match signer.sign_enrollment_proof() {
+    // Post-bootstrap enrollments must bind the proof to a server-issued
+    // single-use nonce. Try the challenge endpoint first; when it is not
+    // available (bootstrap has no credentials yet, or the server predates
+    // the challenge flow) fall back to the legacy nonce-less proof.
+    let nonce: Option<String> = match client
+        .post("/identity-keys/enroll/challenge", json!({}))
+        .await
+    {
+        // A successful response that lacks a usable nonce is a real problem
+        // (mangled by a proxy, or a schema change) -- do not silently degrade
+        // to a nonce-less proof the server will then reject. Abort with a
+        // clear message instead.
+        Ok(v) => match v.get("nonce").and_then(|n| n.as_str()) {
+            Some(n) => Some(n.to_string()),
+            None => {
+                eprintln!(
+                    "Enrollment challenge response did not contain a nonce; aborting. Response: {}",
+                    v
+                );
+                std::process::exit(1);
+            }
+        },
+        // A transport/HTTP error means the endpoint is unavailable: this is
+        // the bootstrap (no credentials yet) or pre-challenge-server case, so
+        // fall back to the legacy nonce-less proof.
+        Err(_) => None,
+    };
+
+    let sig_result = match &nonce {
+        Some(n) => signer.sign_enrollment_proof_with_nonce(n),
+        None => signer.sign_enrollment_proof(),
+    };
+    let sig_hex = match sig_result {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error signing enrollment proof: {}", e);
             std::process::exit(1);
         }
     };
-    let body = json!({
+    let mut body = json!({
         "tier": signer.tier(),
         "algo": signer.algo().as_str(),
         "pubkey_pem": signer.pubkey_pem(),
@@ -1784,6 +2093,11 @@ async fn handle_identity_init(
         "serial": serial,
         "sig_hex": sig_hex,
     });
+    // Only attach the nonce when one was issued; the bootstrap middleware
+    // parses the body strictly and the legacy proof has no nonce field.
+    if let Some(n) = &nonce {
+        body["nonce"] = json!(n);
+    }
 
     let result = client.post("/identity-keys/enroll", body).await;
     match result {
@@ -2469,16 +2783,30 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                         .and_then(|x| x.as_str())
                         .unwrap_or("");
                     let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("agent");
-                    let filename = if plugin.is_empty() {
+                    let raw_filename = if plugin.is_empty() {
                         format!("{}.md", name)
                     } else {
                         format!("{}__{}.md", plugin, name)
                     };
-                    let path = format!("{}/{}", target_dir, filename);
+                    // `name`/`plugin` are server-controlled. Strip any directory
+                    // components so a crafted skill name (e.g. "../../.bashrc")
+                    // cannot escape target_dir. sanitize_download_name returns a
+                    // single safe path component or None.
+                    let Some(safe_name) = sanitize_download_name(&raw_filename) else {
+                        eprintln!(
+                            "Refusing to materialize skill #{}: name '{}' yields no safe filename",
+                            id, name
+                        );
+                        return;
+                    };
                     if let Err(e) = std::fs::create_dir_all(&target_dir) {
                         eprintln!("Failed to create {}: {}", target_dir, e);
                         return;
                     }
+                    let path = std::path::Path::new(&target_dir)
+                        .join(&safe_name)
+                        .to_string_lossy()
+                        .into_owned();
                     // Reconstruct: prefer metadata['frontmatter'] when the
                     // importer stored the original; otherwise synthesize a
                     // minimal frontmatter from name + description.
@@ -2529,7 +2857,16 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                 Ok(v) => {
                     if let Some(m) = v.get("materialization") {
                         if let Some(path) = m.get("target_path").and_then(|x| x.as_str()) {
-                            if let Err(e) = std::fs::remove_file(path) {
+                            // target_path comes from the server. Only delete a
+                            // file that looks like a materialized agent (a .md
+                            // with no traversal component) so a poisoned record
+                            // cannot turn dematerialize into arbitrary deletion.
+                            if !is_safe_materialization_path(path) {
+                                eprintln!(
+                                    "Refusing to remove suspicious materialization path: {}",
+                                    path
+                                );
+                            } else if let Err(e) = std::fs::remove_file(path) {
                                 if e.kind() != std::io::ErrorKind::NotFound {
                                     eprintln!("Failed to remove {}: {}", path, e);
                                 }
@@ -2792,6 +3129,22 @@ fn sanitize_download_name(server_name: &str) -> Option<std::path::PathBuf> {
         return None;
     }
     Some(std::path::PathBuf::from(name))
+}
+
+/// True when a server-supplied materialization path is safe to delete: it must
+/// be a `.md` file (what materialize writes) and contain no `..` traversal
+/// component. Guards dematerialize against a poisoned record pointing the
+/// removal at an arbitrary file.
+fn is_safe_materialization_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let is_md = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    let no_traversal = !p
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    is_md && no_traversal
 }
 
 /// Encodes a byte slice as lowercase hexadecimal.
@@ -3987,11 +4340,624 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
     }
 }
 
+/// Build a `FileOrContentBody`-compatible JSON value for the comment-check and
+/// challenge-code endpoints.
+///
+/// When `content_file` is given, reads the file and sends its text as `content`.
+/// When `path` is given, sends it as the server-visible `path` field.
+/// Returns `Err` when neither is provided or the local file cannot be read.
+fn build_file_or_content_body(
+    path: &Option<String>,
+    content_file: &Option<std::path::PathBuf>,
+    extension: &Option<String>,
+) -> Result<Value, String> {
+    if let Some(cf) = content_file {
+        let text = std::fs::read_to_string(cf)
+            .map_err(|e| format!("cannot read --content-file {}: {}", cf.display(), e))?;
+        let mut body = json!({ "content": text });
+        if let Some(ext) = extension {
+            body["extension"] = json!(ext);
+        }
+        Ok(body)
+    } else if let Some(p) = path {
+        Ok(json!({ "path": p }))
+    } else {
+        Err("supply either --path or --content-file".to_string())
+    }
+}
+
+/// Dispatch `kleos-cli forge <op>` subcommands to the server `/forge/*` endpoints.
+///
+/// Each arm builds a JSON body from CLI arguments and calls `client.post` or
+/// `client.get`, then pretty-prints the response. Error handling mirrors the
+/// existing subcommand families (e.g. jobs, handoff, skill).
+async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
+    // Pretty-print a successful JSON response to stdout.
+    let pretty = |v: Value| println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+
+    match cmd {
+        ForgeCommands::SpecTask {
+            task_description,
+            task_type,
+            acceptance_criteria,
+            interface_contract,
+            edge_cases,
+            session_id,
+            files_to_touch,
+            dependencies,
+        } => {
+            let mut body = json!({
+                "task_description": task_description,
+                "task_type": task_type,
+                "acceptance_criteria": acceptance_criteria,
+                "interface_contract": interface_contract,
+                "edge_cases": edge_cases,
+            });
+            if let Some(s) = session_id {
+                body["session_id"] = json!(s);
+            }
+            if !files_to_touch.is_empty() {
+                body["files_to_touch"] = json!(files_to_touch);
+            }
+            if let Some(d) = dependencies {
+                body["dependencies"] = json!(d);
+            }
+            match client.post("/forge/spec-task", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::UpdateSpec {
+            spec_id,
+            status,
+            note,
+        } => {
+            let mut body = json!({
+                "spec_id": spec_id,
+                "status": status,
+            });
+            if let Some(n) = note {
+                body["note"] = json!(n);
+            }
+            match client.post("/forge/update-spec", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::ListSpecs { status, limit } => {
+            let mut path = format!("/forge/specs?limit={}", limit);
+            if let Some(s) = status {
+                path.push_str(&format!("&status={}", s));
+            }
+            match client.get(&path).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::GetSpec { id } => match client.get(&format!("/forge/spec/{}", id)).await {
+            Ok(v) => pretty(v),
+            Err(e) => eprintln!("Error: {}", e),
+        },
+
+        ForgeCommands::LogHypothesis {
+            bug_description,
+            hypothesis,
+            session_id,
+            confidence,
+            spec_id,
+        } => {
+            let mut body = json!({
+                "bug_description": bug_description,
+                "hypothesis": hypothesis,
+            });
+            if let Some(s) = session_id {
+                body["session_id"] = json!(s);
+            }
+            if let Some(c) = confidence {
+                body["confidence"] = json!(c);
+            }
+            if let Some(s) = spec_id {
+                body["spec_id"] = json!(s);
+            }
+            match client.post("/forge/log-hypothesis", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::LogOutcome {
+            hypothesis_id,
+            outcome,
+            notes,
+        } => {
+            let mut body = json!({
+                "hypothesis_id": hypothesis_id,
+                "outcome": outcome,
+            });
+            if let Some(n) = notes {
+                body["notes"] = json!(n);
+            }
+            match client.post("/forge/log-outcome", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::RecallErrors { query, limit } => {
+            let mut path = format!("/forge/recall-errors?limit={}", limit);
+            if let Some(q) = query {
+                let encoded = utf8_percent_encode(q, NON_ALPHANUMERIC).to_string();
+                path.push_str(&format!("&query={}", encoded));
+            }
+            match client.get(&path).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::ConsiderApproaches {
+            problem,
+            approaches,
+            spec_id,
+            chosen_index,
+        } => {
+            // Each approach is supplied as a raw JSON string on the CLI.
+            let parsed: Vec<Value> = approaches
+                .iter()
+                .map(|s| {
+                    serde_json::from_str(s).unwrap_or_else(|_| json!({"name": s, "description": s}))
+                })
+                .collect();
+            let mut body = json!({
+                "problem": problem,
+                "approaches": parsed,
+            });
+            if let Some(s) = spec_id {
+                body["spec_id"] = json!(s);
+            }
+            if let Some(i) = chosen_index {
+                body["chosen_index"] = json!(i);
+            }
+            match client.post("/forge/consider-approaches", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::Verify {
+            command,
+            exit_code,
+            success,
+            spec_id,
+            duration_ms,
+            criteria_index,
+            stdout,
+            stderr,
+        } => {
+            let mut body = json!({
+                "command": command,
+                "exit_code": exit_code,
+                "success": success,
+            });
+            if let Some(s) = spec_id {
+                body["spec_id"] = json!(s);
+            }
+            if let Some(d) = duration_ms {
+                body["duration_ms"] = json!(d);
+            }
+            if let Some(c) = criteria_index {
+                body["criteria_index"] = json!(c);
+            }
+            if let Some(o) = stdout {
+                body["stdout"] = json!(o);
+            }
+            if let Some(e) = stderr {
+                body["stderr"] = json!(e);
+            }
+            match client.post("/forge/verify", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::SessionLearn {
+            discovery,
+            context,
+            tags,
+            spec_id,
+        } => {
+            let mut body = json!({
+                "discovery": discovery,
+            });
+            if let Some(c) = context {
+                body["context"] = json!(c);
+            }
+            if !tags.is_empty() {
+                body["tags"] = json!(tags);
+            }
+            if let Some(s) = spec_id {
+                body["spec_id"] = json!(s);
+            }
+            match client.post("/forge/session-learn", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::SessionRecall { query, limit } => {
+            let mut path = format!("/forge/session-recall?limit={}", limit);
+            if let Some(q) = query {
+                let encoded = utf8_percent_encode(q, NON_ALPHANUMERIC).to_string();
+                path.push_str(&format!("&query={}", encoded));
+            }
+            match client.get(&path).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::Think {
+            problem,
+            constraints,
+            context,
+        } => {
+            let mut body = json!({});
+            if let Some(p) = problem {
+                body["problem"] = json!(p);
+            }
+            if !constraints.is_empty() {
+                body["constraints"] = json!(constraints);
+            }
+            if let Some(c) = context {
+                body["context"] = json!(c);
+            }
+            match client.post("/forge/think", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::DeclareUnknowns { unknowns } => {
+            // Each unknown is supplied as a raw JSON string on the CLI.
+            let parsed: Vec<Value> = unknowns
+                .iter()
+                .map(|s| {
+                    serde_json::from_str(s)
+                        .unwrap_or_else(|_| json!({"description": s, "blocking": false}))
+                })
+                .collect();
+            let body = json!({ "unknowns": parsed });
+            match client.post("/forge/declare-unknowns", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::CommentCheck {
+            path,
+            content_file,
+            extension,
+        } => {
+            let body = build_file_or_content_body(path, content_file, extension);
+            match body {
+                Ok(b) => match client.post("/forge/comment-check", b).await {
+                    Ok(v) => pretty(v),
+                    Err(e) => eprintln!("Error: {}", e),
+                },
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::ChallengeCode {
+            path,
+            content_file,
+            extension,
+        } => {
+            let body = build_file_or_content_body(path, content_file, extension);
+            match body {
+                Ok(b) => match client.post("/forge/challenge-code", b).await {
+                    Ok(v) => pretty(v),
+                    Err(e) => eprintln!("Error: {}", e),
+                },
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::RepoMap {
+            path,
+            focus,
+            max_tokens,
+        } => {
+            let mut body = json!({ "path": path });
+            if !focus.is_empty() {
+                body["focus"] = json!(focus);
+            }
+            if let Some(mt) = max_tokens {
+                body["max_tokens"] = json!(mt);
+            }
+            match client.post("/forge/repo-map", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::SearchCode {
+            query,
+            path,
+            symbol_type,
+            limit,
+        } => {
+            let mut body = json!({ "path": path });
+            if let Some(q) = query {
+                body["query"] = json!(q);
+            }
+            if let Some(st) = symbol_type {
+                body["symbol_type"] = json!(st);
+            }
+            if let Some(l) = limit {
+                body["limit"] = json!(l);
+            }
+            match client.post("/forge/search-code", body).await {
+                Ok(v) => pretty(v),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        ForgeCommands::ImportLocal {
+            db,
+            session_id,
+            include_completed,
+        } => {
+            // Resolve the SQLite path: use --db or fall back to ~/.agent-forge/forge.db.
+            let db_path = if let Some(p) = db.as_deref() {
+                p.to_string()
+            } else {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                format!("{}/.agent-forge/forge.db", home)
+            };
+
+            // Fail gracefully when the file does not exist rather than returning
+            // a confusing rusqlite "unable to open database" error.
+            if !std::path::Path::new(&db_path).exists() {
+                println!("No agent-forge database found at {}", db_path);
+                return;
+            }
+
+            // Open the SQLite database in read-only mode.
+            let conn = match rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error opening {}: {}", db_path, e);
+                    return;
+                }
+            };
+
+            // Build the query: active-only by default; all statuses with --include-completed.
+            let sql = if *include_completed {
+                "SELECT id, task_description, task_type, acceptance_criteria, interface_contract, \
+                 edge_cases, files_to_touch, dependencies, status FROM specs"
+                    .to_string()
+            } else {
+                "SELECT id, task_description, task_type, acceptance_criteria, interface_contract, \
+                 edge_cases, files_to_touch, dependencies, status FROM specs WHERE status = 'active'"
+                    .to_string()
+            };
+
+            // Collect rows into a Vec so we are done with the connection before
+            // we begin the async HTTP loop (rusqlite Connection is not Send).
+            struct SpecRow {
+                /// Row primary key from the local SQLite.
+                id: String,
+                /// Human-readable task description.
+                task_description: String,
+                /// Category of work (feature, bugfix, etc.).
+                task_type: String,
+                /// JSON-array text of acceptance criteria.
+                acceptance_criteria: Vec<String>,
+                /// Stable public interface description.
+                interface_contract: String,
+                /// JSON-array text of edge cases.
+                edge_cases: Vec<String>,
+                /// JSON-array text of files to touch.
+                files_to_touch: Vec<String>,
+                /// Free-text external dependencies or blockers.
+                dependencies: Option<String>,
+            }
+
+            /// Parse a nullable JSON-array TEXT column into Vec<String>, tolerating
+            /// NULL, empty string, and invalid JSON gracefully.
+            fn parse_json_array(raw: Option<String>) -> Vec<String> {
+                raw.and_then(|s| {
+                    if s.trim().is_empty() {
+                        None
+                    } else {
+                        serde_json::from_str::<Vec<String>>(&s).ok()
+                    }
+                })
+                .unwrap_or_default()
+            }
+
+            let mut stmt = match conn.prepare(&sql) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error preparing query: {}", e);
+                    return;
+                }
+            };
+
+            let rows_result: Result<Vec<SpecRow>, rusqlite::Error> = stmt
+                .query_map([], |row| {
+                    Ok(SpecRow {
+                        id: row.get::<_, String>(0)?,
+                        task_description: row.get::<_, String>(1)?,
+                        task_type: row.get::<_, String>(2)?,
+                        acceptance_criteria: parse_json_array(row.get::<_, Option<String>>(3)?),
+                        interface_contract: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        edge_cases: parse_json_array(row.get::<_, Option<String>>(5)?),
+                        files_to_touch: parse_json_array(row.get::<_, Option<String>>(6)?),
+                        dependencies: row.get::<_, Option<String>>(7)?,
+                    })
+                })
+                .and_then(|mapped| mapped.collect());
+
+            let rows = match rows_result {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Error reading specs table: {}", e);
+                    return;
+                }
+            };
+
+            if rows.is_empty() {
+                println!("No specs to import from {}", db_path);
+                return;
+            }
+
+            // The session ID used on every imported spec.
+            let sid = session_id.as_deref().unwrap_or("import-local").to_string();
+
+            // Track import outcomes: (local_id, reason) for skipped rows.
+            let mut imported = 0usize;
+            let mut skipped: Vec<(String, String)> = Vec::new();
+
+            for row in rows {
+                let mut body = json!({
+                    "session_id": sid,
+                    "task_description": row.task_description,
+                    "task_type": row.task_type,
+                    "acceptance_criteria": row.acceptance_criteria,
+                    "interface_contract": row.interface_contract,
+                    "edge_cases": row.edge_cases,
+                    "files_to_touch": row.files_to_touch,
+                    "dependencies": serde_json::Value::Null,
+                });
+                if let Some(ref d) = row.dependencies {
+                    body["dependencies"] = json!(d);
+                }
+
+                match client.post("/forge/spec-task", body).await {
+                    Ok(_) => {
+                        imported += 1;
+                    }
+                    Err(e) => {
+                        // Count as skipped; continue with remaining rows.
+                        skipped.push((row.id.clone(), e.to_string()));
+                    }
+                }
+            }
+
+            // Print the final import summary.
+            println!(
+                "Import complete: {} imported, {} skipped",
+                imported,
+                skipped.len()
+            );
+            for (id, reason) in &skipped {
+                println!("  SKIPPED {} -- {}", id, reason);
+            }
+        }
+
+        ForgeCommands::SessionDiff { base } => {
+            // Validate the optional base ref to prevent flag injection or shell
+            // metacharacter injection. Mirrors agent-forge's validate_git_ref logic.
+            if let Some(ref b) = base {
+                if b.len() > 100 {
+                    eprintln!("Error: git base ref too long");
+                    return;
+                }
+                let all_safe = b
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.~/^:@{}".contains(c));
+                if !all_safe {
+                    eprintln!("Error: git base ref contains disallowed characters");
+                    return;
+                }
+                if b.starts_with('-') {
+                    eprintln!("Error: git base ref must not start with '-'");
+                    return;
+                }
+            }
+
+            // Build the argument list for both git invocations.
+            let stat_args: Vec<&str> = if let Some(ref b) = base {
+                vec!["diff", "--stat", b.as_str()]
+            } else {
+                vec!["diff", "--stat"]
+            };
+
+            let names_args: Vec<&str> = if let Some(ref b) = base {
+                vec!["diff", "--name-only", b.as_str()]
+            } else {
+                vec!["diff", "--name-only"]
+            };
+
+            // Run git diff --stat and print its output directly.
+            match std::process::Command::new("git").args(&stat_args).output() {
+                Ok(out) => {
+                    let stat = String::from_utf8_lossy(&out.stdout);
+                    if stat.trim().is_empty() {
+                        println!("No changes.");
+                    } else {
+                        println!("{}", stat.trim());
+                    }
+                    if !out.stderr.is_empty() {
+                        eprintln!("{}", String::from_utf8_lossy(&out.stderr).trim());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error running git diff --stat: {}", e);
+                    return;
+                }
+            }
+
+            // Run git diff --name-only and print the changed file list.
+            match std::process::Command::new("git").args(&names_args).output() {
+                Ok(out) => {
+                    let names = String::from_utf8_lossy(&out.stdout);
+                    let files: Vec<&str> = names.lines().filter(|l| !l.is_empty()).collect();
+                    if !files.is_empty() {
+                        println!("\nChanged files ({}):", files.len());
+                        for f in &files {
+                            println!("  {}", f);
+                        }
+                    }
+                    if !out.stderr.is_empty() {
+                        eprintln!("{}", String::from_utf8_lossy(&out.stderr).trim());
+                    }
+                }
+                Err(e) => eprintln!("Error running git diff --name-only: {}", e),
+            }
+        }
+    }
+}
+
 /// Tests for CLI-side input sanitization helpers.
 #[cfg(test)]
 mod tests {
-    use super::{resolve_credential_authority_url, sanitize_download_name};
+    use super::{
+        is_safe_materialization_path, resolve_credential_authority_url, sanitize_download_name,
+    };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
+
+    /// Dematerialize only deletes .md files with no traversal component.
+    #[test]
+    fn safe_materialization_path_guards_deletion() {
+        assert!(is_safe_materialization_path(
+            "/home/u/.claude/agents/foo.md"
+        ));
+        assert!(is_safe_materialization_path("agents/bar.md"));
+        // Wrong extension or traversal is refused.
+        assert!(!is_safe_materialization_path("/etc/cron.d/evil"));
+        assert!(!is_safe_materialization_path("/home/u/.bashrc"));
+        assert!(!is_safe_materialization_path("../../etc/passwd.md"));
+        assert!(!is_safe_materialization_path("agents/../../x.md"));
+    }
 
     /// A server-supplied filename is reduced to its final, CWD-relative component.
     #[test]

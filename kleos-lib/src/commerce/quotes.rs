@@ -175,9 +175,14 @@ pub async fn settle_quote(db: &Database, quote_id: &str) -> Result<()> {
     let qid = quote_id.to_string();
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     db.write(move |conn| {
+        // Reject expired quotes in the same CAS that checks pending status, so
+        // a quote cannot be settled after its window closes (the prior version
+        // checked expiry only in the separate get_valid_quote read -- a TOCTOU
+        // once a settlement endpoint is wired). Comparing against the RFC3339
+        // `now` matches the stored expires_at format (datetime('now') would not).
         let rows = conn.execute(
             "UPDATE payment_quotes SET status = 'settled', settled_at = ?2
-                 WHERE id = ?1 AND status = 'pending'",
+                 WHERE id = ?1 AND status = 'pending' AND expires_at > ?2",
             params![qid, now],
         )?;
         if rows == 0 {

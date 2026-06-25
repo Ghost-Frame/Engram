@@ -514,6 +514,12 @@ fn main() {
     let credd_url =
         std::env::var("CREDD_URL").unwrap_or_else(|_| "http://localhost:4400".to_string());
 
+    // Refuse to send the owner key (Bearer) over a plaintext non-loopback hop.
+    if let Err(e) = kleos_cred::net::guard_credd_transport(&credd_url) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+
     let owner_key = match std::env::var("CRED_OWNER_KEY") {
         Ok(k) => k,
         Err(_) => {

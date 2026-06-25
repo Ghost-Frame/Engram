@@ -203,12 +203,27 @@ fn draw_open_access(
     f.render_widget(p, area);
 }
 
+/// Byte offset of the `char_pos`-th character in `s` (its length if past the
+/// end). Used to translate a char-based cursor into the byte index that
+/// `String::remove`/`insert` require.
+fn char_byte_idx(s: &str, char_pos: usize) -> usize {
+    s.char_indices()
+        .nth(char_pos)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len())
+}
+
 /// Truncate a long key string for display, showing the first 20 and last 8 chars.
 fn truncate_key(key: &str) -> String {
-    if key.len() <= 32 {
+    let n = key.chars().count();
+    if n <= 32 {
         key.to_string()
     } else {
-        format!("{}...{}", &key[..20], &key[key.len() - 8..])
+        // Operate on chars, not byte slices: a pasted multibyte key panics on
+        // `&key[..20]` when the index lands mid-char.
+        let head: String = key.chars().take(20).collect();
+        let tail: String = key.chars().skip(n - 8).collect();
+        format!("{head}...{tail}")
     }
 }
 
@@ -237,11 +252,16 @@ pub fn handle_security_input(
                 step_state.edit_cursor = 0;
             }
             KeyCode::Backspace if step_state.edit_cursor > 0 => {
-                step_state.edit_buffer.remove(step_state.edit_cursor - 1);
+                // edit_cursor counts chars; String::remove/insert want byte
+                // indices. Convert so a multibyte char in the buffer cannot
+                // panic or corrupt the string.
+                let byte = char_byte_idx(&step_state.edit_buffer, step_state.edit_cursor - 1);
+                step_state.edit_buffer.remove(byte);
                 step_state.edit_cursor -= 1;
             }
             KeyCode::Char(c) => {
-                step_state.edit_buffer.insert(step_state.edit_cursor, c);
+                let byte = char_byte_idx(&step_state.edit_buffer, step_state.edit_cursor);
+                step_state.edit_buffer.insert(byte, c);
                 step_state.edit_cursor += 1;
             }
             _ => {}

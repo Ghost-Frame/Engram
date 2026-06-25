@@ -17,6 +17,11 @@ use crate::alert;
 use crate::checks;
 use crate::checks::retry_loop::RetryTracker;
 
+/// Maximum number of distinct files whose RetryTracker state we keep in memory.
+/// Entries are evicted LRU once this cap is reached, which is safe because a
+/// file that has been quiet long enough to be evicted is unlikely to be mid-loop.
+const RETRY_TRACKERS_CAPACITY: usize = 512;
+
 // Cap the in-memory map of session-file -> read offset. Without this, the
 // supervisor's heap grows linearly with the number of distinct session JSONL
 // files it has ever seen across the lifetime of the process.
@@ -66,7 +71,16 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
         .unwrap_or(POSITIONS_CAPACITY);
     let cap = NonZeroUsize::new(max_tracked).expect("non-zero capacity");
     let mut positions: LruCache<PathBuf, u64> = LruCache::new(cap);
-    let mut retry_tracker = RetryTracker::new();
+
+    // ESUP-1: compile rule regexes exactly once before the event loop so they
+    // are not rebuilt for every log entry.
+    let compiled_rules = checks::rule_match::compile_rules(&state.rules);
+
+    // ESUP-2: one RetryTracker per watched file so that commands from different
+    // agents/sessions do not interleave in a single global deque.  The LRU cap
+    // prevents unbounded growth when many short-lived session files are seen.
+    let retry_cap = NonZeroUsize::new(RETRY_TRACKERS_CAPACITY).expect("non-zero capacity");
+    let mut retry_trackers: LruCache<PathBuf, RetryTracker> = LruCache::new(retry_cap);
 
     while let Some(event) = rx.recv().await {
         if event.kind != DebouncedEventKind::Any {
@@ -86,8 +100,14 @@ pub async fn run(state: Arc<SupervisorState>, watch_dir: PathBuf) {
                 let session_id = extract_session_id(&entry);
                 let mut violations = Vec::new();
 
-                violations.extend(checks::rule_match::check(&entry, &state.rules));
-                violations.extend(retry_tracker.check(&entry, &state.rules));
+                violations.extend(checks::rule_match::check(&entry, &compiled_rules));
+
+                // Obtain (or insert) the per-file RetryTracker, then check.
+                // `get_or_insert_mut` gives a mutable reference so that
+                // RetryTracker can update its internal command history.
+                let tracker =
+                    retry_trackers.get_or_insert_mut(path.to_path_buf(), RetryTracker::new);
+                violations.extend(tracker.check(&entry, &state.rules));
 
                 for mut violation in violations {
                     if is_cooled_down(&state, &violation.rule_id).await {
@@ -140,19 +160,35 @@ fn read_new_entries(
 
     let mut new_pos = start_pos;
     let mut entries = Vec::new();
+    let mut buf = Vec::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        new_pos += line.len() as u64 + 1;
+    loop {
+        buf.clear();
+        // Read raw bytes rather than reader.lines(): a non-UTF-8 byte makes
+        // lines() yield Err, and the previous `break` left new_pos un-advanced
+        // so every later poll re-hit the same bad byte and silently missed all
+        // subsequent events (a monitoring blind spot).
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break; // EOF
+        }
+        // A chunk that is not newline-terminated is a partial mid-write line.
+        // Leave new_pos before it so the completed line is read (and parsed) on
+        // the next poll instead of being skipped (TOCTOU drop of a real event).
+        if buf.last() != Some(&b'\n') {
+            break;
+        }
+        new_pos += n as u64;
 
-        if line.trim().is_empty() {
+        // Decode lossily so a bad byte is skipped past (offset advanced) rather
+        // than stalling the watcher forever.
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
 
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
             let obj = value.as_object();
             let is_tool = obj
                 .map(|o| {

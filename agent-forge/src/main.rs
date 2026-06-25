@@ -6,14 +6,9 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod db;
-mod json_io;
-mod kleos_client;
-mod tools;
-mod treesitter;
-
-use db::Database;
-use json_io::{read_input, write_output, Output};
+use agent_forge::db::Database;
+use agent_forge::json_io::{read_input, write_output, Output};
+use agent_forge::tools;
 
 /// Top-level CLI: every invocation specifies a subcommand plus input/output JSON paths.
 #[derive(Parser)]

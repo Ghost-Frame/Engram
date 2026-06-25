@@ -147,7 +147,11 @@ async fn list_entities_handler(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50).min(1000);
+    // clamp_signed_limit rejects negative values: a negative LIMIT is treated
+    // as unlimited by SQLite, so .min(1000) alone (which a negative passes
+    // through) let a caller pull their entire row set unbounded.
+    let limit =
+        kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(50), 50, 1000) as i64;
     let offset = params.offset.unwrap_or(0);
     let user_id = auth.effective_user_id();
 
@@ -388,7 +392,7 @@ async fn entity_search_handler(
         id,
         auth.effective_user_id(),
         &body.query,
-        body.limit.unwrap_or(20).min(1000),
+        kleos_lib::validation::clamp_signed_limit(body.limit.unwrap_or(20), 20, 1000) as i64,
     )
     .await
     .map_err(AppError)?;
@@ -605,6 +609,8 @@ async fn graph_search_handler(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<GraphSearchBody>,
 ) -> Result<Json<Value>, AppError> {
+    // GraphSearchBody.limit is Option<usize>: serde rejects negatives, so .min
+    // is sufficient (no signed-LIMIT bypass possible here).
     let limit = body.limit.unwrap_or(20).min(1000);
     let nodes = graph_search(&db, &body.query, limit, auth.effective_user_id()).await?;
     Ok(Json(json!({ "nodes": nodes })))
@@ -861,6 +867,7 @@ async fn facts_handler(
     let facts = list_facts(
         &db,
         params.memory_id,
+        // FactsQuery.limit is Option<usize>: serde rejects negatives.
         params.limit.unwrap_or(50).min(1000),
         auth.effective_user_id(),
     )

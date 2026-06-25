@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     kleos_lib::config::migrate_env_prefix();
 
     let _otel_guard = kleos_lib::observability::init_tracing(
-        "engram-phylaxd",
+        "kleos-phylaxd",
         "kleos_phylax=info,kleos_credd=info",
     );
 

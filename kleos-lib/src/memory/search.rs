@@ -26,6 +26,15 @@ const DEFAULT_LIMIT: usize = DEFAULT_SEARCH_LIMIT;
 /// level so all consumers (HTTP routes, MCP, sidecar, CLI) inherit the cap.
 const MAX_LIMIT: usize = MAX_SEARCH_LIMIT;
 
+/// Minimum vector/fusion candidate pool, independent of the requested limit. Keeps recall
+/// from being capped by a shallow pool at small limits (see candidate_target in
+/// hybrid_search). Bounded above by the existing 200 ceiling.
+const MIN_CANDIDATE_POOL: usize = 64;
+
+/// Minimum FTS candidate pool, independent of the requested limit. Bounded above by the
+/// existing 250 ceiling.
+const MIN_FTS_POOL: usize = 100;
+
 // ---------------------------------------------------------------------------
 // Search result cache (3.5)
 //
@@ -638,7 +647,10 @@ async fn centroid_or_sqlite_vector(
     )
 )]
 /// Run the full hybrid memory search pipeline.
-pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<SearchResult>>> {
+pub async fn hybrid_search(
+    db: &Database,
+    mut req: SearchRequest,
+) -> Result<Arc<Vec<SearchResult>>> {
     // SECURITY (SEC-MED-6): clamp at library entry point so MCP, sidecar,
     // and CLI callers inherit the cap. HTTP route-level clamp is kept as
     // defense-in-depth.
@@ -646,6 +658,15 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     let user_id = req
         .user_id
         .ok_or_else(|| crate::EngError::InvalidInput("user_id required".into()))?;
+
+    // Normalize the query embedding so cosine semantics are correct regardless of which
+    // provider produced it (OnnxProvider already returns unit vectors; HttpProvider and
+    // OpenAiProvider do not). This mirrors the store path and keeps query/stored vectors
+    // on the same scale. Done before hashing so the cache key is stable. l2_normalize is
+    // idempotent for unit-norm input and zero-vector safe.
+    if let Some(ref mut emb) = req.embedding {
+        crate::embeddings::normalize::l2_normalize(emb);
+    }
 
     // 3.5: Check cache before running the full pipeline.
     let param_hash = hash_search_params(&req);
@@ -655,10 +676,18 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
 
     let (question_type, strategy) = resolve_strategy(&req);
 
+    // 2.2: floor the per-channel candidate pools independent of `limit`. At the default
+    // limit (10) the strategy multipliers alone produce a shallow pool (~20-24 vector,
+    // ~20-50 fts), which caps achievable recall@k regardless of how good fusion and
+    // reranking are: the heavy multiplicative rescore can promote a true-best candidate
+    // from deep in the vector ranking, but only if it was fetched at all. The floors keep
+    // a meaningful pool even for small limits, bounded by the existing ceilings.
     let candidate_target = limit
         .max((limit * strategy.candidate_multiplier).max(RERANKER_TOP_K))
-        .min(200);
-    let fts_limit = limit.max((limit * strategy.fts_limit_multiplier).min(250));
+        .clamp(MIN_CANDIDATE_POOL, 200);
+    let fts_limit = limit
+        .max((limit * strategy.fts_limit_multiplier).min(250))
+        .max(MIN_FTS_POOL);
     let budget = req.budget.unwrap_or(SearchBudget::High);
 
     // Ranked lists for RRF fusion
@@ -671,7 +700,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     if let Some(ref embedding) = req.embedding {
         let prefer_chunks = db.use_chunk_vector_search && db.chunk_vector_index.is_some();
         let vector_hits = if prefer_chunks {
-            match chunk_vector_search(db, embedding, candidate_target).await {
+            match chunk_vector_search(db, embedding, candidate_target, user_id).await {
                 Ok(hits) if !hits.is_empty() => Ok(hits),
                 Ok(_) => {
                     // Empty chunk result. Fall back to centroid index so
@@ -886,12 +915,16 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     for c in results.values_mut() {
         let rrf = rrf_scores.get(&c.id).copied().unwrap_or(0.0);
 
-        // Live FSRS retrievability. Read per-memory `fsrs_stability` when
-        // available; fall back to `initial_stability(Rating::Good)` when the
-        // column is NULL (memories that have never been reviewed).
-        let retrievability = if c.is_static {
-            1.0
-        } else {
+        // Live FSRS retrievability, decayed by age for EVERY memory including
+        // is_static ones. is_static previously forced retrievability = 1.0, but
+        // the flag is caller-set (and hardcoded on every consolidation) and had
+        // grown to ~43% of the store, pinning nearly half of all memories at full
+        // strength so stale "permanent" memories dominated recall forever. The
+        // flag still protects durability (no auto-prune) and gate guard lookups
+        // (both use is_static via direct SQL); it just no longer freezes ranking.
+        // Read per-memory `fsrs_stability` when available; fall back to
+        // `initial_stability(Rating::Good)` when the column is NULL.
+        let retrievability = {
             let stability = c.fsrs_stability.unwrap_or_else(|| {
                 crate::fsrs::initial_stability(crate::fsrs::Rating::Good) as f64
             });
@@ -916,9 +949,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
 
         c.decay_score = Some((c.importance as f64 * retrievability * 1000.0).round() / 1000.0);
 
-        let decay_factor = if c.is_static {
-            1.0
-        } else {
+        let decay_factor = {
             let floor = scoring::decay_floor();
             floor + (1.0 - floor) * retrievability
         };
@@ -943,7 +974,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         let contr = scoring::contradiction_penalty(&c.content, c.is_latest.unwrap_or(true));
 
         let recency = scoring::recency_score(&c.created_at);
-        let recency_boost = 1.0 + recency * scoring::RECENCY_WEIGHT;
+        let recency_boost = 1.0 + recency * scoring::recency_weight();
 
         c.score = rrf
             * decay_factor
@@ -1054,7 +1085,31 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let candidate_count = sorted.len();
-    sorted.truncate(limit);
+
+    // 3.11 recall fix: structured filters (category/source/tags/space/threshold) are
+    // applied AFTER this truncation, on the materialised SearchResult set below. If we
+    // truncate to `limit` first, a filtered query keeps the global top-`limit` and then
+    // drops the non-matching rows, often returning far fewer than `limit` (or zero) even
+    // when matching memories exist deeper in the ranking. When any filter is present,
+    // keep a wider pool (the same limit*5 over-fetch faceted_search uses) so the
+    // post-filter retain has candidates to keep; final_results is re-truncated to `limit`
+    // after filtering.
+    let filters_present = req.category.is_some()
+        || req.source.is_some()
+        || req.source_filter.is_some()
+        || req.tags.is_some()
+        || req.space_id.is_some()
+        || req.threshold.is_some();
+    // The pool is capped at MAX_LIMIT, so when the caller already requests `limit == MAX_LIMIT`
+    // the over-fetch collapses to `limit` and gives the post-filter no extra candidates. That is
+    // acceptable: a max-limit request already scans the widest legal pool. Over-fetch matters at
+    // the common small limits, where matching rows can sit below the global top-`limit`.
+    let pool_limit = if filters_present {
+        (limit * 5).min(MAX_LIMIT)
+    } else {
+        limit
+    };
+    sorted.truncate(pool_limit);
 
     // Build final SearchResult vec -- batch-fetch all memories in one query
     // instead of N separate round-trips.
@@ -1171,6 +1226,13 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         });
     }
 
+    // Re-truncate to the caller's requested limit after filtering. With no filters this
+    // is a no-op (the pool was already `limit`); with filters it trims the limit*5
+    // over-fetch back down once the non-matching rows have been removed.
+    if filters_present {
+        final_results.truncate(limit);
+    }
+
     // Include linked memories + version chain if requested -- batch queries
     if req.include_links {
         let result_ids: Arc<[i64]> = final_results
@@ -1233,18 +1295,31 @@ pub async fn hybrid_search_reranked(
     query_for_rerank: &str,
     reranker: Option<std::sync::Arc<dyn crate::reranker::Reranker>>,
 ) -> Result<Arc<Vec<SearchResult>>> {
-    let arc_results = hybrid_search(db, req).await?;
     let Some(reranker) = reranker else {
-        return Ok(arc_results);
+        return hybrid_search(db, req).await;
     };
+
+    // SEC-recall-2.1: the cross-encoder can only reorder candidates it is handed. If it
+    // sees only the final top-k, a memory ranked just outside that window by fusion can
+    // never be rescued, so reranking degrades to a reorder of an already-good set. Fetch
+    // a pool at least as deep as the reranker's window, rerank that, then truncate to the
+    // caller's requested limit.
+    let final_limit = req.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let pool = final_limit.max(reranker.top_k()).min(MAX_LIMIT);
+
+    let mut pool_req = req;
+    pool_req.limit = Some(pool);
+    let arc_results = hybrid_search(db, pool_req).await?;
+
     let mut results = (*arc_results).clone();
     if let Err(e) = reranker
         .rerank_results(query_for_rerank, &mut results)
         .await
     {
+        // On failure keep the fusion order; still trim the over-fetched pool to limit.
         tracing::warn!("reranker failed in hybrid_search_reranked: {}", e);
-        return Ok(arc_results);
     }
+    results.truncate(final_limit);
     Ok(Arc::new(results))
 }
 
@@ -1655,10 +1730,18 @@ fn compute_tag_cooccurrence(results: &[SearchResult], limit: usize) -> Vec<TagCo
 
 /// Parse an ISO-8601 date string into a comparable string (normalize format).
 fn parse_iso_date(s: &str) -> Option<String> {
-    // Accept both "2024-01-15" and "2024-01-15T00:00:00Z" formats.
-    // Return normalized form for string comparison against created_at.
+    // MEM-3: actually validate the input is a date before using it as a SQL
+    // string bound against created_at. The old `len() >= 10` check let any
+    // 10+ char string (e.g. "AAAAAAAAAA") through, silently widening or
+    // suppressing the date filter. Accept a bare date ("2024-01-15"), an
+    // RFC3339 timestamp ("2024-01-15T00:00:00Z"), or the DB's own
+    // "YYYY-MM-DD HH:MM:SS" form, and return the comparable string only when one
+    // of those parses succeeds.
     let trimmed = s.trim();
-    if trimmed.len() >= 10 {
+    let is_valid = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").is_ok()
+        || chrono::DateTime::parse_from_rfc3339(trimmed).is_ok()
+        || chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S").is_ok();
+    if is_valid {
         Some(trimmed.to_string())
     } else {
         None
@@ -1670,9 +1753,37 @@ fn parse_iso_date(s: &str) -> Option<String> {
 mod tests {
     use super::{
         apply_graph_rrf_increment, apply_personality_boost, hash_search_params,
-        inject_graph_hop1_neighbors, semantic_score_from_distance, Candidate, GraphExpansionRow,
+        inject_graph_hop1_neighbors, parse_iso_date, semantic_score_from_distance, Candidate,
+        GraphExpansionRow,
     };
     use crate::memory::types::{SearchBudget, SearchRequest, SearchStrategy};
+
+    /// MEM-3: only real dates are accepted as date-range bounds; arbitrary
+    /// long strings must be rejected so they cannot silently alter SQL filters.
+    #[test]
+    fn parse_iso_date_validates_real_dates() {
+        // Valid forms round-trip to the trimmed comparable string.
+        assert_eq!(parse_iso_date("2024-01-15").as_deref(), Some("2024-01-15"));
+        assert_eq!(
+            parse_iso_date("  2024-01-15  ").as_deref(),
+            Some("2024-01-15")
+        );
+        assert_eq!(
+            parse_iso_date("2024-01-15T00:00:00Z").as_deref(),
+            Some("2024-01-15T00:00:00Z")
+        );
+        assert_eq!(
+            parse_iso_date("2024-01-15 13:45:00").as_deref(),
+            Some("2024-01-15 13:45:00")
+        );
+
+        // Garbage that the old len()>=10 check let through is now rejected.
+        assert_eq!(parse_iso_date("AAAAAAAAAA"), None);
+        assert_eq!(parse_iso_date("not-a-date!"), None);
+        assert_eq!(parse_iso_date("2024-13-99"), None);
+        assert_eq!(parse_iso_date("2024-01"), None);
+        assert_eq!(parse_iso_date(""), None);
+    }
 
     /// Keeps cache entries distinct when callers trim the search pipeline differently.
     #[test]

@@ -28,3 +28,11 @@ pub use types::{TenantConfig, TenantHandle, TenantPoolConfig, TenantRow, TenantS
 /// (schema_v43). The string is ASCII-safe so `tenant_id_from_user` returns
 /// it unchanged; the on-disk shard lives at `data_dir/tenants/handoffs/`.
 pub const HANDOFFS_TENANT_ID: &str = "handoffs";
+
+/// Reserved tenant id that owns the cross-machine Frameshift growth-log set
+/// (schema_v73). Like handoffs, it is a single shared shard whose rows are
+/// scoped by `user_id`, so all of one operator's machines (which authenticate
+/// as the same user) converge on one logical growth set. The string is
+/// ASCII-safe so `tenant_id_from_user` returns it unchanged; the on-disk shard
+/// lives at `data_dir/tenants/frameshift-growth/`.
+pub const FRAMESHIFT_GROWTH_TENANT_ID: &str = "frameshift-growth";

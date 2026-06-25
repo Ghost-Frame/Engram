@@ -201,11 +201,14 @@ pub async fn link_memory(
             ));
         }
 
-        // Verify memory exists
+        // Verify the memory exists AND belongs to this user. Without the
+        // user_id predicate a caller could link another tenant's memory into
+        // their own project in monolith mode (integrity pollution), and the
+        // NotFound-vs-success distinction was a cross-tenant existence oracle.
         let memory_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM memories WHERE id = ?1",
-                rusqlite::params![memory_id],
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![memory_id, user_id],
                 |_| Ok(true),
             )
             .optional()?
@@ -279,12 +282,15 @@ pub async fn get_project_memory_ids(
             return Ok(Vec::new());
         }
 
+        // Filter the join by m.user_id too: defense in depth so a memory linked
+        // before the link_memory fix (or in any cross-tenant state) is never
+        // surfaced to a non-owner in monolith mode.
         let mut stmt = conn.prepare(
             "SELECT mp.memory_id FROM memory_projects mp \
                  JOIN memories m ON m.id = mp.memory_id \
-                 WHERE mp.project_id = ?1",
+                 WHERE mp.project_id = ?1 AND m.user_id = ?2",
         )?;
-        let mut rows = stmt.query(rusqlite::params![project_id])?;
+        let mut rows = stmt.query(rusqlite::params![project_id, user_id])?;
         let mut ids = Vec::new();
         while let Some(row) = rows.next()? {
             ids.push(row.get::<_, i64>(0)?);
@@ -321,11 +327,54 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> Result<ProjectRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
 
     #[test]
     fn test_valid_statuses() {
         assert!(VALID_PROJECT_STATUSES.contains(&"active"));
         assert!(VALID_PROJECT_STATUSES.contains(&"archived"));
         assert!(!VALID_PROJECT_STATUSES.contains(&"deleted"));
+    }
+
+    /// Insert a memory owned by `owner` and return its id.
+    async fn insert_memory(db: &Database, owner: i64, content: &str) -> i64 {
+        let content = content.to_string();
+        db.write(move |conn| {
+            Ok(conn.query_row(
+                "INSERT INTO memories (user_id, content) VALUES (?1, ?2) RETURNING id",
+                rusqlite::params![owner, content],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .expect("insert memory")
+    }
+
+    /// A user must not be able to link another tenant's memory to their project
+    /// (monolith mode), and the listing must never surface a foreign memory.
+    #[tokio::test]
+    async fn link_memory_is_tenant_scoped() {
+        let db = Database::connect_memory().await.expect("db");
+        // Project owned by user 1.
+        let (project_id, _) = create_project(&db, "p", None, "active", None, 1)
+            .await
+            .expect("create project");
+
+        // Linking another user's memory must fail closed.
+        let foreign = insert_memory(&db, 2, "foreign").await;
+        assert!(
+            link_memory(&db, foreign, project_id, 1).await.is_err(),
+            "must not link another tenant's memory"
+        );
+
+        // Linking an owned memory works, and the listing returns only it.
+        let own = insert_memory(&db, 1, "mine").await;
+        link_memory(&db, own, project_id, 1)
+            .await
+            .expect("link own memory");
+        let ids = get_project_memory_ids(&db, project_id, 1)
+            .await
+            .expect("list ids");
+        assert_eq!(ids, vec![own], "listing must be scoped to the owner");
     }
 }

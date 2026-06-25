@@ -5,8 +5,13 @@
 use super::types::MAX_TOKEN_BUDGET;
 
 /// Rough token estimate: 1 token ~= 4 chars.
+///
+/// CTX-1: count Unicode scalar values, not UTF-8 bytes. CJK and emoji are 3-4
+/// bytes each, so a byte-based estimate overcounted tokens by 3-4x for non-ASCII
+/// text and silently halved (or worse) the effective context budget for those
+/// memories.
 pub fn estimate_tokens(text: &str) -> usize {
-    text.len().div_ceil(4)
+    text.chars().count().div_ceil(4)
 }
 
 // -- Model-aware context budgeting (3.2) -------------------------------------
@@ -206,6 +211,23 @@ mod tests {
         assert_eq!(estimate_tokens("abcde"), 2);
         assert_eq!(estimate_tokens("abcdefgh"), 2);
         assert_eq!(estimate_tokens("abcdefghi"), 3);
+    }
+
+    /// CTX-1: the estimate must be char-based, not byte-based. Four CJK chars
+    /// (12 UTF-8 bytes) are ~1 token, not the 3 a byte/4 estimate would give.
+    #[test]
+    fn estimate_tokens_counts_chars_not_bytes() {
+        let cjk = "中文字符"; // 4 chars, 12 bytes
+        assert_eq!(cjk.chars().count(), 4);
+        assert_eq!(cjk.len(), 12);
+        assert_eq!(
+            estimate_tokens(cjk),
+            1,
+            "should count 4 chars, not 12 bytes"
+        );
+
+        // A 4-emoji string is 4 chars (>=16 bytes) -> still ~1 token.
+        assert_eq!(estimate_tokens("😀😀😀😀"), 1);
     }
 
     #[test]

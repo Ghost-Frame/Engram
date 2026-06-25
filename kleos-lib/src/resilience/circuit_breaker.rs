@@ -104,6 +104,12 @@ impl CircuitBreaker {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
+        // Releases a HalfOpen probe's in_flight slot if this future is dropped
+        // (cancelled/panicked) before Phase 3 records the outcome. Without it a
+        // single dropped probe leaks the slot and locks the breaker in HalfOpen
+        // forever, rejecting all later probes until process restart.
+        let mut probe_guard: Option<InFlightGuard<'_>> = None;
+
         // -- Phase 1: decide whether to permit the call (write lock) ----------
         {
             let mut guard = self.state.write().expect("circuit_breaker RwLock poisoned");
@@ -111,8 +117,11 @@ impl CircuitBreaker {
             match &*guard {
                 State::Open { opened_at } => {
                     if opened_at.elapsed() >= self.reset_timeout {
-                        // Timeout elapsed -- transition to HalfOpen.
-                        *guard = State::HalfOpen { in_flight: 0 };
+                        // Timeout elapsed -- transition to HalfOpen. Count THIS
+                        // call as the first probe (in_flight: 1) so a concurrent
+                        // call cannot also slip through while the slot reads 0.
+                        *guard = State::HalfOpen { in_flight: 1 };
+                        probe_guard = Some(InFlightGuard::new(&self.state));
                     } else {
                         return Err(EngError::Internal("circuit open".to_string()));
                     }
@@ -121,10 +130,10 @@ impl CircuitBreaker {
                     if *in_flight >= self.half_open_max_calls {
                         return Err(EngError::Internal("circuit open".to_string()));
                     }
-                    let current = *in_flight;
                     *guard = State::HalfOpen {
-                        in_flight: current + 1,
+                        in_flight: in_flight + 1,
                     };
+                    probe_guard = Some(InFlightGuard::new(&self.state));
                 }
                 State::Closed { .. } => {
                     // Allow through.
@@ -139,11 +148,23 @@ impl CircuitBreaker {
         {
             let mut guard = self.state.write().expect("circuit_breaker RwLock poisoned");
 
+            // Phase 3 now owns the state transition; disarm the cancellation
+            // guard so it does not also decrement in_flight.
+            if let Some(g) = probe_guard.as_mut() {
+                g.disarm();
+            }
+
             match result {
                 Ok(t) => {
-                    *guard = State::Closed {
-                        consecutive_failures: 0,
-                    };
+                    // Only clear to Closed if the breaker did not trip Open
+                    // while this op was in flight: a concurrent failure that
+                    // opened the breaker must win, and a stale success must not
+                    // bypass the cooldown.
+                    if !matches!(&*guard, State::Open { .. }) {
+                        *guard = State::Closed {
+                            consecutive_failures: 0,
+                        };
+                    }
                     return Ok(t);
                 }
                 Err(ref _e) => {
@@ -177,6 +198,39 @@ impl CircuitBreaker {
         }
 
         result
+    }
+}
+
+/// RAII guard that releases a HalfOpen probe's `in_flight` slot if the guarded
+/// future is dropped (cancelled or panicked) before the breaker records its
+/// outcome. Disarmed once Phase 3 takes over the state transition.
+struct InFlightGuard<'a> {
+    state: &'a RwLock<State>,
+    armed: bool,
+}
+
+impl<'a> InFlightGuard<'a> {
+    fn new(state: &'a RwLock<State>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Ok(mut guard) = self.state.write() {
+            if let State::HalfOpen { in_flight } = &*guard {
+                *guard = State::HalfOpen {
+                    in_flight: in_flight.saturating_sub(1),
+                };
+            }
+        }
     }
 }
 
@@ -245,27 +299,25 @@ impl LegacyCircuitBreaker {
 
     /// Execute `f` through the circuit breaker, returning `CircuitError<E>` on
     /// failure for backwards compatibility.
+    ///
+    /// NEW-1: this mirrors the fixed [`CircuitBreaker::call`] phase-for-phase
+    /// (cancellation-safe `InFlightGuard` for CB-2, probe counts itself with
+    /// `in_flight: 1` for CB-4, and a stale success cannot reset a breaker that
+    /// tripped Open mid-flight for CB-3). It is a separate implementation only
+    /// because it must preserve the generic error type `E` and the
+    /// `CircuitError<E>` return shape the legacy reranker API expects; keep it in
+    /// lock-step with `CircuitBreaker::call`.
     pub async fn call<F, Fut, T, E>(&self, f: F) -> std::result::Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, E>>,
         E: std::fmt::Debug + std::fmt::Display,
     {
-        // Check open state first using internal state directly.
-        {
-            let guard = self
-                .0
-                .state
-                .read()
-                .expect("circuit_breaker RwLock poisoned");
-            if let State::Open { opened_at } = &*guard {
-                if opened_at.elapsed() < self.0.reset_timeout {
-                    return Err(CircuitError::Open);
-                }
-            }
-        }
+        // Releases a HalfOpen probe's in_flight slot if this future is dropped
+        // before Phase 3 records the outcome (CB-2).
+        let mut probe_guard: Option<InFlightGuard<'_>> = None;
 
-        // Transition logic (duplicate of CircuitBreaker::call but for E != EngError).
+        // -- Phase 1: decide whether to permit the call (write lock) ----------
         {
             let mut guard = self
                 .0
@@ -275,7 +327,9 @@ impl LegacyCircuitBreaker {
             match &*guard {
                 State::Open { opened_at } => {
                     if opened_at.elapsed() >= self.0.reset_timeout {
-                        *guard = State::HalfOpen { in_flight: 0 };
+                        // Count THIS call as the first probe (CB-4).
+                        *guard = State::HalfOpen { in_flight: 1 };
+                        probe_guard = Some(InFlightGuard::new(&self.0.state));
                     } else {
                         return Err(CircuitError::Open);
                     }
@@ -284,28 +338,38 @@ impl LegacyCircuitBreaker {
                     if *in_flight >= self.0.half_open_max_calls {
                         return Err(CircuitError::Open);
                     }
-                    let current = *in_flight;
                     *guard = State::HalfOpen {
-                        in_flight: current + 1,
+                        in_flight: in_flight + 1,
                     };
+                    probe_guard = Some(InFlightGuard::new(&self.0.state));
                 }
                 State::Closed { .. } => {}
             }
         }
 
+        // -- Phase 2: run the op (no lock held) --------------------------------
         let result = f().await;
 
+        // -- Phase 3: record outcome (write lock) ------------------------------
         {
             let mut guard = self
                 .0
                 .state
                 .write()
                 .expect("circuit_breaker RwLock poisoned");
+            // Phase 3 owns the transition; disarm the cancellation guard.
+            if let Some(g) = probe_guard.as_mut() {
+                g.disarm();
+            }
             match &result {
                 Ok(_) => {
-                    *guard = State::Closed {
-                        consecutive_failures: 0,
-                    };
+                    // Stale success must not bypass cooldown if a concurrent
+                    // failure tripped the breaker Open while this op ran (CB-3).
+                    if !matches!(&*guard, State::Open { .. }) {
+                        *guard = State::Closed {
+                            consecutive_failures: 0,
+                        };
+                    }
                 }
                 Err(_) => match &*guard {
                     State::HalfOpen { .. } => {
@@ -479,5 +543,114 @@ mod tests {
                 .await;
         }
         assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    // -- A cancelled HalfOpen probe releases its in_flight slot ---------------
+
+    #[tokio::test]
+    async fn cancelled_half_open_probe_releases_in_flight() {
+        // half_open_max_calls = 1 (make_breaker). A probe that is dropped mid
+        // flight must release its slot, or the breaker locks in HalfOpen.
+        let cb = make_breaker(1, 50);
+        let _: Result<()> = cb
+            .call(|| async { Err(EngError::Internal("x".into())) })
+            .await;
+        assert_eq!(cb.state(), CircuitState::Open);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // Start a HalfOpen probe that hangs, then cancel it by dropping the
+        // future (the inner op never completes Phase 3).
+        {
+            let probe = cb.call(|| async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok::<i32, EngError>(1)
+            });
+            tokio::select! {
+                _ = probe => unreachable!("probe should not finish"),
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        } // probe future dropped here -> InFlightGuard releases the slot
+
+        // A fresh probe must be admitted (slot released), not rejected.
+        let r: Result<i32> = cb.call(|| async { Ok(7) }).await;
+        assert_eq!(
+            r.ok(),
+            Some(7),
+            "in_flight slot must be released after a cancelled probe"
+        );
+    }
+
+    // -- Legacy adapter mirrors the fixed breaker (NEW-1) --------------------
+
+    fn make_legacy(threshold: u32, cooldown_ms: u64) -> LegacyCircuitBreaker {
+        LegacyCircuitBreaker::new(BreakerConfig {
+            failure_threshold: threshold,
+            cooldown: Duration::from_millis(cooldown_ms),
+        })
+    }
+
+    #[tokio::test]
+    async fn legacy_open_rejects_without_calling_op() {
+        let cb = make_legacy(1, 10_000);
+        let _: std::result::Result<(), CircuitError<&str>> =
+            cb.call(|| async { Err("boom") }).await;
+        assert_eq!(cb.state(), "open");
+
+        let called = Arc::new(AtomicU32::new(0));
+        let c = called.clone();
+        let r: std::result::Result<i32, CircuitError<&str>> = cb
+            .call(|| async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(1)
+            })
+            .await;
+        assert!(matches!(r, Err(CircuitError::Open)));
+        assert_eq!(
+            called.load(Ordering::SeqCst),
+            0,
+            "op must not run while open"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_half_open_failure_reopens() {
+        let cb = make_legacy(1, 30);
+        let _: std::result::Result<(), CircuitError<&str>> = cb.call(|| async { Err("x") }).await;
+        assert_eq!(cb.state(), "open");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let r: std::result::Result<(), CircuitError<&str>> =
+            cb.call(|| async { Err("still broken") }).await;
+        assert!(r.is_err());
+        assert_eq!(cb.state(), "open");
+    }
+
+    #[tokio::test]
+    async fn legacy_half_open_probe_counts_itself() {
+        // CB-4 for the legacy path: after the cooldown the first probe must
+        // occupy the single half-open slot (in_flight: 1), so a concurrent
+        // second call is rejected instead of also slipping through.
+        let cb = make_legacy(1, 50);
+        let _: std::result::Result<(), CircuitError<&str>> = cb.call(|| async { Err("x") }).await;
+        assert_eq!(cb.state(), "open");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // A hanging probe occupies the slot but never reaches Phase 3.
+        let probe = cb.call(|| async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<i32, &str>(1)
+        });
+        tokio::pin!(probe);
+        tokio::select! {
+            _ = &mut probe => unreachable!("probe should not finish"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+
+        // Second concurrent half-open call must be rejected (slot taken).
+        let r: std::result::Result<i32, CircuitError<&str>> = cb.call(|| async { Ok(2) }).await;
+        assert!(
+            matches!(r, Err(CircuitError::Open)),
+            "second half-open call must be rejected while the probe holds the slot"
+        );
     }
 }

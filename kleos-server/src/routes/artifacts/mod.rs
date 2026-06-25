@@ -40,8 +40,8 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Return aggregate artifact storage statistics (count and byte totals by storage tier).
-async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = artifacts::get_artifact_stats(&db).await?;
+async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+    let stats = artifacts::get_artifact_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({
         "total_count": stats.total_count,
         "total_bytes": stats.total_bytes,
@@ -53,15 +53,18 @@ async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json
 /// List all artifacts attached to the given memory ID after verifying it exists.
 async fn list_for_memory(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    // Verify the memory exists in this tenant DB
+    let user_id = auth.effective_user_id();
+    // Verify the memory exists in this tenant DB and belongs to the caller.
+    // The user_id predicate is a no-op in a single-owner shard and the tenant
+    // boundary in shared (monolith) mode.
     db.read(move |conn| {
         Ok(conn
             .query_row(
-                "SELECT 1 FROM memories WHERE id = ?1",
-                rusqlite::params![memory_id],
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![memory_id, user_id],
                 |_| Ok(()),
             )
             .optional()?)
@@ -69,7 +72,7 @@ async fn list_for_memory(
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;
 
-    let artifacts = artifacts::get_artifacts_by_memory(&db, memory_id).await?;
+    let artifacts = artifacts::get_artifacts_by_memory(&db, user_id, memory_id).await?;
     Ok(Json(
         json!({ "artifacts": artifacts, "memory_id": memory_id }),
     ))
@@ -259,6 +262,7 @@ async fn upload_artifact(
             // DB insert first -- if it fails, tmp auto-drops, no orphan file.
             let artifact_id = artifacts::store_artifact(
                 &db,
+                auth.effective_user_id(),
                 memory_id,
                 &display_name,
                 &filename,
@@ -295,6 +299,7 @@ async fn upload_artifact(
 
     let artifact_id = artifacts::store_artifact(
         &db,
+        auth.effective_user_id(),
         memory_id,
         &display_name,
         &filename,
@@ -327,7 +332,8 @@ async fn download_artifact(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let artifact = artifacts::get_artifact_by_id(&db, id)
+    let user_id = auth.effective_user_id();
+    let artifact = artifacts::get_artifact_by_id(&db, user_id, id)
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Artifact not found".into())))?;
 
@@ -338,12 +344,13 @@ async fn download_artifact(
         ))
     })?;
 
-    // Verify the owning memory exists in this tenant DB
+    // Verify the owning memory exists in this tenant DB and belongs to the
+    // caller (no-op in a single-owner shard, tenant boundary in monolith mode).
     db.read(move |conn| {
         Ok(conn
             .query_row(
-                "SELECT 1 FROM memories WHERE id = ?1",
-                rusqlite::params![memory_id],
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![memory_id, user_id],
                 |_| Ok(()),
             )
             .optional()?)
@@ -422,7 +429,7 @@ async fn download_artifact(
         }
     } else {
         // Inline storage -- read from DB.
-        let raw_data = artifacts::get_artifact_data(&db, id)
+        let raw_data = artifacts::get_artifact_data(&db, user_id, id)
             .await?
             .ok_or_else(|| {
                 AppError(kleos_lib::EngError::Internal("Artifact has no data".into()))
@@ -461,10 +468,10 @@ async fn download_artifact(
 /// artifact did not exist).
 async fn delete_artifact_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
-    let disk_path = artifacts::delete_artifact(&db, id).await?;
+    let disk_path = artifacts::delete_artifact(&db, auth.effective_user_id(), id).await?;
 
     if let Some(path) = disk_path {
         if let Err(e) = tokio::fs::remove_file(&path).await {
@@ -482,11 +489,18 @@ async fn delete_artifact_handler(
 /// result sets.
 async fn search_artifacts_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<types::ArtifactSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.map(|l| l.min(100)).unwrap_or(20);
-    let results = artifacts::search_artifacts(&db, &body.query, limit, body.memory_id).await?;
+    let results = artifacts::search_artifacts(
+        &db,
+        auth.effective_user_id(),
+        &body.query,
+        limit,
+        body.memory_id,
+    )
+    .await?;
     let total = results.len();
     Ok(Json(json!({ "results": results, "total": total })))
 }

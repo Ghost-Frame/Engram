@@ -162,21 +162,62 @@ async fn deactivate_user(
     }
 
     // The owner account is the trust root -- deactivating it would lock
-    // everyone out of the admin API.
+    // everyone out of the admin API. The caller is authenticated and holds
+    // admin scope; the action itself is forbidden, so this is 403 not 401.
     if user_id == 1 {
-        return Err(AppError(kleos_lib::EngError::Auth(
+        return Err(AppError(kleos_lib::EngError::Forbidden(
             "cannot deactivate the owner account (user_id=1)".into(),
         )));
     }
 
     let deactivated = state
         .db
-        .write(move |conn| {
-            let affected = conn.execute(
+        .transaction(move |tx| {
+            let affected = tx.execute(
                 "UPDATE users SET is_active = 0 WHERE id = ?1 AND is_active = 1",
                 params![user_id],
             )?;
-            Ok(affected > 0)
+            if affected == 0 {
+                return Ok(false);
+            }
+
+            // Cascade-revoke every credential the user holds so deactivation
+            // takes effect immediately. Without this, api keys, identity
+            // keys, identities, and mcp tokens stay live and keep granting
+            // access to the deactivated account.
+            tx.execute(
+                "UPDATE api_keys SET is_active = 0 WHERE user_id = ?1 AND is_active = 1",
+                params![user_id],
+            )?;
+            tx.execute(
+                "UPDATE identity_keys
+                 SET is_active = 0, revoked_at = datetime('now'), revoke_reason = 'user deactivated'
+                 WHERE user_id = ?1 AND is_active = 1",
+                params![user_id],
+            )?;
+            // identities has no user_id column; ownership flows through the
+            // parent identity_keys row.
+            tx.execute(
+                "UPDATE identities SET is_active = 0
+                 WHERE is_active = 1 AND identity_key_id IN
+                       (SELECT id FROM identity_keys WHERE user_id = ?1)",
+                params![user_id],
+            )?;
+            tx.execute(
+                "UPDATE mcp_tokens
+                 SET is_active = 0, revoked_at = datetime('now')
+                 WHERE user_id = ?1 AND is_active = 1",
+                params![user_id],
+            )?;
+            // Drop any outstanding enrollment challenge nonces so a nonce
+            // issued before deactivation cannot be redeemed if the account is
+            // later reactivated within the challenge TTL.
+            tx.execute(
+                "DELETE FROM enrollment_challenges WHERE user_id = ?1",
+                params![user_id],
+            )?;
+
+            Ok(true)
         })
         .await?;
 

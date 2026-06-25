@@ -709,8 +709,21 @@ async fn import_json(
         };
         let sync_id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        let created_at = m.created_at.clone().unwrap_or_else(|| now.clone());
-        let updated_at = m.updated_at.clone().unwrap_or_else(|| now.clone());
+        // Validate client-supplied timestamps: a malformed value corrupts this
+        // tenant's decay/GC windows (SQLite date funcs return NULL on garbage,
+        // so rows could escape archival). Fall back to now() when absent or not
+        // RFC3339.
+        let valid_rfc3339 = |s: &String| chrono::DateTime::parse_from_rfc3339(s).is_ok();
+        let created_at = m
+            .created_at
+            .clone()
+            .filter(valid_rfc3339)
+            .unwrap_or_else(|| now.clone());
+        let updated_at = m
+            .updated_at
+            .clone()
+            .filter(valid_rfc3339)
+            .unwrap_or_else(|| now.clone());
         let category = m.category.clone().unwrap_or_else(|| "general".to_string());
         let source = m.source.clone().unwrap_or_else(|| "import".to_string());
         let session_id = m.session_id.clone();
@@ -721,11 +734,11 @@ async fn import_json(
         } else {
             0i32
         };
-        let _user_id = auth.effective_user_id();
+        let user_id = auth.effective_user_id();
         match db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![content, category, source, session_id, importance, tags_str, confidence, is_static, sync_id, created_at, updated_at],
+                "INSERT INTO memories (user_id, content, category, source, session_id, importance, tags, confidence, is_static, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![user_id, content, category, source, session_id, importance, tags_str, confidence, is_static, sync_id, created_at, updated_at],
             )?;
             Ok(())
         }).await {
@@ -797,11 +810,11 @@ async fn import_mem0(
         let sync_id = Uuid::new_v4().to_string();
         let category_s = category.to_string();
         let source_s = source.to_string();
-        let _user_id = auth.effective_user_id();
+        let user_id = auth.effective_user_id();
         if db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
-                params![content, category_s, source_s, importance, tags_str, sync_id],
+                "INSERT INTO memories (user_id, content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, ?7, datetime('now'), datetime('now'))",
+                params![user_id, content, category_s, source_s, importance, tags_str, sync_id],
             )?;
             Ok(())
         }).await.is_ok() {
@@ -919,11 +932,11 @@ async fn import_supermemory(
         let sync_id = Uuid::new_v4().to_string();
         let category_s = category.to_string();
         let source_s = source.to_string();
-        let _user_id = auth.effective_user_id();
+        let user_id = auth.effective_user_id();
         match db.write(move |conn| {
             conn.execute(
-                "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
-                params![content, category_s, source_s, importance, tags_str, sync_id],
+                "INSERT INTO memories (user_id, content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, ?7, datetime('now'), datetime('now'))",
+                params![user_id, content, category_s, source_s, importance, tags_str, sync_id],
             )?;
             Ok(())
         }).await {

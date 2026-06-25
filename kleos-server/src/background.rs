@@ -740,6 +740,14 @@ pub fn start_stale_task_sweeper(
 
     let handle = tokio::spawn(async move {
         let interval = Duration::from_secs(60);
+        // Idle window (seconds) after which a never-heartbeated active task is
+        // staled. Read once; default 1 hour. Tasks created via `activity
+        // task.started` never heartbeat, so this absolute window is what keeps
+        // abandoned ones from accumulating forever in the active set.
+        let no_hb_idle: i64 = std::env::var("KLEOS_CHIASM_STALE_IDLE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -763,12 +771,12 @@ pub fn start_stale_task_sweeper(
                                 Ok(Some(h)) => h,
                                 _ => continue,
                             };
-                            if let Err(e) = kleos_lib::services::chiasm::heartbeat::mark_stale_tasks(&handle.db, 2.0).await {
+                            if let Err(e) = kleos_lib::services::chiasm::heartbeat::mark_stale_tasks(&handle.db, 2.0, no_hb_idle).await {
                                 warn!(tenant = %tenant_row.tenant_id, error = %e, "stale-task sweep error");
                             }
                         }
                     } else {
-                        if let Err(e) = kleos_lib::services::chiasm::heartbeat::mark_stale_tasks(&db, 2.0).await {
+                        if let Err(e) = kleos_lib::services::chiasm::heartbeat::mark_stale_tasks(&db, 2.0, no_hb_idle).await {
                             warn!(error = %e, "stale-task sweep error");
                         }
                     }

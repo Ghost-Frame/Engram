@@ -290,14 +290,20 @@ pub async fn delete_handler(
     })))
 }
 
-/// Pull all v3 entries from Kleos into local DB. Idempotent.
-/// Any authenticated caller can trigger sync -- it doesn't expose secrets,
-/// just populates the local cache from what already exists in Kleos.
+/// Pull all v3 entries from Kleos into local DB. Idempotent. Master-only:
+/// like store/update/delete this writes decrypted secret material into the
+/// local store under `auth.user_id()`, so a non-master caller (notably a
+/// BootstrapAgent, whose `user_id()` is also 0) must not be able to populate
+/// the master-owned secret store.
 #[tracing::instrument(skip_all, fields(handler = "credd.secrets.sync"))]
 pub async fn sync_handler(
     Auth(auth): Auth,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {
+    if !auth.is_master() {
+        return Err(CredError::PermissionDenied("only master key can sync secrets".into()).into());
+    }
+
     let entries = kleos_sync::fetch_v3_entries(&state)
         .await
         .map_err(CredError::InvalidInput)?;

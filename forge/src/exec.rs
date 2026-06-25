@@ -94,7 +94,9 @@ pub async fn execute_skill(
 
     let resp = match config.method.to_uppercase().as_str() {
         "POST" => client.post(&config.endpoint, &body).await?,
-        "GET" => client.get(&config.endpoint).await?,
+        // FORGE-3 fix: GET skills must pass their parameters as query-string values.
+        // Previously body was built and then discarded, silently sending no params.
+        "GET" => client.get_with_query(&config.endpoint, &body).await?,
         other => {
             return Err(ForgeError::InvalidParam(
                 "method".into(),

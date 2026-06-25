@@ -28,15 +28,16 @@ pub fn router() -> Router<AppState> {
 
 async fn refresh_decay(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
+    let effective_user_id = auth.effective_user_id();
     let updates: Vec<(i64, f64)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, importance, created_at, access_count, last_accessed_at, is_static, source_count, fsrs_stability \
-                 FROM memories WHERE is_static = 0 AND is_forgotten = 0",
+                 FROM memories WHERE is_static = 0 AND is_forgotten = 0 AND user_id = ?1",
             )?;
-            let rows = stmt.query_map([], |r| {
+            let rows = stmt.query_map(params![effective_user_id], |r| {
                 let id: i64 = r.get(0)?;
                 let importance: f64 = r.get::<_, Option<f64>>(1)?.unwrap_or(5.0);
                 let created_at: String = r.get::<_, Option<String>>(2)?.unwrap_or_default();
@@ -69,8 +70,8 @@ async fn refresh_decay(
     db.write(move |conn| {
         for (id, score) in &updates {
             conn.execute(
-                "UPDATE memories SET decay_score = ?1 WHERE id = ?2",
-                params![*score, *id],
+                "UPDATE memories SET decay_score = ?1 WHERE id = ?2 AND user_id = ?3",
+                params![*score, *id, effective_user_id],
             )?;
         }
         Ok(())
@@ -82,21 +83,22 @@ async fn refresh_decay(
 
 async fn get_decay_scores(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Query(query_params): Query<DecayScoresQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = query_params.limit.unwrap_or(20).min(100) as i64;
     let order_asc = query_params.order.as_deref() == Some("asc");
     let filter_id = query_params.memory_id;
+    let effective_user_id = auth.effective_user_id();
 
     let memories: Vec<Value> = db
         .read(move |conn| {
             if let Some(mid) = filter_id {
                 let mut stmt = conn.prepare(
                     "SELECT id, content, category, importance, decay_score, created_at \
-                     FROM memories WHERE id = ?1 AND is_forgotten = 0",
+                     FROM memories WHERE id = ?1 AND is_forgotten = 0 AND user_id = ?2",
                 )?;
-                let rows = stmt.query_map(params![mid], |r| {
+                let rows = stmt.query_map(params![mid, effective_user_id], |r| {
                     let id: i64 = r.get(0)?;
                     let content: String = r.get::<_, Option<String>>(1)?.unwrap_or_default();
                     let category: Option<String> = r.get(2)?;
@@ -113,15 +115,15 @@ async fn get_decay_scores(
             }
             let sql = if order_asc {
                 "SELECT id, content, category, importance, decay_score, created_at \
-                 FROM memories WHERE is_forgotten = 0 \
+                 FROM memories WHERE is_forgotten = 0 AND user_id = ?2 \
                  ORDER BY decay_score ASC LIMIT ?1"
             } else {
                 "SELECT id, content, category, importance, decay_score, created_at \
-                 FROM memories WHERE is_forgotten = 0 \
+                 FROM memories WHERE is_forgotten = 0 AND user_id = ?2 \
                  ORDER BY decay_score DESC LIMIT ?1"
             };
             let mut stmt = conn.prepare(sql)?;
-            let rows = stmt.query_map(params![limit], |r| {
+            let rows = stmt.query_map(params![limit, effective_user_id], |r| {
                 let id: i64 = r.get(0)?;
                 let content: String = r.get::<_, Option<String>>(1)?.unwrap_or_default();
                 let category: Option<String> = r.get(2)?;

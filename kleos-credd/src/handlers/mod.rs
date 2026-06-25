@@ -94,6 +94,16 @@ pub async fn resolve_from_kleos(
     category: &str,
     name: &str,
 ) -> Result<(SecretRow, SecretData), AppError> {
+    // Reject category/name that could corrupt the V3 content-format match: the
+    // target_prefix below is built from these and matched with starts_with, so
+    // a `/` in category or ` = ` in name could shadow or skip a different entry
+    // (read-path sibling of the CREDD-1 write-path injection).
+    if !kleos_sync::is_safe_ident(category) || !kleos_sync::is_safe_ident(name) {
+        return Err(
+            CredError::InvalidInput(format!("unsafe characters in {}/{}", category, name)).into(),
+        );
+    }
+
     let kleos_url = kleos_lib::kleos_env("URL").map_err(|_| {
         tracing::debug!(
             "KLEOS_URL not set; cannot resolve {}/{} from Kleos",
@@ -105,6 +115,26 @@ pub async fn resolve_from_kleos(
             category, name
         ))
     })?;
+
+    // The request below attaches the master/PIV-signed Bearer to KLEOS_URL.
+    // Refuse to send it over plaintext http to a non-loopback host so a
+    // misconfigured remote KLEOS_URL cannot leak the credential in cleartext.
+    // Treat an unsafe transport as "vault unavailable" (NotFound) rather than a
+    // request error, matching the unreachable-vault path below and keeping the
+    // resolve semantics unchanged for callers.
+    if let Err(e) = kleos_lib::net::guard_bearer_transport(&kleos_url) {
+        tracing::warn!(
+            "refusing to resolve {}/{} from Kleos: {} (use an https KLEOS_URL or a loopback address)",
+            category,
+            name,
+            e
+        );
+        return Err(CredError::NotFound(format!(
+            "{}/{} not found (vault transport is not confidential)",
+            category, name
+        ))
+        .into());
+    }
 
     let http = reqwest::Client::new();
     let list_url = format!("{}/list", kleos_url.trim_end_matches('/'));

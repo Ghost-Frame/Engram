@@ -277,3 +277,39 @@ pub async fn wait_for_decision(
         tokio::time::sleep(poll_interval).await;
     }
 }
+
+/// Request body for a capability-token approval decision.
+#[derive(Deserialize)]
+pub struct DecideTokenRequest {
+    /// The single-use capability token issued when the approval was raised.
+    pub token: String,
+    /// Decision: "approved" or "denied".
+    pub decision: String,
+}
+
+/// Decide an approval using a single-use capability token instead of a bearer.
+///
+/// `POST /phylax/approvals/{id}/decide-token`. This route is exempt from bearer
+/// auth (see `auth_middleware`): the single-use token IS the capability. It lets
+/// an external, operator-run notifier relay a human decision without holding a
+/// credential. A wrong or already-used token is rejected without distinguishing
+/// the cases.
+pub async fn decide_with_token(
+    State(state): State<PhylaxState>,
+    Path(id): Path<i64>,
+    Json(body): Json<DecideTokenRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let approved = match body.decision.as_str() {
+        "approved" => true,
+        "denied" => false,
+        _ => {
+            return Err(
+                CredError::InvalidInput("decision must be 'approved' or 'denied'".into()).into(),
+            )
+        }
+    };
+    match approval::decide_with_token(&state.inner.db, id, &body.token, approved).await {
+        Ok(status) => Ok(Json(json!({ "status": status as i32 }))),
+        Err(_) => Err(CredError::PermissionDenied("decision rejected".into()).into()),
+    }
+}

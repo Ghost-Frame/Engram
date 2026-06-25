@@ -48,6 +48,11 @@ pub async fn copy_all(
 
     let mut counts: HashMap<String, usize> = HashMap::new();
 
+    // Single transaction across every table: a failure mid-copy rolls the whole
+    // migration back instead of committing a partially populated target. FK
+    // enforcement was disabled above (outside any transaction, where the PRAGMA
+    // takes effect) and is re-enabled after commit.
+    let tx = conn.unchecked_transaction()?;
     for table in &copy_order {
         if source::should_skip(table) {
             continue;
@@ -63,6 +68,7 @@ pub async fn copy_all(
         info!("copied {} rows into {}", n, table);
         counts.insert(table.clone(), n);
     }
+    tx.commit()?;
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     Ok(counts)
@@ -102,26 +108,28 @@ fn copy_table(
     // we just need the WHERE clause to scope source rows to the operator.
     let has_user_id = source_cols.iter().any(|c| c == "user_id");
 
-    // Build SELECT from source.
+    // Build SELECT from source. Identifiers are quote-doubled so a crafted
+    // table/column name from the source schema cannot inject SQL.
+    let quoted_table = source::quote_ident(table);
     let select_cols = intersection
         .iter()
-        .map(|c| format!("\"{}\"", c))
+        .map(|c| source::quote_ident(c))
         .collect::<Vec<_>>()
         .join(", ");
 
     let select_sql = if has_user_id {
         format!(
-            "SELECT {} FROM \"{}\" WHERE user_id = ?1",
-            select_cols, table
+            "SELECT {} FROM {} WHERE user_id = ?1",
+            select_cols, quoted_table
         )
     } else {
-        format!("SELECT {} FROM \"{}\"", select_cols, table)
+        format!("SELECT {} FROM {}", select_cols, quoted_table)
     };
 
     // Build INSERT into target.
     let insert_cols = intersection
         .iter()
-        .map(|c| format!("\"{}\"", c))
+        .map(|c| source::quote_ident(c))
         .collect::<Vec<_>>()
         .join(", ");
     let placeholders = (1..=intersection.len())
@@ -129,8 +137,8 @@ fn copy_table(
         .collect::<Vec<_>>()
         .join(", ");
     let insert_sql = format!(
-        "INSERT OR REPLACE INTO \"{}\" ({}) VALUES ({})",
-        table, insert_cols, placeholders
+        "INSERT OR REPLACE INTO {} ({}) VALUES ({})",
+        quoted_table, insert_cols, placeholders
     );
 
     let mut src_stmt = source.conn.prepare(&select_sql)?;
@@ -141,7 +149,9 @@ fn copy_table(
         src_stmt.query([])?
     };
 
-    let tx = conn.unchecked_transaction()?;
+    // No per-table transaction here: copy_all wraps the entire migration in a
+    // single transaction so a mid-copy failure rolls back every table rather
+    // than leaving the target half-populated.
     let mut insert_stmt = conn.prepare_cached(&insert_sql)?;
     let mut count = 0usize;
 
@@ -157,7 +167,5 @@ fn copy_table(
     }
 
     drop(insert_stmt);
-    tx.commit()?;
-
     Ok(count)
 }

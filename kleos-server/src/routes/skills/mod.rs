@@ -857,7 +857,7 @@ async fn upload_skill_handler(
 // dispatch UX while leaving the legacy FTS-only route in place.
 #[tracing::instrument(skip_all)]
 async fn find_skills_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<FindSkillsBody>,
 ) -> Result<Json<Value>, AppError> {
@@ -868,7 +868,7 @@ async fn find_skills_handler(
         limit: body.limit,
         include_deprecated: body.include_deprecated,
     };
-    let results = find_skills(&db, &body.query, opts).await?;
+    let results = find_skills(&db, &body.query, auth.effective_user_id(), opts).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
@@ -876,23 +876,24 @@ async fn find_skills_handler(
 // candidates without running the full hybrid pipeline. Cheaper for dispatch.
 #[tracing::instrument(skip_all)]
 async fn resolve_alias_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<ResolveAliasBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(10).clamp(1, 100);
-    let matches = skill_aliases::resolve_alias(&db, &body.query, limit).await?;
+    let matches =
+        skill_aliases::resolve_alias(&db, &body.query, auth.effective_user_id(), limit).await?;
     Ok(Json(json!({ "matches": matches, "count": matches.len() })))
 }
 
 // GET /skills/{id}/aliases -- list every alias attached to a skill.
 #[tracing::instrument(skip_all)]
 async fn list_aliases_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let aliases = skill_aliases::list_for_skill(&db, id).await?;
+    let aliases = skill_aliases::list_for_skill(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "aliases": aliases, "count": aliases.len() })))
 }
 
@@ -900,7 +901,7 @@ async fn list_aliases_handler(
 // to 1.0; auto-aliases (importer) come in via the lib API directly.
 #[tracing::instrument(skip_all)]
 async fn add_alias_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<AddAliasBody>,
@@ -913,7 +914,15 @@ async fn add_alias_handler(
         "auto" | "user" => source,
         _ => "user",
     };
-    let alias_id = skill_aliases::add_alias(&db, id, &body.alias, confidence, source).await?;
+    let alias_id = skill_aliases::add_alias(
+        &db,
+        id,
+        &body.alias,
+        confidence,
+        source,
+        auth.effective_user_id(),
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "id": alias_id, "skill_id": id, "alias": body.alias })),
@@ -923,11 +932,11 @@ async fn add_alias_handler(
 // DELETE /skills/{id}/aliases/{alias} -- remove a single alias.
 #[tracing::instrument(skip_all)]
 async fn remove_alias_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path((id, alias)): Path<(i64, String)>,
 ) -> Result<Json<Value>, AppError> {
-    let n = skill_aliases::remove_alias(&db, id, &alias).await?;
+    let n = skill_aliases::remove_alias(&db, id, &alias, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "deleted": n, "skill_id": id, "alias": alias }),
     ))

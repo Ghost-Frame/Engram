@@ -19,15 +19,32 @@ pub struct TenantMigration {
     pub version: i64,
     pub description: &'static str,
     pub up: fn(&Connection) -> Result<()>,
+    /// When true the up fn is wrapped in a SAVEPOINT so it commits atomically
+    /// with its schema_migrations record (DB-1). Migrations that toggle
+    /// `PRAGMA foreign_keys` for a table rebuild MUST be false: that pragma is a
+    /// silent no-op inside a SAVEPOINT, which would break the rebuild.
+    pub transactional: bool,
 }
 
 /// Shorthand for TenantMigration entries in the registry.
 macro_rules! tenant_migration {
+    // Default: savepoint-wrapped (savepoint-safe migrations).
     ($ver:expr, $desc:expr, $up:expr) => {
         TenantMigration {
             version: $ver,
             description: $desc,
             up: $up,
+            transactional: true,
+        }
+    };
+    // `notx`: NOT savepoint-wrapped -- the migration toggles PRAGMA foreign_keys
+    // (illegal/no-op inside a SAVEPOINT). Relies on idempotent construction.
+    ($ver:expr, $desc:expr, $up:expr, notx) => {
+        TenantMigration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            transactional: false,
         }
     };
 }
@@ -81,7 +98,8 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         23,
         "scratchpad_user_id_drop",
-        apply_schema_v23_scratchpad_drop
+        apply_schema_v23_scratchpad_drop,
+        notx
     ),
     tenant_migration!(24, "sessions_user_id_drop", apply_schema_v24_sessions_drop),
     tenant_migration!(25, "chiasm_user_id_drop", apply_schema_v25_chiasm_drop),
@@ -91,7 +109,12 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         apply_schema_v26_approvals_drop
     ),
     tenant_migration!(27, "broca_user_id_drop", apply_schema_v27_broca_drop),
-    tenant_migration!(28, "projects_user_id_drop", apply_schema_v28_projects_drop),
+    tenant_migration!(
+        28,
+        "projects_user_id_drop",
+        apply_schema_v28_projects_drop,
+        notx
+    ),
     tenant_migration!(29, "activity_user_id_drop", apply_schema_v29_activity_drop),
     tenant_migration!(30, "webhooks_user_id_drop", apply_schema_v30_webhooks_drop),
     tenant_migration!(31, "axon_user_id_drop", apply_schema_v31_axon_drop),
@@ -99,27 +122,46 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         33,
         "ingestion_hashes_user_id_drop",
-        apply_schema_v33_ingestion_hashes_drop
+        apply_schema_v33_ingestion_hashes_drop,
+        notx
     ),
-    tenant_migration!(34, "loom_user_id_drop", apply_schema_v34_loom_drop),
+    tenant_migration!(34, "loom_user_id_drop", apply_schema_v34_loom_drop, notx),
     tenant_migration!(
         35,
         "graph_cluster_user_id_drop",
-        apply_schema_v35_graph_drop
+        apply_schema_v35_graph_drop,
+        notx
     ),
-    tenant_migration!(36, "thymus_user_id_drop", apply_schema_v36_thymus_drop),
+    tenant_migration!(
+        36,
+        "thymus_user_id_drop",
+        apply_schema_v36_thymus_drop,
+        notx
+    ),
     tenant_migration!(
         37,
         "portability_user_id_drop",
-        apply_schema_v37_portability_drop
+        apply_schema_v37_portability_drop,
+        notx
     ),
     tenant_migration!(
         38,
         "intelligence_user_id_drop",
-        apply_schema_v38_intelligence_drop
+        apply_schema_v38_intelligence_drop,
+        notx
     ),
-    tenant_migration!(39, "skills_user_id_drop", apply_schema_v39_skills_drop),
-    tenant_migration!(40, "episodes_user_id_drop", apply_schema_v40_episodes_drop),
+    tenant_migration!(
+        39,
+        "skills_user_id_drop",
+        apply_schema_v39_skills_drop,
+        notx
+    ),
+    tenant_migration!(
+        40,
+        "episodes_user_id_drop",
+        apply_schema_v40_episodes_drop,
+        notx
+    ),
     // C-R3-004 / H-R3-006: re-add user_id to projects + broca_actions on
     // shard DBs so the same helper SQL works on shard and monolith. Each
     // shard still belongs to one tenant; the column is redundant per row
@@ -127,7 +169,8 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         41,
         "projects_user_id_readd",
-        apply_schema_v41_projects_readd
+        apply_schema_v41_projects_readd,
+        notx
     ),
     tenant_migration!(
         42,
@@ -219,7 +262,8 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         58,
         "soma_agents_user_id_readd",
-        apply_schema_v58_soma_agents_readd
+        apply_schema_v58_soma_agents_readd,
+        notx
     ),
     // Re-add user_id to the shard axon_events table (reverses v29). The runner
     // backfills existing event rows to the shard owner after this runs.
@@ -256,7 +300,8 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         63,
         "graph_entities_user_id_readd",
-        apply_schema_v63_graph_entities_readd
+        apply_schema_v63_graph_entities_readd,
+        notx
     ),
     // Re-add user_id to the shard episodes table (reverses v40). The runner
     // backfills existing rows to the shard owner after this runs.
@@ -272,13 +317,19 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         65,
         "intelligence_remainder_user_id_readd",
-        apply_schema_v65_intelligence_remainder_readd
+        apply_schema_v65_intelligence_remainder_readd,
+        notx
     ),
     // Re-add user_id to the five shard thymus tables -- rubrics (UNIQUE
     // rebuild from UNIQUE(name) to UNIQUE(user_id, name)), evaluations,
     // quality_metrics, session_quality, behavioral_drift_events (reverses v36).
     // The runner backfills existing rows to the shard owner after this runs.
-    tenant_migration!(66, "thymus_user_id_readd", apply_schema_v66_thymus_readd),
+    tenant_migration!(
+        66,
+        "thymus_user_id_readd",
+        apply_schema_v66_thymus_readd,
+        notx
+    ),
     // Re-add user_id to entity_cooccurrences and structured_facts in tenant
     // shards. Both were dropped by tenant v35. structured_facts got user_id
     // re-added on the monolith side by v64 but never on the tenant side.
@@ -294,13 +345,19 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(
         68,
         "user_preferences_user_id_readd",
-        apply_schema_v68_user_preferences_readd
+        apply_schema_v68_user_preferences_readd,
+        notx
     ),
     // Re-add user_id to skill_records in tenant shards via REBUILD.
     // v39 dropped it; UNIQUE changes from (name, agent, version) back to
     // (name, agent, version, user_id). Also drops/recreates FTS triggers.
     // The runner backfills existing rows to the shard owner.
-    tenant_migration!(69, "skills_user_id_readd", apply_schema_v69_skills_readd),
+    tenant_migration!(
+        69,
+        "skills_user_id_readd",
+        apply_schema_v69_skills_readd,
+        notx
+    ),
     tenant_migration!(70, "tenant_state_counters", apply_schema_v70_tenant_state),
     // Tenant artifacts gained an FTS index. The legacy main-DB schema carried
     // `artifacts_fts` but no tenant migration ever created it, so artifact
@@ -308,6 +365,34 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // tenant split. v71 adds the virtual table + triggers and rebuilds the
     // index from any artifacts already in the shard.
     tenant_migration!(71, "artifacts_fts", apply_schema_v71_artifacts_fts),
+    // Re-add user_id to the shard sessions table (reverses v24). The runner
+    // backfills existing session rows to the shard owner after this runs; see
+    // TENANT_MIGRATION_READD_USER_ID_SESSIONS / backfill_owner_tables_for_version.
+    tenant_migration!(
+        72,
+        "sessions_user_id_readd",
+        apply_schema_v72_sessions_readd
+    ),
+    // Frameshift cross-machine growth log. New append-only table; only the
+    // reserved "frameshift-growth" tenant is wired through /frameshift-growth/*.
+    // No backfill: it is a new table with no pre-existing rows.
+    tenant_migration!(73, "frameshift_growth", apply_schema_v73_frameshift_growth),
+    // agent-forge absorption: stateful reasoning tables now live in the
+    // Kleos tenant DB. Prefixed `forge_` to avoid collisions with legacy local
+    // tables. All tables carry `user_id`; forge_specs and forge_hypotheses also
+    // carry `session_id` for the gate enforcement query. No backfill needed.
+    tenant_migration!(74, "forge_tables", apply_schema_v74_forge),
+    // Re-add user_id to scratchpad (reverses v23). v23 dropped the column on the
+    // per-shard-file isolation assumption, leaving scratchpad unscoped: in
+    // single-DB mode assemble_context working-memory and the delete/get/list
+    // paths returned or mutated other tenants' rows. The runner backfills existing
+    // scratchpad rows to the shard owner after this file runs (see
+    // TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD / backfill_owner_tables_for_version).
+    tenant_migration!(
+        75,
+        "scratchpad_user_id_readd",
+        apply_schema_v75_scratchpad_user_id_readd
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -381,6 +466,16 @@ const TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 68;
 /// Also drops and recreates FTS triggers. The runner backfills existing rows
 /// to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_SKILLS: i64 = 69;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard sessions
+/// table (reverses v24). The runner backfills existing session rows to the
+/// shard owner after this runs.
+const TENANT_MIGRATION_READD_USER_ID_SESSIONS: i64 = 72;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// scratchpad table (reverses v23). The runner backfills existing scratchpad
+/// rows to the shard owner after this runs.
+const TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD: i64 = 75;
 
 /// Generates a tenant migration function that loads SQL from an external file.
 macro_rules! tenant_migration_sql {
@@ -687,6 +782,26 @@ tenant_migration_sql!(
     apply_schema_v69_skills_readd,
     "v69",
     "../tenant/schema_v69_skills_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v72_sessions_readd,
+    "v72",
+    "../tenant/schema_v72_sessions_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v73_frameshift_growth,
+    "v73",
+    "../tenant/schema_v73_frameshift_growth.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v74_forge,
+    "v74",
+    "../tenant/schema_v74_forge_tables.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v75_scratchpad_user_id_readd,
+    "v75",
+    "../tenant/schema_v75_scratchpad_user_id_readd.sql"
 );
 
 /// Tenant v37: drops user_id from portability tables including conversations.
@@ -1087,6 +1202,24 @@ fn drop_column_if_exists(conn: &Connection, table: &str, column: &str, version: 
 /// owner so the always-applied `WHERE user_id = ?` predicate is a no-op on the
 /// shard; with `None` the rows keep the column default.
 pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> Result<()> {
+    run_tenant_migrations_to(conn, owner_user_id, i64::MAX)
+}
+
+/// Apply pending tenant migrations whose version is `<= target_version`.
+///
+/// `run_tenant_migrations` is `run_tenant_migrations_to(conn, owner, i64::MAX)`.
+/// The bounded form is test/harness support: prod runs sharded, so the
+/// data-transforming tenant migrations (e.g. the v55 `user_id` re-add and its
+/// owner backfill) execute against populated shards in production but always
+/// against empty tables in a fresh harness DB. Building a shard at an old
+/// version, seeding rows, then migrating forward exercises those migrations
+/// against data the way prod does. `TENANT_MIGRATIONS` is ordered ascending, so
+/// we stop at the first migration past the target.
+pub fn run_tenant_migrations_to(
+    conn: &Connection,
+    owner_user_id: Option<i64>,
+    target_version: i64,
+) -> Result<()> {
     // Tenant schema uses the `schema_migrations` table (as defined in v1).
     // Ensure it exists so we can read current_version even before v1 runs.
     conn.execute_batch(
@@ -1106,21 +1239,51 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
         if m.version <= current {
             continue;
         }
+        if m.version > target_version {
+            break;
+        }
         info!(
             "applying tenant migration {} ({})",
             m.version, m.description
         );
-        (m.up)(conn)?;
-        // Migrations that re-add a DEFAULT 1 `user_id` column need their
-        // pre-existing rows backfilled to the shard owner so the uniform
-        // `WHERE user_id = ?` predicate is a no-op on this single-owner shard.
-        if let Some(owner) = owner_user_id {
-            backfill_owner_tables_for_version(conn, m.version, owner)?;
+        // Applies the up fn, the owner backfill, and the schema_migrations
+        // insert as a unit. Migrations that re-add a DEFAULT 1 `user_id` column
+        // need their pre-existing rows backfilled to the shard owner so the
+        // uniform `WHERE user_id = ?` predicate is a no-op on this single-owner
+        // shard.
+        let apply = |conn: &Connection| -> Result<()> {
+            (m.up)(conn)?;
+            if let Some(owner) = owner_user_id {
+                backfill_owner_tables_for_version(conn, m.version, owner)?;
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+                rusqlite::params![m.version],
+            )?;
+            Ok(())
+        };
+
+        if m.transactional {
+            // DB-1: wrap apply in one SAVEPOINT so a crash or error between
+            // applying and recording cannot leave an applied-but-unrecorded
+            // migration that re-applies (and may corrupt the shard) on the next
+            // tenant load.
+            let sp_name = format!("sp_tenant_up_{}", m.version);
+            conn.execute_batch(&format!("SAVEPOINT {sp_name}"))?;
+            match apply(conn) {
+                Ok(()) => {
+                    conn.execute_batch(&format!("RELEASE {sp_name}"))?;
+                }
+                Err(e) => {
+                    let _ =
+                        conn.execute_batch(&format!("ROLLBACK TO {sp_name}; RELEASE {sp_name}"));
+                    return Err(e);
+                }
+            }
+        } else {
+            // PRAGMA-foreign_keys-toggling rebuild: must run outside a SAVEPOINT.
+            apply(conn)?;
         }
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
-            rusqlite::params![m.version],
-        )?;
     }
 
     Ok(())
@@ -1217,6 +1380,8 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         }
         TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES => &["user_preferences"],
         TENANT_MIGRATION_READD_USER_ID_SKILLS => &["skill_records"],
+        TENANT_MIGRATION_READD_USER_ID_SESSIONS => &["sessions"],
+        TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD => &["scratchpad"],
         _ => &[],
     };
     for table in tables {
@@ -1417,12 +1582,13 @@ mod tests {
         assert_eq!(value, "v2");
     }
 
-    /// v23: scratchpad must NOT have a user_id column after the full
-    /// migration chain completes.
+    /// v23: scratchpad has no user_id column at the v23 boundary. v75 later
+    /// re-adds it (see `scratchpad_user_id_readded_after_v75`), so this test
+    /// pins to exactly v23 to keep covering the v23 drop in isolation.
     #[test]
     fn user_id_absent_from_scratchpad_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn, None).unwrap();
+        run_tenant_migrations_to(&conn, None, 23).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1434,12 +1600,14 @@ mod tests {
         assert_eq!(count, 0, "scratchpad still has user_id column after v23");
     }
 
-    /// v23: the new UNIQUE(session, agent, entry_key) supports per-agent
+    /// v23: the UNIQUE(session, agent, entry_key) constraint supports per-agent
     /// upsert within a session, and collisions on that triple still collapse.
+    /// Pinned to exactly v23 because v75 tightens the constraint to include
+    /// user_id (see `scratchpad_user_id_readded_after_v75`).
     #[test]
     fn scratchpad_constraint_reshaped_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn, None).unwrap();
+        run_tenant_migrations_to(&conn, None, 23).unwrap();
 
         // Two different agents in the same (session, entry_key) coexist.
         conn.execute(
@@ -1478,6 +1646,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value_a, "vA2");
+    }
+
+    /// v75: re-adds user_id to scratchpad, backfills existing rows to the shard
+    /// owner, and tightens UNIQUE to include user_id so two tenants sharing a
+    /// (session, agent, entry_key) get distinct rows instead of clobbering.
+    #[test]
+    fn scratchpad_user_id_readded_after_v75() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Migrate to v74 (pre-readd) and seed a row the old, unscoped way.
+        run_tenant_migrations_to(&conn, None, 74).unwrap();
+        conn.execute(
+            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) \
+             VALUES ('s1', 'agentA', 'm', 'k1', 'vold', datetime('now', '+5 minutes'))",
+            [],
+        )
+        .unwrap();
+
+        // Apply v75 as shard owner 7; the runner backfills existing rows to 7.
+        run_tenant_migrations_to(&conn, Some(7), 75).unwrap();
+
+        // user_id column is back.
+        let has_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_uid, 1, "scratchpad must have user_id after v75");
+
+        // The pre-existing row backfilled to the shard owner, not the default.
+        let owner: i64 = conn
+            .query_row(
+                "SELECT user_id FROM scratchpad WHERE session='s1' AND entry_key='k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            owner, 7,
+            "existing scratchpad row backfilled to shard owner"
+        );
+
+        // The tightened UNIQUE(user_id, session, agent, entry_key) lets the same
+        // (session, agent, entry_key) under a different user coexist.
+        conn.execute(
+            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) \
+             VALUES (8, 's1', 'agentA', 'm', 'k1', 'vuser8', datetime('now', '+5 minutes')) \
+             ON CONFLICT(user_id, session, agent, entry_key) DO UPDATE SET value = excluded.value",
+            [],
+        )
+        .unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scratchpad WHERE session='s1' AND agent='agentA' AND entry_key='k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            total, 2,
+            "same (session, agent, key) under two users coexist"
+        );
     }
 
     /// v23: rows inserted under the v2 shim shape survive the rebuild intact.
@@ -1575,7 +1806,8 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        // Run the chain; v2 adds user_id, v23 later drops it. End state: absent.
+        // Run the chain; v2 adds user_id, v23 drops it, v75 re-adds it.
+        // End state: present (tenant isolation restored).
         run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
@@ -1585,7 +1817,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post, 0);
+        assert_eq!(post, 1, "v75 re-adds user_id to scratchpad");
     }
 
     /// Verifies sessions tables have user_id after applying v3.
@@ -1672,9 +1904,10 @@ mod tests {
         assert_eq!(line, "hello");
     }
 
-    /// v24: sessions must NOT have a user_id column after the full chain.
+    /// v72 re-adds user_id to sessions (reverses the v24 drop) so the column is
+    /// present after the full chain -- this is the monolith-mode BOLA repair.
     #[test]
-    fn user_id_absent_from_sessions_after_v24() {
+    fn user_id_present_on_sessions_after_v72_readd() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
@@ -1685,12 +1918,12 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "sessions still has user_id column after v24");
+        assert_eq!(count, 1, "sessions must have user_id re-added by v72");
     }
 
-    /// v24: the post-drop sessions table supports the SQL shape kleos-lib
-    /// sessions.rs now uses (no user_id on INSERT, no user_id predicate on
-    /// SELECT). session_output remains untouched and writable.
+    /// After the full chain (v72 re-adds user_id with DEFAULT 1), an INSERT that
+    /// omits user_id still works (defaults to the system user) and session_output
+    /// remains writable. The idx_sessions_user index v24 dropped is restored.
     #[test]
     fn sessions_usable_after_v24() {
         let conn = Connection::open_in_memory().unwrap();
@@ -1726,7 +1959,7 @@ mod tests {
             .unwrap();
         assert_eq!(line, "test-value");
 
-        // idx_sessions_user is gone.
+        // idx_sessions_user is restored by v72.
         let idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_sessions_user'",
@@ -1734,7 +1967,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0, "idx_sessions_user still present after v24");
+        assert_eq!(idx, 1, "idx_sessions_user must be restored by v72");
     }
 
     /// v24: rows inserted under the v3 shim shape survive the drop with
@@ -2731,6 +2964,68 @@ mod tests {
             .unwrap();
         assert_eq!(name, "p1");
         assert_eq!(uid, 4);
+    }
+
+    /// Gap-A guard: data-transforming migrations must be correct against
+    /// POPULATED tables, not just the empty tables a fresh shard presents.
+    /// Build a shard at v54 (before the v55 user_id re-add), seed memories,
+    /// then migrate forward and confirm the v55 backfill set every pre-existing
+    /// row to the shard owner without losing or corrupting data. This is the
+    /// class of bug the harness historically missed because it always seeded
+    /// AFTER the full chain had already run against empty tables.
+    #[test]
+    fn v55_user_id_backfill_against_populated_memories() {
+        const OWNER: i64 = 7;
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Shard at v54: user_id has been dropped and not yet re-added.
+        run_tenant_migrations_to(&conn, Some(OWNER), 54).unwrap();
+        let has_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            has_user_id, 0,
+            "precondition: memories has no user_id at v54"
+        );
+
+        // Seed pre-existing rows the way a populated production shard would have.
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO memories (content, category, source) VALUES (?1, 'general', 'test')",
+                rusqlite::params![format!("pre-existing memory {i}")],
+            )
+            .unwrap();
+        }
+
+        // Migrate forward across v55, which re-adds user_id (DEFAULT 1) and
+        // backfills existing rows to the shard owner.
+        run_tenant_migrations(&conn, Some(OWNER)).unwrap();
+
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3, "v55 rebuild must preserve all pre-existing rows");
+
+        let owned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ?1",
+                rusqlite::params![OWNER],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            owned, 3,
+            "every pre-existing row backfilled to the shard owner"
+        );
+
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
     }
 
     /// v28 dropped user_id from projects; v41 (C-R3-004) re-added it.
@@ -4758,7 +5053,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre_output, 0);
 
-        // Run chain; v3 adds the shim, v24 later drops it. End state: absent.
+        // Run chain; v3 adds the shim, v24 drops it, v72 re-adds it. End: present.
         run_tenant_migrations(&conn, None).unwrap();
 
         let post_user: i64 = conn
@@ -4768,7 +5063,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post_user, 0);
+        assert_eq!(post_user, 1);
 
         let post_output: i64 = conn
             .query_row(

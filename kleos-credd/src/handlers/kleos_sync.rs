@@ -139,6 +139,16 @@ pub(crate) async fn store_to_kleos(
     }
 }
 
+/// True iff `s` is non-empty and contains only alphanumerics, `-`, `_`, or `.`.
+/// Guards the V3 content format `[CRED:v3] {category}/{name} = {hex}`: a `/` in
+/// category or ` = ` in name would otherwise parse as a different entry on
+/// re-read (content-format injection, CREDD-1).
+pub(crate) fn is_safe_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
 async fn store_to_kleos_inner(
     state: &AppState,
     category: &str,
@@ -146,6 +156,14 @@ async fn store_to_kleos_inner(
     data: &SecretData,
     master_key: &[u8; KEY_SIZE],
 ) -> Result<(), String> {
+    // Reject category/name that would corrupt the V3 content format on re-parse.
+    if !is_safe_ident(category) {
+        return Err(format!("category contains unsafe characters: {category:?}"));
+    }
+    if !is_safe_ident(name) {
+        return Err(format!("name contains unsafe characters: {name:?}"));
+    }
+
     // Delete existing entry first
     delete_from_kleos_inner(state, category, name).await.ok();
 

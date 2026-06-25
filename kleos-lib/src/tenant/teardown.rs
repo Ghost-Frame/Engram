@@ -335,6 +335,13 @@ pub async fn delete_monolith_rows(
     db: &Database,
     user_id: i64,
 ) -> crate::Result<HashMap<String, usize>> {
+    // F28 (defense-in-depth): refuse to delete the reserved owner account's rows
+    // even when called directly, mirroring the route-level and admin-layer guards.
+    if user_id == 1 {
+        return Err(crate::EngError::Forbidden(
+            "cannot deprovision the owner account (user_id=1)".into(),
+        ));
+    }
     db.write(move |conn| {
         let mut counts = HashMap::new();
         for (table, col) in &[
@@ -368,6 +375,14 @@ pub async fn run_teardown_job(
     tenant_id: &str,
     archive: bool,
 ) -> crate::Result<DeprovisionReport> {
+    // F28: refuse the reserved owner account at the orchestrator entry, BEFORE
+    // any shard archive/removal. The delete_monolith_rows guard alone fires only
+    // at Step 3, after remove_dir_all has already destroyed the shard.
+    if user_id == 1 {
+        return Err(EngError::Forbidden(
+            "cannot deprovision the owner account (user_id=1)".into(),
+        ));
+    }
     let mut steps: Vec<TeardownStep> = vec![];
     let shard_dir = data_root.join("tenants").join(tenant_id);
 
@@ -443,6 +458,13 @@ pub async fn begin_deprovision(
     admin_user_id: i64,
     reason: String,
 ) -> crate::Result<DeprovisionId> {
+    // F28: refuse the reserved owner account before marking the tenant Deleting
+    // or enqueuing the teardown job (defense-in-depth alongside the HTTP guards).
+    if target_user_id == 1 {
+        return Err(EngError::Forbidden(
+            "cannot deprovision the owner account (user_id=1)".into(),
+        ));
+    }
     let user_id_str = target_user_id.to_string();
     let rdb = registry.registry_db();
 

@@ -19,7 +19,7 @@
 //!      every call. Per-agent bearers themselves are rotated separately
 //!      (Kleos-side); the TTL is the cache invalidation primitive.
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use axum::{
     extract::{Query, State},
@@ -143,7 +143,9 @@ pub async fn get_bootstrap_kleos_bearer(
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .unwrap_or_default();
+        // Propagate build errors: unwrap_or_default() falls back to a client
+        // with NO timeouts, leaving bootstrap requests unbounded (CREDD-2).
+        .map_err(|e| CredError::InvalidInput(format!("HTTP client build failed: {e}")))?;
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
@@ -273,7 +275,9 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .unwrap_or_default();
+        // Propagate build errors: unwrap_or_default() falls back to a client
+        // with NO timeouts, leaving bootstrap requests unbounded (CREDD-2).
+        .map_err(|e| CredError::InvalidInput(format!("HTTP client build failed: {e}")))?;
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
@@ -461,8 +465,20 @@ pub async fn post_bootstrap_kleos_bearer_ecdh(
         .try_fill_bytes(&mut nonce_bytes)
         .expect("OS CSPRNG must be available");
     let nonce = Nonce::from_slice(&nonce_bytes);
+    // Bind the ciphertext to this protocol and agent via AAD so it cannot be
+    // reinterpreted under a different protocol/agent context (defense in depth;
+    // the HKDF key is already agent- and protocol-bound). The client derives
+    // the identical AAD in kleos-lib/src/cred/bootstrap.rs; the two MUST stay
+    // byte-identical or decryption fails.
+    let aad = format!("{}|{}", ECDH_PROTOCOL, req.agent);
     let ciphertext = cipher
-        .encrypt(nonce, bare_bearer.as_bytes())
+        .encrypt(
+            nonce,
+            Payload {
+                msg: bare_bearer.as_bytes(),
+                aad: aad.as_bytes(),
+            },
+        )
         .map_err(|e| CredError::Encryption(format!("aes-gcm encrypt: {}", e)))?;
 
     let now = chrono::Utc::now();

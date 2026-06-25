@@ -37,6 +37,18 @@ const ARGON2_PARALLELISM: u32 = 1;
 /// invalidates every ciphertext in the cred database.
 const KDF_DOMAIN: &[u8] = b"engram-cred-kdf-v1";
 
+/// Environment variable naming a file that holds a persisted random KDF salt
+/// (32 hex chars = 16 bytes). When set and the file is valid, password-based
+/// key derivation (`derive_key`) uses this salt (KDF v2) instead of the legacy
+/// deterministic per-user salt, so two deployments that share a password no
+/// longer derive the same master key.
+///
+/// Backward compatible: when unset or unreadable, derivation falls back to the
+/// deterministic salt, so existing vaults keep opening. It MUST be set
+/// identically across every cred binary that shares a vault (cred, credd,
+/// phylaxd); a mismatch derives a different key and cannot decrypt.
+pub const KDF_SALT_FILE_ENV: &str = "CRED_KDF_SALT_FILE";
+
 /// Legacy salt for private cred compatibility (single-user mode).
 const LEGACY_SALT: &[u8] = b"cred-yubikey-v1\0";
 
@@ -75,11 +87,13 @@ pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
 
 /// Derive an encryption key from a password and optional YubiKey response.
 ///
-/// Inputs are bound with Argon2id using a deterministic 16-byte salt derived
-/// from `user_id` and a fixed domain separation tag. The salt is deterministic
-/// because this function must return the same key for the same inputs on every
-/// call; per-user isolation comes from `user_id` being mixed into both the salt
-/// and the password material.
+/// Inputs are bound with Argon2id. The salt is the persisted random salt named
+/// by `CRED_KDF_SALT_FILE` (KDF v2) when one is configured, otherwise a
+/// deterministic 16-byte salt derived from `user_id` and a fixed domain
+/// separation tag (KDF v1, the backward-compatible default). The v1 salt is
+/// deterministic so the same inputs derive the same key on every call; per-user
+/// isolation comes from `user_id` being mixed into both the salt and the
+/// password material. See `resolve_kdf_salt`.
 ///
 /// Parameters: m = 64 MiB, t = 3, p = 1, output = 32 bytes (OWASP 2023).
 ///
@@ -90,13 +104,22 @@ pub fn derive_key(
     password: &[u8],
     yubikey_response: Option<&[u8]>,
 ) -> Zeroizing<[u8; KEY_SIZE]> {
-    // Deterministic 16-byte salt: SHA-256(domain || user_id) truncated.
-    let mut salt_hasher = Sha256::new();
-    salt_hasher.update(KDF_DOMAIN);
-    salt_hasher.update(user_id.to_le_bytes());
-    let salt_digest = salt_hasher.finalize();
-    let salt = &salt_digest[..16];
+    // KDF salt: a persisted random salt (v2) when CRED_KDF_SALT_FILE names a
+    // valid one, otherwise the legacy deterministic salt derived from user_id
+    // (v1). See resolve_kdf_salt.
+    let salt = resolve_kdf_salt(user_id);
+    derive_key_with_salt(user_id, password, yubikey_response, &salt)
+}
 
+/// Derive a key from the same material as [`derive_key`] but with an explicit
+/// salt, bypassing salt resolution. Pure (no env / file access) so callers and
+/// tests can pin the salt directly.
+pub fn derive_key_with_salt(
+    user_id: i64,
+    password: &[u8],
+    yubikey_response: Option<&[u8]>,
+    salt: &[u8],
+) -> Zeroizing<[u8; KEY_SIZE]> {
     // Password material: user_id || password || yubikey_response.
     let mut material =
         Vec::with_capacity(8 + password.len() + yubikey_response.map(|r| r.len()).unwrap_or(0));
@@ -125,6 +148,80 @@ pub fn derive_key(
     material.zeroize();
 
     Zeroizing::new(key)
+}
+
+/// The legacy deterministic 16-byte salt for a user: SHA-256(domain || user_id)
+/// truncated. Used when no persisted random salt is configured.
+fn legacy_deterministic_salt(user_id: i64) -> [u8; SALT_SIZE] {
+    let mut hasher = Sha256::new();
+    hasher.update(KDF_DOMAIN);
+    hasher.update(user_id.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut salt = [0u8; SALT_SIZE];
+    salt.copy_from_slice(&digest[..SALT_SIZE]);
+    salt
+}
+
+/// Read a persisted KDF salt (32 hex chars = 16 bytes) from `path`. Returns
+/// `None` if the file is missing, unreadable, or not exactly 16 bytes of hex.
+/// A salt is not secret, so it is stored in plaintext hex.
+fn read_salt_file(path: &str) -> Option<[u8; SALT_SIZE]> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let bytes = hex::decode(content.trim()).ok()?;
+    if bytes.len() != SALT_SIZE {
+        return None;
+    }
+    let mut salt = [0u8; SALT_SIZE];
+    salt.copy_from_slice(&bytes);
+    Some(salt)
+}
+
+/// Resolve the KDF salt for `user_id`. Prefers a persisted random salt named by
+/// the CRED_KDF_SALT_FILE env var (KDF v2); falls back to the legacy
+/// deterministic salt (KDF v1) when that is unset or invalid, so existing
+/// vaults continue to derive the same key.
+fn resolve_kdf_salt(user_id: i64) -> [u8; SALT_SIZE] {
+    if let Ok(path) = std::env::var(KDF_SALT_FILE_ENV) {
+        if !path.is_empty() {
+            if let Some(salt) = read_salt_file(&path) {
+                return salt;
+            }
+        }
+    }
+    legacy_deterministic_salt(user_id)
+}
+
+/// Create a random KDF salt file at `path` (mode 0600 on Unix) if it does not
+/// already exist, returning the salt as hex. If the file already exists it is
+/// left untouched and its current value returned -- overwriting would orphan
+/// every secret already derived with the existing salt.
+pub fn init_kdf_salt_file(path: &std::path::Path) -> Result<String> {
+    if let Some(existing) = path.to_str().and_then(read_salt_file) {
+        return Ok(hex::encode(existing));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CredError::Encryption(format!("salt dir: {e}")))?;
+    }
+    let mut salt = [0u8; SALT_SIZE];
+    OsRng
+        .try_fill_bytes(&mut salt)
+        .expect("OS CSPRNG must be available");
+    let hex_salt = hex::encode(salt);
+
+    // Write atomically with owner-only perms (the salt is not secret, but
+    // tight perms avoid a foot-gun where another user swaps it).
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, format!("{hex_salt}\n"))
+        .map_err(|e| CredError::Encryption(format!("write salt: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| CredError::Encryption(format!("chmod salt: {e}")))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| CredError::Encryption(format!("rename salt: {e}")))?;
+    Ok(hex_salt)
 }
 
 /// Encrypt secret data with AES-256-GCM.
@@ -319,6 +416,66 @@ mod tests {
         let key1 = derive_key(1, b"password", None);
         let key2 = derive_key(2, b"password", None);
         assert_ne!(key1, key2);
+    }
+
+    // --- KDF v2 (persisted random salt) --- These tests stay pure: they never
+    // set CRED_KDF_SALT_FILE, so the default-path tests above remain stable.
+
+    #[test]
+    fn legacy_salt_is_deterministic_and_user_scoped() {
+        assert_eq!(legacy_deterministic_salt(1), legacy_deterministic_salt(1));
+        assert_ne!(legacy_deterministic_salt(1), legacy_deterministic_salt(2));
+    }
+
+    #[test]
+    fn derive_key_default_matches_legacy_salt() {
+        // With no salt file configured, derive_key must equal an explicit
+        // derivation using the legacy deterministic salt (backward compat).
+        let salt = legacy_deterministic_salt(1);
+        let via_default = derive_key(1, b"pw", None);
+        let via_explicit = derive_key_with_salt(1, b"pw", None, &salt);
+        assert_eq!(via_default, via_explicit);
+    }
+
+    #[test]
+    fn different_salts_diverge_same_password() {
+        // The core of the fix: two deployments with the same password but
+        // different (random) salts derive different keys.
+        let key_a = derive_key_with_salt(1, b"shared-pw", None, &[0xAA; SALT_SIZE]);
+        let key_b = derive_key_with_salt(1, b"shared-pw", None, &[0xBB; SALT_SIZE]);
+        assert_ne!(key_a, key_b);
+        // Same salt -> same key.
+        let key_a2 = derive_key_with_salt(1, b"shared-pw", None, &[0xAA; SALT_SIZE]);
+        assert_eq!(key_a, key_a2);
+    }
+
+    #[test]
+    fn init_kdf_salt_file_creates_idempotent_readable_salt() {
+        let path = std::env::temp_dir().join(format!("cred-kdf-test-{}.salt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let hex1 = init_kdf_salt_file(&path).expect("create salt");
+        assert_eq!(hex1.len(), SALT_SIZE * 2); // 16 bytes -> 32 hex chars
+
+        // Idempotent: a second call returns the same salt, never overwrites.
+        let hex2 = init_kdf_salt_file(&path).expect("reuse salt");
+        assert_eq!(hex1, hex2);
+
+        // read_salt_file round-trips what was written.
+        let read = read_salt_file(path.to_str().unwrap()).expect("read salt");
+        assert_eq!(hex::encode(read), hex1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_salt_file_rejects_bad_input() {
+        let path = std::env::temp_dir().join(format!("cred-kdf-bad-{}.salt", std::process::id()));
+        std::fs::write(&path, "not-hex").unwrap();
+        assert!(read_salt_file(path.to_str().unwrap()).is_none());
+        std::fs::write(&path, "aabb").unwrap(); // valid hex but wrong length
+        assert!(read_salt_file(path.to_str().unwrap()).is_none());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -467,18 +467,22 @@ async fn store_gate_results(results: &[GateResult], state: &SidecarState) -> usi
 
         let importance = result.verdict.importance.unwrap_or(3);
 
-        // Store the full original assistant turn as content so specific
-        // entities (tool names, hostnames, paths, ports) survive into the FTS
-        // and embedding indexes. The LLM's one-line summary is prepended as a
-        // header -- it gives a clean preview in search lists without throwing
-        // away the searchable body underneath.
-        let owned_content = match result.verdict.summary.as_deref() {
-            Some(summary) if !summary.trim().is_empty() => {
-                format!("{}\n\n{}", summary.trim(), result.original_text)
+        // Store only the gate's distilled summary. Appending the raw assistant
+        // turn (the prior behavior) dominated the FTS/embedding indexes with
+        // uncurated narration, so recall matched conversational filler instead
+        // of facts. A store=true verdict with no usable summary is a gate
+        // contract violation, so skip it rather than fall back to the raw turn,
+        // which would reintroduce exactly the noise the gate exists to remove.
+        let content = match result.verdict.summary.as_deref() {
+            Some(summary) if !summary.trim().is_empty() => summary.trim(),
+            _ => {
+                tracing::debug!(
+                    session = %result.session_id,
+                    "gate verdict store=true with empty summary; skipping to avoid raw-turn ingestion"
+                );
+                continue;
             }
-            _ => result.original_text.clone(),
         };
-        let content = owned_content.as_str();
 
         let req = serde_json::json!({
             "content": content,

@@ -38,6 +38,34 @@ fn is_stripped_response_header(name: &str) -> bool {
         .any(|h| name.eq_ignore_ascii_case(h))
 }
 
+/// Request headers the proxy must never forward verbatim from the caller. These
+/// are hop-by-hop or message-framing headers (RFC 7230 SS6.1 plus length /
+/// encoding controls); relaying caller-controlled values enables request
+/// smuggling / desync and lets the caller override the `Host` of our pinned
+/// connection. `host`, `content-length`, and the auth header are set by the
+/// client or our own injection, never by the caller.
+const STRIPPED_REQUEST_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "upgrade",
+    "expect",
+];
+
+/// True when a caller-supplied request header must be dropped before the proxy
+/// forwards it upstream. Case-insensitive.
+fn is_stripped_request_header(name: &str) -> bool {
+    STRIPPED_REQUEST_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// Pattern for secret placeholders: {{secret:category/name}} or {{secret:category/name.field}}
 fn find_placeholders(text: &str) -> Vec<(usize, usize, String, String, Option<String>)> {
     let mut results = Vec::new();
@@ -202,6 +230,61 @@ pub async fn resolve_text_handler(
     }))
 }
 
+/// True when `host` matches an allowlist `pattern`: `*` (any), `*.suffix`
+/// (the suffix itself or any subdomain of it), or an exact match.
+fn proxy_domain_matches(pattern: &str, host: &str) -> bool {
+    if pattern == "*" {
+        true
+    } else if let Some(suffix) = pattern.strip_prefix("*.") {
+        host == suffix || host.ends_with(&format!(".{}", suffix))
+    } else {
+        host == pattern
+    }
+}
+
+/// F09: decide whether the proxy may forward a secret to `host` for `category`.
+///
+/// Pure (no env, no I/O) so the deny-by-default policy is unit-testable without
+/// standing up an `AppState`. Returns `Ok(())` to allow, `Err(reason)` to deny.
+///
+/// - With an allowlist: permit only when a pattern under `category` (or the
+///   wildcard `"*"` category) matches `host`. A category with no entry denies.
+/// - Without an allowlist: deny unless `allow_any` (set from
+///   `CREDD_PROXY_ALLOW_ANY=1` by the caller). This is the deny-by-default flip;
+///   the old behavior forwarded to any SSRF-passing host.
+fn proxy_gate_decision(
+    allowlist: Option<&crate::state::ProxyDomainAllowlist>,
+    category: &str,
+    host: &str,
+    allow_any: bool,
+) -> std::result::Result<(), String> {
+    match allowlist {
+        Some(allowlist) => {
+            let allowed_domains = allowlist.get(category).or_else(|| allowlist.get("*"));
+            let permitted = match allowed_domains {
+                Some(domains) => domains
+                    .iter()
+                    .any(|pattern| proxy_domain_matches(pattern, host)),
+                None => false,
+            };
+            if permitted {
+                Ok(())
+            } else {
+                Err(format!(
+                    "proxy target domain '{}' not in allowlist for category '{}'",
+                    host, category
+                ))
+            }
+        }
+        None if allow_any => Ok(()),
+        None => Err(
+            "proxy denied: no proxy domain allowlist configured (set a per-category \
+                     allowlist, or CREDD_PROXY_ALLOW_ANY=1 to allow any host)"
+                .to_string(),
+        ),
+    }
+}
+
 /// Proxy HTTP request with injected credentials.
 ///
 /// SECURITY: validates the target URL against SSRF deny lists (loopback,
@@ -218,44 +301,37 @@ pub async fn proxy_handler(
     // DNS so domains pointing at private IPs are also caught. The proxy
     // injects secret headers so an unvalidated URL would let an attacker
     // exfiltrate credentials to internal services.
-    kleos_lib::webhooks::resolve_and_validate_url(&req.url)
+    // Capture the address the hostname validated to. reqwest re-resolves DNS
+    // at request time, so without pinning an attacker could rebind the host to
+    // an internal IP between this check and the request (TOCTOU rebinding). We
+    // pin reqwest's resolver to this IP when building the client below, keeping
+    // the original hostname for TLS SNI and certificate validation. `None`
+    // means the URL already held a literal (already-validated) IP.
+    let pinned_ip = kleos_lib::webhooks::resolve_and_validate_url(&req.url)
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy target URL rejected: {}", e)))?;
 
-    // SECURITY (H4): per-category domain binding. When an allowlist is
-    // configured, only forward credentials to explicitly permitted domains.
-    if let Some(allowlist) = &state.proxy_domain_allowlist {
-        let target_host = url::Url::parse(&req.url)
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
-        let target_host = target_host.as_deref().unwrap_or("");
-        let allowed_domains = allowlist
-            .get(&req.secret_category)
-            .or_else(|| allowlist.get("*"));
-        let permitted = match allowed_domains {
-            Some(domains) => domains.iter().any(|pattern| {
-                if pattern == "*" {
-                    true
-                } else if let Some(suffix) = pattern.strip_prefix("*.") {
-                    target_host == suffix || target_host.ends_with(&format!(".{}", suffix))
-                } else {
-                    target_host == pattern
-                }
-            }),
-            None => false,
-        };
-        if !permitted {
-            return Err(CredError::PermissionDenied(format!(
-                "proxy target domain '{}' not in allowlist for category '{}'",
-                target_host, req.secret_category
-            ))
-            .into());
-        }
-    } else if std::env::var("CREDD_PROXY_STRICT").as_deref() == Ok("1") {
-        return Err(CredError::PermissionDenied(
-            "proxy denied: no domain allowlist configured and CREDD_PROXY_STRICT=1 is set".into(),
-        )
-        .into());
+    // SECURITY (H4) + F09: per-category domain binding with deny-by-default.
+    // The decision is computed by the pure `proxy_gate_decision` helper so it is
+    // unit-testable without a live AppState. The CREDD_PROXY_ALLOW_ANY opt-out is
+    // read here (env access stays out of the pure helper).
+    let target_host = url::Url::parse(&req.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+    let target_host = target_host.as_deref().unwrap_or("");
+    let allow_any = std::env::var("CREDD_PROXY_ALLOW_ANY").as_deref() == Ok("1");
+    if state.proxy_domain_allowlist.is_none() && allow_any {
+        tracing::warn!(
+            "CREDD_PROXY_ALLOW_ANY=1: proxy forwarding credentials without a domain allowlist"
+        );
+    }
+    if let Err(reason) = proxy_gate_decision(
+        state.proxy_domain_allowlist.as_deref(),
+        &req.secret_category,
+        target_host,
+        allow_any,
+    ) {
+        return Err(CredError::PermissionDenied(reason).into());
     }
 
     if !auth.can_access_category(&req.secret_category) {
@@ -306,14 +382,32 @@ pub async fn proxy_handler(
 
     // SECURITY (SEC-H2): disable redirect following to prevent Authorization
     // header leakage to attacker-controlled hosts via redirect chains.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+    let mut client_builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+
+    // SECURITY (SSRF-DNS): pin the validated IP so reqwest does not re-resolve
+    // the hostname and cannot be steered to an internal address by a rebind.
+    if let Some(ip) = pinned_ip {
+        let parsed = url::Url::parse(&req.url)
+            .map_err(|e| CredError::InvalidInput(format!("invalid proxy URL: {}", e)))?;
+        if let Some(host) = parsed.host_str() {
+            let port = parsed.port_or_known_default().unwrap_or(443);
+            client_builder = client_builder.resolve(host, std::net::SocketAddr::new(ip, port));
+        }
+    }
+
+    let client = client_builder
         .build()
         .map_err(|e| CredError::InvalidInput(format!("client build failed: {}", e)))?;
     let mut builder = client.request(method, &req.url);
 
+    // SECURITY: forward only safe caller headers. Hop-by-hop and framing
+    // headers are dropped to prevent request smuggling/desync and Host override
+    // of the pinned connection.
     if let Some(headers) = &req.headers {
         for (name, value) in headers {
+            if is_stripped_request_header(name) {
+                continue;
+            }
             builder = builder.header(name, value);
         }
     }
@@ -467,5 +561,61 @@ mod tests {
         assert_eq!(placeholders[1].2, "db");
         assert_eq!(placeholders[1].3, "creds");
         assert_eq!(placeholders[1].4, Some("username".to_string()));
+    }
+
+    use std::collections::HashMap;
+
+    /// F09: with no allowlist and no opt-out, the proxy denies by default.
+    #[test]
+    fn proxy_gate_denies_without_allowlist_or_optout() {
+        let decision = proxy_gate_decision(None, "aws", "example.com", false);
+        assert!(decision.is_err(), "no allowlist + no opt-out must deny");
+        assert!(decision
+            .unwrap_err()
+            .contains("no proxy domain allowlist configured"));
+    }
+
+    /// F09: CREDD_PROXY_ALLOW_ANY (allow_any=true) restores forward-to-any-host.
+    #[test]
+    fn proxy_gate_allows_with_optout() {
+        assert!(proxy_gate_decision(None, "aws", "example.com", true).is_ok());
+    }
+
+    /// An allowlist permits only matching hosts (exact, *. subdomain, * wildcard)
+    /// and denies everything else, regardless of the allow_any flag.
+    #[test]
+    fn proxy_gate_enforces_allowlist_patterns() {
+        let mut allowlist: HashMap<String, Vec<String>> = HashMap::new();
+        allowlist.insert("aws".to_string(), vec!["*.amazonaws.com".to_string()]);
+        allowlist.insert("github".to_string(), vec!["api.github.com".to_string()]);
+        allowlist.insert("any".to_string(), vec!["*".to_string()]);
+
+        // Subdomain wildcard: suffix itself and any subdomain match; siblings do not.
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "amazonaws.com", false).is_ok());
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "s3.amazonaws.com", false).is_ok());
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "evil.com", false).is_err());
+        // Prefix-spoofing must NOT satisfy the suffix wildcard (the ends_with
+        // check requires a leading dot, so "evil-amazonaws.com" is rejected).
+        assert!(proxy_gate_decision(Some(&allowlist), "aws", "evil-amazonaws.com", false).is_err());
+        // Patterns are lowercased at load (see state.rs); the helper compares a
+        // lowercased host against lowercased patterns.
+        assert!(proxy_gate_decision(
+            Some(&allowlist),
+            "aws",
+            "S3.AMAZONAWS.COM".to_lowercase().as_str(),
+            false
+        )
+        .is_ok());
+
+        // Exact match only.
+        assert!(proxy_gate_decision(Some(&allowlist), "github", "api.github.com", false).is_ok());
+        assert!(proxy_gate_decision(Some(&allowlist), "github", "github.com", false).is_err());
+
+        // "*" pattern allows any host for that category.
+        assert!(proxy_gate_decision(Some(&allowlist), "any", "whatever.example", false).is_ok());
+
+        // A category absent from the allowlist (and no "*" category entry) denies,
+        // even with allow_any set -- a configured allowlist is authoritative.
+        assert!(proxy_gate_decision(Some(&allowlist), "unknown", "api.github.com", true).is_err());
     }
 }

@@ -80,6 +80,69 @@ impl KleosClient {
         self.handle_response(resp).await
     }
 
+    /// Send an authenticated GET request with JSON object params serialized as a query string.
+    ///
+    /// `body` must be a `serde_json::Value::Object`. Each key-value pair is appended to
+    /// the URL as `?k=v&...`; non-string values are coerced via their JSON representation.
+    /// This is the correct path for GET-method skill dispatch (see exec.rs).
+    pub async fn get_with_query(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        // Flatten the JSON object into (String, String) pairs for URL encoding.
+        // Values that are not plain strings are serialized as their JSON text so that
+        // integers and booleans round-trip correctly through the query string.
+        let pairs: Vec<(String, String)> = body
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| {
+                        let s = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        (k.clone(), s)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Build the query string so we can pass it to apply_auth for signing.
+        let qs: String = pairs
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| {
+                let sep = if i == 0 { "" } else { "&" };
+                format!(
+                    "{}{}={}",
+                    sep,
+                    percent_encode_query(k),
+                    percent_encode_query(v)
+                )
+            })
+            .collect();
+
+        // Construct the full URL; apply_auth will split on '?' for signing.
+        let full_path = if qs.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}?{}", path, qs)
+        };
+        let url = format!("{}{}", self.base_url, full_path);
+        let req = self.http.get(&url);
+        let req = self.apply_auth(req, "GET", &full_path, &[]);
+        let resp = req.send().await.map_err(|e| {
+            if e.is_connect() {
+                ForgeError::Connection(e.to_string())
+            } else {
+                ForgeError::Transport(e)
+            }
+        })?;
+        self.capture_session(&resp);
+        self.handle_response(resp).await
+    }
+
     /// Send an authenticated POST request with a JSON body.
     pub async fn post(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}{}", self.base_url, path);
@@ -155,4 +218,32 @@ impl KleosClient {
         }
         Err(ForgeError::Server(code, body))
     }
+}
+
+/// Percent-encode a single query-string component (key or value).
+///
+/// Encodes all bytes except unreserved characters (A-Z a-z 0-9 - _ . ~)
+/// per RFC 3986. Spaces become `%20`, not `+`.
+fn percent_encode_query(s: &str) -> String {
+    // Characters that do NOT need encoding in a query component.
+    const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        if UNRESERVED.contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(
+                char::from_digit((byte >> 4) as u32, 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit((byte & 0xF) as u32, 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase(),
+            );
+        }
+    }
+    out
 }

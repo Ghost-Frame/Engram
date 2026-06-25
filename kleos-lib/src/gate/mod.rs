@@ -226,13 +226,14 @@ pub async fn check_command_with_context(
 /// pending (already decided by another responder or the timeout path). The DB
 /// row is the single source of truth; callers must not persist a decision
 /// outside this CAS.
-#[tracing::instrument(skip(db, reason), fields(gate_id, approved, user_id))]
+#[tracing::instrument(skip(db, reason, responder_agent), fields(gate_id, approved, user_id))]
 pub async fn respond_to_gate(
     db: &Database,
     gate_id: i64,
     approved: bool,
     reason: Option<&str>,
     user_id: i64,
+    responder_agent: Option<String>,
 ) -> Result<Value> {
     let status = if approved { "approved" } else { "denied" };
     let reason_str = reason
@@ -245,6 +246,29 @@ pub async fn respond_to_gate(
     let approved_copy = approved;
 
     db.write(move |conn| {
+        // Self-approval guard: the agent that opened a gate must not be able to
+        // approve it. The human-approval gate for TOOLS_REQUIRING_APPROVAL
+        // exists to put a different principal in the loop, so an agent-bound
+        // key whose agent matches the requesting agent is rejected on approve.
+        // Self-denial (an agent cancelling its own request) stays allowed.
+        if approved_copy {
+            if let Some(ref responder) = responder_agent {
+                let requesting_agent: Option<String> = conn
+                    .query_row(
+                        "SELECT agent FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                        rusqlite::params![gate_id, user_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if requesting_agent.as_deref() == Some(responder.as_str()) {
+                    return Err(EngError::Forbidden(format!(
+                        "agent '{}' may not approve its own gate request {}",
+                        responder, gate_id
+                    )));
+                }
+            }
+        }
+
         let rows_affected = conn.execute(
             "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
              WHERE id = ?3 AND user_id = ?4 AND status = 'pending'",
@@ -814,6 +838,70 @@ mod tests {
         let result = check_command(&db, &req, 1).await.unwrap();
         assert!(!result.allowed);
         assert!(result.reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn respond_rejects_agent_self_approval() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        // Open a gate requested by "agent-x".
+        let gate_id = store_gate_request(
+            &db,
+            GateRequestInsert {
+                user_id: 1,
+                agent: "agent-x",
+                command: "deploy",
+                context: None,
+                status: "pending",
+                reason: None,
+                session_id: None,
+            },
+        )
+        .await
+        .expect("store gate");
+
+        // The same agent approving its own gate is forbidden.
+        let self_approve =
+            respond_to_gate(&db, gate_id, true, None, 1, Some("agent-x".to_string())).await;
+        assert!(
+            matches!(self_approve, Err(EngError::Forbidden(_))),
+            "agent must not approve its own gate, got {self_approve:?}"
+        );
+
+        // The gate stays pending after the rejected self-approval.
+        let decision = read_gate_decision(&db, gate_id, 1).await.expect("read");
+        assert_eq!(decision.map(|d| d.status), Some("pending".to_string()));
+
+        // A different agent may approve it.
+        let other_approve =
+            respond_to_gate(&db, gate_id, true, None, 1, Some("approver".to_string())).await;
+        assert!(other_approve.is_ok(), "a different agent may approve");
+    }
+
+    #[tokio::test]
+    async fn respond_allows_human_key_approval() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let gate_id = store_gate_request(
+            &db,
+            GateRequestInsert {
+                user_id: 1,
+                agent: "agent-y",
+                command: "deploy",
+                context: None,
+                status: "pending",
+                reason: None,
+                session_id: None,
+            },
+        )
+        .await
+        .expect("store gate");
+
+        // A non-agent (human/operator) key carries no binding and may approve.
+        let approved = respond_to_gate(&db, gate_id, true, None, 1, None).await;
+        assert!(approved.is_ok(), "human key approval must succeed");
     }
 
     #[tokio::test]

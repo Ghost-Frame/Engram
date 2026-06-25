@@ -330,8 +330,8 @@ pub async fn create_session(
     let id_for_insert = id.clone();
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO sessions (id, agent) VALUES (?1, ?2)",
-            params![id_for_insert, agent],
+            "INSERT INTO sessions (id, agent, user_id) VALUES (?1, ?2, ?3)",
+            params![id_for_insert, agent, user_id],
         )?;
         Ok(())
     })
@@ -345,9 +345,12 @@ pub async fn create_session(
 pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Result<SessionInfo> {
     let session_id = session_id.to_string();
     db.read(move |conn| {
+        // Scope to the owner: in shared (monolith) mode this stops one user from
+        // reading another's session by id. A no-op in a single-owner shard.
         conn.query_row(
-            "SELECT id, agent, status, created_at, updated_at FROM sessions WHERE id = ?1",
-            params![session_id],
+            "SELECT id, agent, status, created_at, updated_at FROM sessions \
+             WHERE id = ?1 AND user_id = ?2",
+            params![session_id, user_id],
             row_to_session,
         )
         .optional()?
@@ -367,11 +370,14 @@ pub async fn list_sessions(
     let limit = limit.unwrap_or(50).min(500) as i64;
     let offset = offset.unwrap_or(0) as i64;
     db.read(move |conn| {
+        // Scope the listing to the owner: in shared (monolith) mode this query
+        // otherwise enumerated every tenant's sessions (and their ids). A no-op
+        // in a single-owner shard.
         let mut stmt = conn.prepare(
             "SELECT id, agent, status, created_at, updated_at FROM sessions \
-                 ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+                 WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(params![limit, offset], row_to_session)?;
+        let rows = stmt.query_map(params![user_id, limit, offset], row_to_session)?;
         let mut sessions = Vec::new();
         for row in rows {
             sessions.push(row?);
@@ -501,6 +507,39 @@ mod tests {
 
         let fetched = get_session(&db, &session.id, 1).await.expect("get");
         assert_eq!(fetched.id, session.id);
+    }
+
+    /// In shared (monolith) mode one user must not read or enumerate another
+    /// user's sessions. Pins the user_id scoping on get_session/list_sessions
+    /// (and that create_session records the owner). A no-op in a shard.
+    #[tokio::test]
+    async fn sessions_are_owner_scoped_across_users() {
+        let db = crate::db::Database::connect_memory().await.expect("db");
+        let req = SessionCreateRequest {
+            agent: "owned-by-user-1".to_string(),
+        };
+        let s1 = create_session(&db, &req, 1)
+            .await
+            .expect("create as user 1");
+
+        // User 2 must not be able to fetch user 1's session by id.
+        let cross = get_session(&db, &s1.id, 2).await;
+        assert!(
+            cross.is_err(),
+            "user 2 must not read user 1's session by id"
+        );
+
+        // User 2 must not see user 1's session in their listing.
+        let u2_list = list_sessions(&db, 2, None, None).await.expect("list u2");
+        assert!(
+            u2_list.iter().all(|s| s.id != s1.id),
+            "user 2's listing must not enumerate user 1's session"
+        );
+
+        // The owner still sees their own session.
+        assert!(get_session(&db, &s1.id, 1).await.is_ok(), "owner can read");
+        let u1_list = list_sessions(&db, 1, None, None).await.expect("list u1");
+        assert!(u1_list.iter().any(|s| s.id == s1.id), "owner can enumerate");
     }
 
     #[tokio::test]

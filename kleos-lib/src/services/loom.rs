@@ -1439,6 +1439,22 @@ static LOOM_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyL
 /// bytes. Mirrors the standalone's `text.slice(0, 500)`.
 const LOOM_ERR_BODY_CAP: usize = 500;
 
+/// SSRF guard for a Loom step's user-supplied URL. Resolves the host via DNS
+/// and rejects loopback / RFC1918 / link-local / cloud-metadata targets,
+/// including hostnames that resolve to such IPs -- closing the gap where the
+/// synchronous `validate_webhook_url` only inspects literal IPs/hostnames.
+///
+/// The validated IP is deliberately NOT pinned into the URL: Loom steps
+/// routinely target https domains (LLM providers, SaaS webhooks), and rewriting
+/// the host to a literal IP would break TLS SNI / certificate validation. The
+/// shared `LOOM_HTTP_CLIENT` (built via `net::safe_client_builder`) still
+/// revalidates every redirect hop, so a redirect to a private IP is rejected.
+async fn guard_step_url_ssrf(url: &str) -> Result<()> {
+    crate::webhooks::resolve_and_validate_url(url)
+        .await
+        .map(|_| ())
+}
+
 /// Execute a `webhook`-type step by POSTing `{ step_id, run_id, input, config }`
 /// to the configured URL, then completing the step with the parsed JSON
 /// response. Non-2xx responses and transport errors route through `fail_step`
@@ -1466,8 +1482,10 @@ pub async fn execute_webhook_step(
         }
     };
 
-    // SECURITY: validate before issuing the request to prevent SSRF.
-    if let Err(e) = crate::webhooks::validate_webhook_url(&url) {
+    // SECURITY (SSRF): resolve + validate at request time so a hostname that
+    // resolves to a private/metadata IP is rejected, not just literal private
+    // IPs (the old validate_webhook_url check).
+    if let Err(e) = guard_step_url_ssrf(&url).await {
         let msg = format!("webhook url rejected: {}", e);
         Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
         return Ok(());
@@ -1564,6 +1582,15 @@ pub async fn execute_llm_step(
             return Ok(());
         }
     };
+
+    // SECURITY (SSRF): the llm step POSTs the configured api_key to this URL, so
+    // resolve + validate it (rejecting hosts that resolve to private/metadata
+    // IPs) before any request. Previously the llm step did no URL validation.
+    if let Err(e) = guard_step_url_ssrf(&url).await {
+        let msg = format!("llm url rejected: {}", e);
+        Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+        return Ok(());
+    }
 
     let vars = serde_json::Value::Object(build_llm_vars(input, config.get("input_map")));
 

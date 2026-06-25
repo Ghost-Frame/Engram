@@ -6,6 +6,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-06-22
+
+### CI
+
+- release: build and publish `kleos-ingest` and `kleos-cleanup` as linux-x64 release artifacts so operators have a binary to pull. The `kleos-ingest` installer component previously had no matching release asset.
+
+## [1.7.2] - 2026-06-18
+
+### Security
+
+- server: SSRF-harden outbound webhook and LLM delivery so callbacks cannot reach internal or link-local addresses (#103).
+- auth: protect the owner account from deprovisioning so the last admin cannot be locked out (#103).
+- auth: require `read` scope on read-only POST endpoints instead of leaving them unscoped (#103).
+- cred: require a confidential transport for credential bearer tokens (#103).
+- credd: deny the proxy by default unless an explicit domain allowlist is configured (#103).
+
+### Build
+
+- hooks: pre-commit now auto-formats staged Rust so CI `cargo fmt --all -- --check` cannot fail on push.
+
+## [1.7.1] - 2026-06-16
+
+### Added
+
+- MCP: clients can attach artifacts inline on `memory.store` and on read tools (#98).
+- MCP: underscore-normalized tool-name aliases so strict clients such as VS Code can call every tool (#97).
+- forge: agent-forge absorbed into Kleos as a server-side CLI plus MCP tool surface (#96).
+- cli: inject coordination read-back at session start so agents see live task/feed state.
+- cli: derive the session-start bootstrap query from the cwd project and git branch.
+- db: bounded `run_migrations_to` / `run_tenant_migrations_to` helpers for partial migration runs.
+
+### Fixed
+
+- gate: forge-authorized Write/Edit now bypass the human-approval wait instead of blocking on it (#99).
+- chiasm: reap stale never-heartbeated idle tasks, not only overdue ones.
+
+## [1.7.0] - 2026-06-13
+
+### Added
+
+- Frameshift cross-machine growth tenant (server-side), gated behind `KLEOS_FRAMESHIFT_GROWTH` (#94).
+- kleos-phylax: secret-resolve modes. `exec` runs an allowlisted command with secrets injected into the child process, and `verify`/`sign`/`derive` let an agent use a secret without ever holding its plaintext.
+- kleos-phylax: no-plaintext agent posture backed by fail-closed policy middleware.
+- kleos-phylax: out-of-band approval notification and a capability-token decide endpoint.
+- kleos-cleanup: `--delete-where` escape hatch for operator-specific junk.
+
+### Security
+
+- Security audit remediation and monolith multi-user isolation hardening (#93).
+- kleos-phylax: scrub-totality property tests and an adversarial plaintext-bypass test.
+
+### Fixed
+
+- recall: `is_static` memories now decay by age in ranking instead of being pinned at full retrievability. The flag is caller-set and hardcoded on consolidations, and had grown to ~43% of the store, so stale "permanent" memories dominated recall regardless of age or relevance. `is_static` still protects durability (no auto-prune) and gate guard lookups.
+- kleos-sidecar: drop the orphaned `GateResult.original_text` field.
+- gui: untrack stale `.svelte-kit` build artifacts and restore the ignore rule.
+
+### CI
+
+- Pin the Rust toolchain to 1.94.0 across CI, Docker, and local dev so unpinned `stable` upgrades no longer break `clippy -D warnings`, and serialize the Syntheos mirror workflow to stop concurrent force-pushes from failing on the ref-lock CAS.
+
+### Database
+
+- approvals: add `decide_token_hash` column (migration 85).
+
+## [1.6.1] - 2026-06-08
+
+### Fixed
+
+- kleos-sidecar: stop over-ingesting raw session content. `retain_tool_calls` now defaults to false, so raw tool results are no longer promoted to durable storage, and the file-watcher gate stores only its distilled summary instead of appending the full raw assistant turn.
+- eidolon living prompt: removed the duplicate `EIDOLON LIVING CONTEXT` banner (the brain block now renders as a `## Brain Context` sub-section), and credential-scrubbed the injected `Relevant Memories` section.
+- kleos-cleanup: open raw-keyed SQLCipher databases correctly (raw-hex `PRAGMA key`), and add a high-precision pollution purge step plus a `--purge-only` flag.
+
 ## [1.1.1] - 2026-05-14
 
 ### Fixed

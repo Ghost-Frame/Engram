@@ -25,6 +25,63 @@ pub fn sanitize_fts_query(query: &str) -> String {
         .join(" ")
 }
 
+/// High-frequency English function words dropped from the OR-fusion MATCH expression.
+///
+/// FTS5 here uses the default unicode61 tokenizer with no stemming and no stopword list, so
+/// OR-ing a word like "the" or "for" matches a large fraction of the corpus and floods BM25
+/// with near-universal hits, drowning the content tokens that actually carry query intent.
+/// Removing these keeps the disjunction focused on meaningful terms. Tokens shorter than 2
+/// chars are already filtered, so single-letter stopwords are omitted here.
+const FTS_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "have", "has",
+    "had", "you", "your", "but", "not", "all", "any", "can", "our", "out", "his", "her", "she",
+    "him", "they", "them", "their", "what", "when", "where", "which", "who", "how", "why", "into",
+    "than", "then", "there", "here", "been", "being", "would", "could", "should", "about", "over",
+    "some", "such", "only", "also", "more", "most", "other", "is", "to", "of", "in", "on", "at",
+    "by", "be", "as", "it", "or", "an", "we", "if", "do", "so", "no", "up", "my", "me", "us",
+];
+
+/// Maximum number of OR terms in a memory-search MATCH expression. Caps the size of the FTS5
+/// query so a pathological many-token input cannot expand into an unbounded disjunction even
+/// after stopword removal; natural-language queries rarely carry this many content tokens.
+const MAX_FTS_OR_TERMS: usize = 32;
+
+/// Build an OR-of-tokens FTS5 MATCH expression for memory search.
+///
+/// Space-joined tokens (see `sanitize_fts_query`) are an implicit AND in FTS5, so a
+/// multi-term natural-language query returns zero hits unless every stem co-occurs in
+/// one document. That collapses hybrid search to vector-only whenever one term is
+/// missing. Memory search instead ORs the tokens, so partial matches surface while
+/// BM25 still ranks documents that match more terms higher. Stopwords are dropped and the
+/// term count is capped (see FTS_STOPWORDS / MAX_FTS_OR_TERMS) so the disjunction stays
+/// focused and bounded. Each token is alphanumeric-only (special chars already mapped to
+/// spaces) and wrapped as a quoted phrase so that FTS5 boolean keywords appearing inside the
+/// user query (AND/OR/NOT/NEAR) cannot be reinterpreted as operators. Returns an empty string
+/// when no usable token remains, matching `sanitize_fts_query`'s contract.
+pub fn fts_or_match_query(query: &str) -> String {
+    // Same character sanitisation as sanitize_fts_query: keep alphanumerics and
+    // whitespace, replace every other character with a space.
+    let cleaned: String = query
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    // Keep meaningful tokens (>= 2 chars, non-stopword), cap the count, quote each, OR-join.
+    cleaned
+        .split_whitespace()
+        .filter(|w| w.len() >= 2)
+        .filter(|w| !FTS_STOPWORDS.contains(&w.to_ascii_lowercase().as_str()))
+        .take(MAX_FTS_OR_TERMS)
+        .map(|w| format!("\"{w}\""))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
 /// Maximum FTS query length in bytes. Queries beyond this are rejected to
 /// prevent denial-of-service through pathological FTS5 expressions.
 use crate::validation::MAX_FTS_QUERY_LEN;
@@ -46,7 +103,9 @@ pub async fn fts_search(
             MAX_FTS_QUERY_LEN
         )));
     }
-    let sanitized = sanitize_fts_query(query);
+    // Memory search ORs the tokens (not the implicit-AND of sanitize_fts_query) so a
+    // multi-term query does not zero out when one term is absent from a document.
+    let sanitized = fts_or_match_query(query);
     if sanitized.is_empty() {
         return Ok(vec![]);
     }

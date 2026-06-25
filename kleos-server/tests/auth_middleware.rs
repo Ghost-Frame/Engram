@@ -17,7 +17,8 @@ use tower::ServiceExt;
 /// Enroll an Ed25519 soft key as the first identity key (bootstrap path).
 ///
 /// Returns the `RequestSigner` for signing subsequent requests. Requires no
-/// existing keys in the database and no `KLEOS_BOOTSTRAP_SECRET` env var.
+/// existing keys in the database; sends the bootstrap secret that
+/// `test_app()` configures via `ENGRAM_BOOTSTRAP_SECRET`.
 async fn enroll_soft_key(app: &axum::Router) -> RequestSigner {
     let signer = RequestSigner::from_key_bytes([42u8; 32], "test-host", "test-agent", "test-model");
     let sig_hex = signer
@@ -25,7 +26,7 @@ async fn enroll_soft_key(app: &axum::Router) -> RequestSigner {
         .expect("sign enrollment proof");
 
     // The middleware EnrollProof struct uses deny_unknown_fields, so only
-    // send the five fields it expects.
+    // send the fields it expects.
     let body = json!({
         "algo": "ed25519",
         "tier": "soft",
@@ -38,6 +39,7 @@ async fn enroll_soft_key(app: &axum::Router) -> RequestSigner {
         .method("POST")
         .uri("/identity-keys/enroll")
         .header("Content-Type", "application/json")
+        .header("X-Bootstrap-Secret", "test-bootstrap-secret")
         .body(Body::from(body.to_string()))
         .unwrap();
     let (status, resp_body) = send(app, request).await;
@@ -346,12 +348,44 @@ async fn enrollment_bootstrap_succeeds_with_no_existing_keys() {
         .method("POST")
         .uri("/identity-keys/enroll")
         .header("Content-Type", "application/json")
+        .header("X-Bootstrap-Secret", "test-bootstrap-secret")
         .body(Body::from(body.to_string()))
         .unwrap();
     let (status, resp_body) = send(&app, request).await;
     assert!(
         status.is_success(),
         "enrollment should succeed: {status}: {resp_body}"
+    );
+}
+
+/// Bootstrap enrollment without the bootstrap secret header is rejected:
+/// the secret is resolved through kleos_env, so the legacy
+/// ENGRAM_BOOTSTRAP_SECRET set by test_app() must be enforced.
+#[tokio::test]
+async fn enrollment_bootstrap_rejected_without_secret() {
+    let (app, _state) = test_app().await;
+    let signer = RequestSigner::from_key_bytes([98u8; 32], "ci-host", "ci-agent", "ci-model");
+    let sig_hex = signer.sign_enrollment_proof().expect("sign enrollment");
+
+    let body = json!({
+        "algo": "ed25519",
+        "tier": "soft",
+        "pubkey_pem": signer.pubkey_pem(),
+        "host_label": "ci-host",
+        "sig_hex": sig_hex,
+    });
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/identity-keys/enroll")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (status, _body) = send(&app, request).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "bootstrap enrollment without the secret header must be rejected"
     );
 }
 
@@ -388,6 +422,99 @@ async fn enrollment_rejected_when_keys_exist() {
         status,
         StatusCode::UNAUTHORIZED,
         "second enrollment via bootstrap should be rejected"
+    );
+}
+
+/// Post-bootstrap enrollment requires a server-issued single-use nonce:
+/// without one it is rejected, with one it succeeds, and replaying a
+/// consumed nonce fails.
+#[tokio::test]
+async fn post_bootstrap_enrollment_requires_single_use_nonce() {
+    let (app, _state) = test_app().await;
+    let signer1 = enroll_soft_key(&app).await;
+
+    // Attempt a second enrollment, authenticated with the first key but
+    // carrying no nonce: rejected.
+    let signer2 =
+        RequestSigner::from_key_bytes([55u8; 32], "second-host", "second-agent", "second-model");
+    let sig_hex = signer2.sign_enrollment_proof().expect("sign legacy proof");
+    let body = json!({
+        "algo": "ed25519",
+        "tier": "soft",
+        "pubkey_pem": signer2.pubkey_pem(),
+        "host_label": "second-host",
+        "sig_hex": sig_hex,
+    })
+    .to_string();
+    let (status, resp) = send(
+        &app,
+        signed_request(&signer1, "POST", "/identity-keys/enroll", body.as_bytes()),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "nonce-less post-bootstrap enrollment must be rejected: {status}: {resp}"
+    );
+
+    // Fetch a challenge nonce bound to the authenticated caller.
+    let (status, challenge) = send(
+        &app,
+        signed_request(&signer1, "POST", "/identity-keys/enroll/challenge", b""),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "challenge issuance failed: {status}: {challenge}"
+    );
+    let nonce = challenge["nonce"].as_str().expect("nonce").to_string();
+
+    // Enroll the second key with the nonce-bound proof: accepted.
+    let sig_hex = signer2
+        .sign_enrollment_proof_with_nonce(&nonce)
+        .expect("sign nonce proof");
+    let body = json!({
+        "algo": "ed25519",
+        "tier": "soft",
+        "pubkey_pem": signer2.pubkey_pem(),
+        "host_label": "second-host",
+        "sig_hex": sig_hex,
+        "nonce": nonce,
+    })
+    .to_string();
+    let (status, resp) = send(
+        &app,
+        signed_request(&signer1, "POST", "/identity-keys/enroll", body.as_bytes()),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "nonce-bound enrollment must succeed: {status}: {resp}"
+    );
+
+    // Replay the consumed nonce with a third key: rejected.
+    let signer3 =
+        RequestSigner::from_key_bytes([66u8; 32], "third-host", "third-agent", "third-model");
+    let sig_hex = signer3
+        .sign_enrollment_proof_with_nonce(&nonce)
+        .expect("sign replay proof");
+    let body = json!({
+        "algo": "ed25519",
+        "tier": "soft",
+        "pubkey_pem": signer3.pubkey_pem(),
+        "host_label": "third-host",
+        "sig_hex": sig_hex,
+        "nonce": nonce,
+    })
+    .to_string();
+    let (status, resp) = send(
+        &app,
+        signed_request(&signer1, "POST", "/identity-keys/enroll", body.as_bytes()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "replayed nonce must be rejected: {resp}"
     );
 }
 
@@ -438,6 +565,7 @@ async fn piv_yubikey_auth_end_to_end() {
         .method("POST")
         .uri("/identity-keys/enroll")
         .header("Content-Type", "application/json")
+        .header("X-Bootstrap-Secret", "test-bootstrap-secret")
         .body(Body::from(enroll_body.to_string()))
         .unwrap();
     let (enroll_status, enroll_resp) = send(&app, enroll_req).await;

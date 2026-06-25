@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import type { ReactNode } from 'react';
@@ -62,14 +62,32 @@ describe('App shell', () => {
     expect(screen.getByRole('link', { name: 'Graph' })).toHaveAttribute('href', '/memory/graph');
   });
 
-  it('lets the operator save an API key from the shell', () => {
+  it('logs in via the cookie endpoint and never persists the raw key', async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response('{"ok":true,"user_id":1}', {
+          headers: { 'content-type': 'application/json' },
+          status: 200
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
     render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'API Key' }));
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'abc123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(localStorage.getItem('kleos_api_key')).toBe('abc123');
-    expect(screen.queryByRole('dialog', { name: 'API Key' })).not.toBeInTheDocument();
+    // The key is exchanged for a cookie session, not written to localStorage.
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>;
+      const loginCall = calls.find((c) => String(c[0]).includes('/gui/auth'));
+      expect(loginCall).toBeDefined();
+      expect(String(loginCall![1].body)).toContain('api_key=abc123');
+    });
+    expect(localStorage.getItem('kleos_api_key')).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'API Key' })).not.toBeInTheDocument()
+    );
   });
 });

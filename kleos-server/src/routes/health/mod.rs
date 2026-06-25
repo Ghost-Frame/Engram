@@ -32,57 +32,12 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn get_health(State(state): State<AppState>) -> Json<Value> {
-    let (mut memories, mut entities, mut episodes, mut pending, mut static_count, mut versioned) =
-        (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
-
-    if let Some(ref registry) = state.tenant_registry {
-        if let Ok(tenants) = registry.list() {
-            for row in &tenants {
-                if row.status != kleos_lib::tenant::TenantStatus::Active {
-                    continue;
-                }
-                let handle = match registry.get(&row.user_id).await {
-                    Ok(Some(h)) => h,
-                    _ => continue,
-                };
-                let db = handle.database();
-                let counts = db
-                    .read(|conn| {
-                        Ok(conn.query_row(
-                            "SELECT
-                                SUM(CASE WHEN is_forgotten = 0 AND is_archived = 0 THEN 1 ELSE 0 END),
-                                (SELECT COUNT(*) FROM entities),
-                                (SELECT COUNT(*) FROM episodes),
-                                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
-                                SUM(CASE WHEN is_static = 1 AND is_forgotten = 0 THEN 1 ELSE 0 END),
-                                SUM(CASE WHEN version > 1 AND is_forgotten = 0 THEN 1 ELSE 0 END)
-                             FROM memories",
-                            [],
-                            |row| {
-                                Ok((
-                                    row.get::<_, i64>(0)?,
-                                    row.get::<_, i64>(1)?,
-                                    row.get::<_, i64>(2)?,
-                                    row.get::<_, i64>(3)?,
-                                    row.get::<_, i64>(4)?,
-                                    row.get::<_, i64>(5)?,
-                                ))
-                            },
-                        )?)
-                    })
-                    .await
-                    .unwrap_or((0, 0, 0, 0, 0, 0));
-
-                memories += counts.0;
-                entities += counts.1;
-                episodes += counts.2;
-                pending += counts.3;
-                static_count += counts.4;
-                versioned += counts.5;
-            }
-        }
-    }
-
+    // /health is UNAUTHENTICATED (liveness). It must not disclose fleet volume
+    // or activity: the previous version summed memories/entities/episodes/etc
+    // across every active tenant, leaking aggregate counts to anyone. Those
+    // counts are available to admin callers via the gated /metrics endpoint.
+    // Liveness only needs the static service descriptors below (which also
+    // drops a full per-tenant DB scan from every probe).
     let llm_configured = state.brain.is_some();
     // When KLEOS_EMBEDDING_URL is set, report the model name (or "openai-compat"
     // as a fallback) so /health reflects the active HTTP provider.
@@ -106,12 +61,6 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
         "status": "ok",
         "service": "kleos",
         "version": env!("CARGO_PKG_VERSION"),
-        "memories": memories,
-        "entities": entities,
-        "episodes": episodes,
-        "pending": pending,
-        "static": static_count,
-        "versioned": versioned,
         "llm_configured": llm_configured,
         "embedding_model": embedding_model,
     }))

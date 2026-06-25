@@ -382,10 +382,9 @@ pub fn build_living_prompt(
     };
 
     format!(
-        r#"=== EIDOLON LIVING CONTEXT ===
-# Eidolon Session Context
+        r#"## Brain Context (neural pattern completion)
 
-This context was generated through neural pattern completion, not keyword search.
+These patterns were recalled from the brain substrate, not keyword search.
 Contradiction resolution has already been applied -- what you see below reflects
 the brain's current understanding.
 
@@ -419,8 +418,6 @@ All services at **{engram_url}**. Use these throughout your session.
 | Soma | POST /soma/agents, POST /soma/agents/:id/heartbeat | Register on start. Heartbeat during. |
 
 **MANDATORY:** Search Kleos BEFORE asking the user ANY question about servers, credentials, architecture, or past decisions.
-
-=== END LIVING CONTEXT ===
 "#,
         task = task,
         task_context = task_context,

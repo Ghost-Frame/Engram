@@ -268,11 +268,16 @@ async fn unix_get_json(
         .await
         .map_err(|e| CredError::Unreachable(format!("write: {}", e)))?;
 
+    // Cap the response and bound the read so a rogue local credd cannot OOM or
+    // stall the caller (CWE-400): the bootstrap socket is local but untrusted.
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+    )
+    .await
+    .map_err(|_| CredError::Unreachable("read: timed out".into()))?
+    .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
 
     parse_http_response_body(&response)
 }
@@ -308,11 +313,16 @@ async fn tcp_get_json(bind: &str, path: &str, token: &str) -> Result<serde_json:
         .await
         .map_err(|e| CredError::Unreachable(format!("write: {}", e)))?;
 
+    // Cap the response and bound the read so a rogue local credd cannot OOM or
+    // stall the caller (CWE-400): the bootstrap socket is local but untrusted.
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+    )
+    .await
+    .map_err(|_| CredError::Unreachable("read: timed out".into()))?
+    .map_err(|e| CredError::Unreachable(format!("read: {}", e)))?;
 
     parse_http_response_body(&response)
 }
@@ -523,7 +533,7 @@ mod ecdh {
     use std::process::Command;
     use std::time::{Duration, SystemTime};
 
-    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
     use hkdf::Hkdf;
     use p256::ecdh::EphemeralSecret;
@@ -631,8 +641,17 @@ mod ecdh {
             .map_err(|e| EcdhClientError::Decrypt(format!("hkdf expand: {}", e)))?;
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&bearer_key));
+        // AAD MUST match credd's encrypt side (bootstrap_bearer.rs) byte for
+        // byte: protocol|agent. Mismatch => decryption fails.
+        let aad = format!("{}|{}", ECDH_PROTOCOL, agent_slot);
         let plaintext = cipher
-            .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
+            .decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: ciphertext.as_ref(),
+                    aad: aad.as_bytes(),
+                },
+            )
             .map_err(|e| EcdhClientError::Decrypt(format!("aes-gcm: {}", e)))?;
         let bearer = String::from_utf8(plaintext)
             .map_err(|e| EcdhClientError::Decrypt(format!("utf8: {}", e)))?;
@@ -763,11 +782,16 @@ with dev.open_connection(SmartCardConnection) as conn:
             .await
             .map_err(|e| EcdhClientError::Unreachable(format!("write: {}", e)))?;
 
+        // Cap the response and bound the read so a rogue local credd cannot OOM
+        // or stall the caller (CWE-400).
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+        )
+        .await
+        .map_err(|_| EcdhClientError::Unreachable("read: timed out".into()))?
+        .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
 
         parse_post_body(&response)
     }
@@ -809,11 +833,16 @@ with dev.open_connection(SmartCardConnection) as conn:
             .await
             .map_err(|e| EcdhClientError::Unreachable(format!("write: {}", e)))?;
 
+        // Cap the response and bound the read so a rogue local credd cannot OOM
+        // or stall the caller (CWE-400).
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            (&mut stream).take(1024 * 1024).read_to_end(&mut response),
+        )
+        .await
+        .map_err(|_| EcdhClientError::Unreachable("read: timed out".into()))?
+        .map_err(|e| EcdhClientError::Unreachable(format!("read: {}", e)))?;
 
         parse_post_body(&response)
     }

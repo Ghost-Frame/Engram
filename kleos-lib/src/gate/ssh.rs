@@ -91,18 +91,40 @@ pub(crate) fn is_ip_reserved(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// Returns true if an IPv4 address must not be reached over agent SSH.
+///
+/// Loopback, unspecified, and link-local (which includes the 169.254.169.254
+/// cloud-metadata address) are ALWAYS reserved -- they are never a legitimate
+/// SSH target. RFC1918 (10/8, 172.16/12, 192.168/16), CGNAT (100.64/10), and
+/// 0.0.0.0/8 are reserved BY DEFAULT but permitted when the operator sets
+/// `KLEOS_NET_ALLOW_PRIVATE=1`, because agent SSH legitimately crosses a
+/// private mesh (e.g. a 10.0.0.0/8 WireGuard network). Without that opt-in
+/// they are treated as SSRF targets. The previous implementation omitted the
+/// RFC1918/CGNAT/0.0.0.0 ranges entirely, contradicting the SSRF docstring.
 pub(crate) fn is_ipv4_reserved(ip: std::net::Ipv4Addr) -> bool {
-    ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_link_local()
-        || ip == std::net::Ipv4Addr::new(169, 254, 169, 254)
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+        return true;
+    }
+    // Operator opt-in for private-mesh SSH suppresses the RFC1918 block; the
+    // always-reserved ranges above still apply.
+    if crate::net::allow_private_networks() {
+        return false;
+    }
+    let octets = ip.octets();
+    ip.is_private()
+        // 100.64/10 CGNAT
+        || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
+        // 0.0.0.0/8
+        || octets[0] == 0
 }
 
 /// Resolve a hostname and return Some(block_reason) if any resolved IP lands
 /// in a reserved/internal range. This catches DNS rebinding where the static
 /// hostname check passed but the resolved address is internal (127.0.0.1,
-/// 169.254.169.254 metadata, 10.0.0.0/8, etc). Callers should invoke this
-/// for any SSH target that passed the static SSRF check.
+/// 169.254.169.254 metadata, 10.0.0.0/8, etc -- the RFC1918 ranges are
+/// honoured only when `KLEOS_NET_ALLOW_PRIVATE` is unset; see
+/// [`is_ipv4_reserved`]). Callers should invoke this for any SSH target that
+/// passed the static SSRF check.
 pub async fn check_ssh_dns_rebind(host: &str, port: u16) -> Option<String> {
     if host.parse::<std::net::IpAddr>().is_ok() {
         return None;
@@ -159,4 +181,54 @@ pub fn check_ssh_command(command: &str, config: &Config) -> Option<String> {
     let _ = port;
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These assertions assume the default deployment posture
+    // (`KLEOS_NET_ALLOW_PRIVATE` unset), which is the test environment.
+    #[test]
+    fn metadata_and_loopback_always_reserved() {
+        assert!(is_ipv4_reserved("169.254.169.254".parse().unwrap()));
+        assert!(is_ipv4_reserved("127.0.0.1".parse().unwrap()));
+        assert!(is_ipv4_reserved("0.0.0.0".parse().unwrap()));
+        assert!(is_ipv4_reserved("169.254.10.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rfc1918_and_cgnat_reserved_by_default() {
+        // The prior implementation let these through -- the SSRF gap this fix closes.
+        assert!(
+            is_ipv4_reserved("10.0.0.1".parse().unwrap()),
+            "10/8 must be blocked by default"
+        );
+        assert!(
+            is_ipv4_reserved("172.16.0.1".parse().unwrap()),
+            "172.16/12 must be blocked"
+        );
+        assert!(
+            is_ipv4_reserved("192.168.1.1".parse().unwrap()),
+            "192.168/16 must be blocked"
+        );
+        assert!(
+            is_ipv4_reserved("100.64.0.1".parse().unwrap()),
+            "100.64/10 CGNAT must be blocked"
+        );
+    }
+
+    #[test]
+    fn public_targets_not_reserved() {
+        assert!(!is_ipv4_reserved("8.8.8.8".parse().unwrap()));
+        assert!(!is_ipv4_reserved("203.0.113.7".parse().unwrap()));
+    }
+
+    #[test]
+    fn reserved_ssh_target_blocks_rfc1918_hostform() {
+        // Encoded-IP evasions resolve through is_ipv4_reserved too.
+        assert!(is_reserved_ssh_target("10.0.0.5"));
+        assert!(is_reserved_ssh_target("192.168.0.1"));
+        assert!(!is_reserved_ssh_target("example.com"));
+    }
 }

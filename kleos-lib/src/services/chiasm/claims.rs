@@ -137,11 +137,17 @@ pub async fn create_claims(
 /// expired (`expires_at > datetime('now')`). Pass `exclude_task_id` to skip
 /// claims belonging to a particular task (useful when a task wants to
 /// re-claim its own paths without self-blocking).
+///
+/// `user_id` scopes conflicts to claims whose parent task belongs to the
+/// caller. `chiasm_path_claims` has no `user_id` of its own, so ownership is
+/// enforced by joining to `chiasm_tasks`; the predicate is the tenant
+/// boundary in monolith mode and a no-op in a single-owner shard.
 pub async fn check_conflicts(
     db: &Database,
     project: &str,
     paths: &[&str],
     exclude_task_id: Option<i64>,
+    user_id: i64,
 ) -> Result<Vec<PathConflict>> {
     let project_s = project.to_string();
     let paths_owned: Vec<String> = paths.iter().map(|s| s.to_string()).collect();
@@ -155,16 +161,17 @@ pub async fn check_conflicts(
                  WHERE project = ?1 \
                    AND path = ?2 \
                    AND released = 0 \
-                   AND expires_at > datetime('now')",
+                   AND expires_at > datetime('now') \
+                   AND task_id IN (SELECT id FROM chiasm_tasks WHERE user_id = ?3)",
             );
             if exclude_task_id.is_some() {
-                sql.push_str(" AND task_id != ?3");
+                sql.push_str(" AND task_id != ?4");
             }
 
             let mut stmt = conn.prepare(&sql)?;
 
             let rows_result: Result<Vec<PathConflict>> = if let Some(excl) = exclude_task_id {
-                let mut rows = stmt.query(rusqlite::params![project_s, path, excl])?;
+                let mut rows = stmt.query(rusqlite::params![project_s, path, user_id, excl])?;
                 let mut out = Vec::new();
                 while let Some(row) = rows.next()? {
                     out.push(PathConflict {
@@ -176,7 +183,7 @@ pub async fn check_conflicts(
                 }
                 Ok(out)
             } else {
-                let mut rows = stmt.query(rusqlite::params![project_s, path])?;
+                let mut rows = stmt.query(rusqlite::params![project_s, path, user_id])?;
                 let mut out = Vec::new();
                 while let Some(row) = rows.next()? {
                     out.push(PathConflict {
@@ -218,7 +225,16 @@ pub async fn get_claims_for_task(db: &Database, task_id: i64) -> Result<Vec<Path
 }
 
 /// List all active (non-released, non-expired) claims in a project.
-pub async fn get_claims_for_project(db: &Database, project: &str) -> Result<Vec<PathClaim>> {
+///
+/// `user_id` scopes the listing to claims whose parent task belongs to the
+/// caller. `chiasm_path_claims` has no `user_id` of its own, so ownership is
+/// enforced by joining to `chiasm_tasks`; the predicate is the tenant
+/// boundary in monolith mode and a no-op in a single-owner shard.
+pub async fn get_claims_for_project(
+    db: &Database,
+    project: &str,
+    user_id: i64,
+) -> Result<Vec<PathClaim>> {
     let project_s = project.to_string();
     db.read(move |conn| {
         let mut stmt = conn.prepare(
@@ -227,9 +243,10 @@ pub async fn get_claims_for_project(db: &Database, project: &str) -> Result<Vec<
                  WHERE project = ?1 \
                    AND released = 0 \
                    AND expires_at > datetime('now') \
+                   AND task_id IN (SELECT id FROM chiasm_tasks WHERE user_id = ?2) \
                  ORDER BY id ASC",
         )?;
-        let mut rows = stmt.query(rusqlite::params![project_s])?;
+        let mut rows = stmt.query(rusqlite::params![project_s, user_id])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(row_to_claim(row)?);
@@ -267,15 +284,20 @@ mod tests {
     use super::*;
     use crate::services::chiasm::tasks::{create_task, CreateTaskRequest};
 
-    /// Minimal task request for test setup.
+    /// Minimal task request owned by user 1 for test setup.
     fn test_task(title: &str) -> CreateTaskRequest {
+        test_task_for_user(title, 1)
+    }
+
+    /// Minimal task request owned by a specific user for tenancy tests.
+    fn test_task_for_user(title: &str, user_id: i64) -> CreateTaskRequest {
         CreateTaskRequest {
             agent: "test-agent".into(),
             project: "test-project".into(),
             title: title.into(),
             status: None,
             summary: None,
-            user_id: Some(1),
+            user_id: Some(user_id),
             expected_output: None,
             output_format: None,
             condition: None,
@@ -320,7 +342,7 @@ mod tests {
             .await
             .unwrap();
 
-        let conflicts = check_conflicts(&db, "proj", &["src/lib.rs"], Some(task_b.id))
+        let conflicts = check_conflicts(&db, "proj", &["src/lib.rs"], Some(task_b.id), 1)
             .await
             .unwrap();
         assert_eq!(conflicts.len(), 1);
@@ -342,7 +364,7 @@ mod tests {
         let released = release_claims(&db, task_a.id).await.unwrap();
         assert_eq!(released, 1);
 
-        let conflicts = check_conflicts(&db, "proj", &["main.rs"], Some(task_b.id))
+        let conflicts = check_conflicts(&db, "proj", &["main.rs"], Some(task_b.id), 1)
             .await
             .unwrap();
         assert!(conflicts.is_empty(), "no conflicts after release");
@@ -362,9 +384,52 @@ mod tests {
             .await
             .unwrap();
 
-        let conflicts = check_conflicts(&db, "proj", &["old.rs"], Some(task_b.id))
+        let conflicts = check_conflicts(&db, "proj", &["old.rs"], Some(task_b.id), 1)
             .await
             .unwrap();
         assert!(conflicts.is_empty(), "expired claim should not conflict");
+    }
+
+    /// Conflicts and project listings are scoped to the caller's tasks: user 2
+    /// must not see or collide with claims whose parent task belongs to user 1.
+    #[tokio::test]
+    async fn claims_isolated_by_owner() {
+        let db = Database::connect_memory().await.expect("db");
+        // user 1 owns a task and claims a path under the shared project name.
+        let task_u1 = create_task(&db, test_task_for_user("u1-task", 1))
+            .await
+            .unwrap();
+        create_claims(&db, task_u1.id, "agent-1", "shared", &["src/lib.rs"], 1800)
+            .await
+            .unwrap();
+
+        // user 2 owns a separate task in the same project.
+        let task_u2 = create_task(&db, test_task_for_user("u2-task", 2))
+            .await
+            .unwrap();
+
+        // user 2 checking conflicts sees none: user 1's claim is invisible.
+        let conflicts = check_conflicts(&db, "shared", &["src/lib.rs"], Some(task_u2.id), 2)
+            .await
+            .unwrap();
+        assert!(
+            conflicts.is_empty(),
+            "user 2 must not see user 1's path claim"
+        );
+
+        // user 2 listing project claims gets nothing.
+        let u2_listing = get_claims_for_project(&db, "shared", 2).await.unwrap();
+        assert!(
+            u2_listing.is_empty(),
+            "user 2 must not list user 1's claims"
+        );
+
+        // user 1 still sees their own claim via both paths.
+        let u1_conflicts = check_conflicts(&db, "shared", &["src/lib.rs"], None, 1)
+            .await
+            .unwrap();
+        assert_eq!(u1_conflicts.len(), 1);
+        let u1_listing = get_claims_for_project(&db, "shared", 1).await.unwrap();
+        assert_eq!(u1_listing.len(), 1);
     }
 }

@@ -599,7 +599,14 @@ fetch('/broca/feed?limit=8').then(r => r.json()).then(events => {
   events.reverse().forEach(e => {
     const row = document.createElement('div');
     row.className = 'event';
-    row.innerHTML = \`<span class="time">\${timeAgo(e.created_at)}</span><span class="text">\${e.narrative || e.action}</span>\`;
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'time';
+    timeSpan.textContent = timeAgo(e.created_at);
+    const textSpan = document.createElement('span');
+    textSpan.className = 'text';
+    textSpan.textContent = e.narrative || e.action || '';
+    row.appendChild(timeSpan);
+    row.appendChild(textSpan);
     section.appendChild(row);
   });
   feed.appendChild(section);

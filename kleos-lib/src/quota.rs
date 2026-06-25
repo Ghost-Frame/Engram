@@ -181,11 +181,13 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
             }
         };
 
-        // Count active memories (user_id dropped from memories table in Phase 5.1).
+        // Count active memories. user_id was re-added to memories (migration 64)
+        // restoring single-DB multi-user mode; without the predicate this both
+        // miscounted and disclosed every tenant's volume in monolith mode.
         let memory_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memories \
-                 WHERE is_forgotten = 0 AND is_latest = 1",
-            params![],
+                 WHERE is_forgotten = 0 AND is_latest = 1 AND user_id = ?1",
+            params![user_id],
             |row| row.get(0),
         )?;
 
@@ -196,10 +198,10 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
             |row| row.get(0),
         )?;
 
-        // Sum artifact storage bytes.
+        // Sum artifact storage bytes (artifacts.user_id present in both modes).
         let storage_bytes_used: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts",
-            params![],
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts WHERE user_id = ?1",
+            params![user_id],
             |row| row.get(0),
         )?;
 

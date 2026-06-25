@@ -168,8 +168,21 @@ pub async fn replay_vector_sync_pending(
     Ok(report)
 }
 
+/// Outcome of replaying a single pending vector-sync row. Distinguishing
+/// `Skipped` from `Synced` is what prevents MEM-2's double-count: a skipped row
+/// is cleared from the ledger (it is unactionable and must not retry forever)
+/// but is NOT tallied as a successful sync.
+enum ReplayOutcome {
+    /// The LanceDB op ran and succeeded.
+    Synced,
+    /// The op was unactionable (missing embedding or unknown op kind).
+    Skipped,
+    /// The op ran and failed with the given error text.
+    Failed(String),
+}
+
 /// Process a batch of pending vector-sync rows with batched DB reads and
-/// a single batched DELETE for succeeded rows.  Failed rows still take an
+/// a single batched DELETE for cleared rows.  Failed rows still take an
 /// individual UPDATE because we stamp per-row error text.
 async fn process_pending_batch(
     db: &Database,
@@ -186,38 +199,43 @@ async fn process_pending_batch(
     let embeddings = fetch_embeddings_batch(db, &insert_ids).await?;
 
     // 2. Execute LanceDB ops sequentially (the trait is single-row) and
-    //    collect ledger_ids by outcome so we can batch-delete successes.
-    let mut succeeded_ids: Vec<i64> = Vec::with_capacity(pending.len());
+    //    collect ledger_ids to clear (synced OR skipped) for a batch delete.
+    let mut clear_ids: Vec<i64> = Vec::with_capacity(pending.len());
     for (ledger_id, memory_id, op) in pending {
         report.processed += 1;
-        let outcome: std::result::Result<(), String> = match op.as_str() {
-            "delete" => index.delete(memory_id).await.map_err(|e| e.to_string()),
+        let outcome: ReplayOutcome = match op.as_str() {
+            "delete" => match index.delete(memory_id).await {
+                Ok(()) => ReplayOutcome::Synced,
+                Err(e) => ReplayOutcome::Failed(e.to_string()),
+            },
             "insert" => match embeddings.get(&memory_id) {
                 Some(blob) => {
                     let embedding = blob_to_embedding(blob);
-                    index
-                        .insert(memory_id, &embedding)
-                        .await
-                        .map_err(|e| e.to_string())
+                    match index.insert(memory_id, &embedding).await {
+                        Ok(()) => ReplayOutcome::Synced,
+                        Err(e) => ReplayOutcome::Failed(e.to_string()),
+                    }
                 }
-                None => {
-                    report.skipped += 1;
-                    Ok(())
-                }
+                None => ReplayOutcome::Skipped,
             },
             other => {
-                report.skipped += 1;
                 warn!("replay skipped unknown vector_sync op '{}'", other);
-                Ok(())
+                ReplayOutcome::Skipped
             }
         };
 
         match outcome {
-            Ok(()) => {
-                succeeded_ids.push(ledger_id);
+            ReplayOutcome::Synced => {
+                clear_ids.push(ledger_id);
                 report.succeeded += 1;
             }
-            Err(e) => {
+            ReplayOutcome::Skipped => {
+                // Unactionable: clear from the ledger so it does not retry
+                // forever, but count it as skipped, not succeeded (MEM-2).
+                clear_ids.push(ledger_id);
+                report.skipped += 1;
+            }
+            ReplayOutcome::Failed(e) => {
                 report.failed += 1;
                 warn!("replay failed for memory {} op {}: {}", memory_id, op, e);
                 let e_clone = e.clone();
@@ -236,8 +254,8 @@ async fn process_pending_batch(
         }
     }
 
-    // 3. One SQL write for the happy path.
-    delete_pending_batch(db, succeeded_ids).await?;
+    // 3. One SQL write to clear synced + skipped rows from the ledger.
+    delete_pending_batch(db, clear_ids).await?;
     Ok(())
 }
 

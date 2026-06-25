@@ -169,7 +169,7 @@ async fn authorize_or_approve(
     let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    let ap = approval::create_approval(
+    let (ap, raw_token) = approval::create_approval_with_token(
         &state.inner.db,
         auth.user_id(),
         &agent_name,
@@ -181,10 +181,23 @@ async fn authorize_or_approve(
     )
     .await?;
 
-    // Poll at most 25 iterations (25 < CREDD_REQUEST_TIMEOUT_SECS=30) so the
-    // deny path fires before the global tower timeout would cancel the request.
+    // Best-effort out-of-band push so a human can decide from their phone. No-op
+    // unless PHYLAX_NOTIFY_URL is configured; never blocks or fails the request.
+    crate::notify::notify_approval(
+        ap.id,
+        action,
+        &agent_name,
+        SSH_CA_CATEGORY,
+        secret_name,
+        &expires_at,
+        &raw_token,
+    )
+    .await;
+
+    // Poll for up to ~110 iterations (< the 120s per-route SSH CA timeout) so a
+    // human has time to receive the push and tap before the request is cancelled.
     let mut decided = ApprovalStatus::Pending;
-    for _ in 0..25 {
+    for _ in 0..110 {
         let cur = approval::get_approval(&state.inner.db, ap.id).await?;
         decided = cur.status;
         if !matches!(decided, ApprovalStatus::Pending) {

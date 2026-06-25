@@ -145,25 +145,46 @@ async fn needs_refresh(db: &Database, threshold: u32) -> Result<bool> {
     let memory_count = get_memory_count(db).await?;
     let pagerank_count = get_pagerank_count(db).await?;
 
+    // Initial build: a tenant with fewer than `threshold` memories would never
+    // cross the size-diff gate below, so its scores were otherwise never built
+    // at all. Build as soon as there is anything to rank.
+    if pagerank_count == 0 && memory_count > 0 {
+        return Ok(true);
+    }
+
+    // Size churn: adds/removes shift memory_count away from the persisted score
+    // count.
     let diff = (memory_count - pagerank_count).unsigned_abs();
-    Ok(diff >= threshold as u64)
+    if diff >= threshold as u64 {
+        return Ok(true);
+    }
+
+    // Edge/link churn does not move memory_count but increments the dirty
+    // counter via mark_pagerank_dirty. Consult it so link-only updates
+    // eventually recompute instead of going stale forever.
+    let dirty = crate::graph::pagerank::snapshot_pagerank_dirty(db).await?;
+    Ok(dirty >= threshold as i64)
 }
 
 async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32) -> bool {
     let db = &handle.db;
 
-    let should_refresh = match needs_refresh(db.as_ref(), threshold).await {
-        Ok(true) => true,
+    match needs_refresh(db.as_ref(), threshold).await {
+        Ok(true) => {}
         Ok(false) => return true,
         Err(e) => {
             warn!(tenant_id = %handle.tenant_id, error = %e, "failed to check refresh state");
             return false;
         }
-    };
-
-    if !should_refresh {
-        return true;
     }
+
+    // Snapshot the dirty counter BEFORE computing so any mark that lands during
+    // the compute survives to schedule the next cycle; we clear only what we
+    // accounted for here. Without this clear, consulting the counter in
+    // needs_refresh would re-trigger every cycle forever.
+    let dirty_snapshot = crate::graph::pagerank::snapshot_pagerank_dirty(db.as_ref())
+        .await
+        .unwrap_or(0);
 
     match compute_pagerank_for_tenant(db.as_ref()).await {
         Ok(scores) if scores.is_empty() => true,
@@ -172,6 +193,11 @@ async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32
             if let Err(e) = persist_pagerank_for_tenant(db.as_ref(), scores).await {
                 warn!(tenant_id = %handle.tenant_id, error = %e, "pagerank persist failed");
                 return false;
+            }
+            if let Err(e) =
+                crate::graph::pagerank::clear_pagerank_dirty(db.as_ref(), dirty_snapshot).await
+            {
+                warn!(tenant_id = %handle.tenant_id, error = %e, "pagerank dirty clear failed");
             }
             info!(tenant_id = %handle.tenant_id, scores = count, "pagerank refreshed");
             true
@@ -331,8 +357,10 @@ mod tests {
     async fn test_needs_refresh() {
         let db = Database::open_tenant_memory().await.unwrap();
 
+        // Empty tenant: nothing to rank.
         assert!(!needs_refresh(&db, 10).await.unwrap());
 
+        // Insert 15 memories with no pagerank scores yet.
         for i in 0..15 {
             let content = format!("content {}", i);
             db.write(move |conn| {
@@ -346,7 +374,66 @@ mod tests {
             .unwrap();
         }
 
+        // Size diff crosses the small threshold.
         assert!(needs_refresh(&db, 10).await.unwrap());
-        assert!(!needs_refresh(&db, 20).await.unwrap());
+        // Initial build must trigger even when the corpus is smaller than the
+        // threshold -- the bug this fix closes (small tenants never got a
+        // first PageRank build because the diff never reached the threshold).
+        assert!(
+            needs_refresh(&db, 100).await.unwrap(),
+            "initial build must trigger below threshold"
+        );
+
+        // Give every memory a score so the size diff is zero and the
+        // initial-build short-circuit no longer applies.
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memory_pagerank (memory_id, score, computed_at) \
+                 SELECT id, 1.0, 0 FROM memories",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(
+            !needs_refresh(&db, 10).await.unwrap(),
+            "stable tenant with matching scores and no dirt must not refresh"
+        );
+
+        // Edge/link churn marks the dirty counter without moving memory_count;
+        // once it reaches the threshold a refresh is due.
+        crate::graph::pagerank::mark_pagerank_dirty(&db, 10)
+            .await
+            .unwrap();
+        assert!(
+            needs_refresh(&db, 10).await.unwrap(),
+            "dirty counter at threshold must trigger refresh"
+        );
+    }
+
+    /// The refresh path snapshots the dirty counter before compute and clears
+    /// only that snapshot afterward, so a dirty-triggered refresh does not
+    /// re-fire forever and a mark that lands during compute survives.
+    #[tokio::test]
+    async fn test_clear_pagerank_dirty_preserves_concurrent_marks() {
+        use crate::graph::pagerank::{
+            clear_pagerank_dirty, mark_pagerank_dirty, snapshot_pagerank_dirty,
+        };
+        let db = Database::open_tenant_memory().await.unwrap();
+
+        mark_pagerank_dirty(&db, 12).await.unwrap();
+        let snapshot = snapshot_pagerank_dirty(&db).await.unwrap();
+        assert_eq!(snapshot, 12);
+
+        // A mark that arrives "during compute" must not be lost by the clear.
+        mark_pagerank_dirty(&db, 3).await.unwrap();
+        clear_pagerank_dirty(&db, snapshot).await.unwrap();
+
+        assert_eq!(
+            snapshot_pagerank_dirty(&db).await.unwrap(),
+            3,
+            "only the accounted-for snapshot is cleared; concurrent marks survive"
+        );
     }
 }

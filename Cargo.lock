@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "agent-forge"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "clap",
@@ -173,6 +173,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "thiserror 1.0.69",
  "tree-sitter",
@@ -3266,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon-supervisor"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "kleos-token-client",
@@ -3691,7 +3692,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "forge"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "clap",
  "hostname",
@@ -4909,7 +4910,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kleos-approval-tui"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "clap",
@@ -4926,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cleanup"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "clap",
  "rusqlite",
@@ -4934,7 +4935,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cli"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4946,6 +4947,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "rpassword",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -4957,7 +4959,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-client"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "kleos-lib",
  "percent-encoding",
@@ -4968,7 +4970,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-cred"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5003,7 +5005,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-credd"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5038,7 +5040,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-fs"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "kleos-token-client",
  "libc",
@@ -5049,7 +5051,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-ingest"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "clap",
@@ -5069,7 +5071,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-install"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -5086,7 +5088,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-install-core"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "dirs 6.0.0",
  "hex",
@@ -5102,7 +5104,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-install-gui"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "eframe",
  "kleos-install-core",
@@ -5115,7 +5117,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-lib"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -5134,6 +5136,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "ipnet",
  "lancedb",
  "lru 0.16.4",
  "metrics",
@@ -5179,7 +5182,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-mcp"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "axum 0.8.9",
  "clap",
@@ -5196,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-migrate"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5215,15 +5218,17 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylax"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "axum 0.8.9",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "dashmap",
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hmac",
  "http",
  "http-body-util",
  "kleos-cred",
@@ -5231,6 +5236,7 @@ dependencies = [
  "kleos-lib",
  "nix",
  "p256",
+ "proptest",
  "rand 0.9.4",
  "rand_core 0.6.4",
  "reqwest",
@@ -5253,7 +5259,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylax-ssh-agent"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "log",
  "ssh-key",
@@ -5264,7 +5270,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylax-ssh-agentd"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -5282,7 +5288,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-phylaxd"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -5300,8 +5306,9 @@ dependencies = [
 
 [[package]]
 name = "kleos-server"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
+ "agent-forge",
  "async-stream",
  "axum 0.8.9",
  "base64 0.22.1",
@@ -5343,7 +5350,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sh"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "clap",
  "kleos-token-client",
@@ -5355,7 +5362,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-sidecar"
-version = "1.6.0"
+version = "1.7.3"
 dependencies = [
  "arc-swap",
  "axum 0.8.9",
@@ -5382,7 +5389,7 @@ dependencies = [
 
 [[package]]
 name = "kleos-token-client"
-version = "1.6.0"
+version = "1.7.3"
 
 [[package]]
 name = "kqueue"
@@ -8007,6 +8014,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eb8486b569e12e2c32ad3e204dbaba5e4b5b216e9367044f25f1dba42341773"
 
 [[package]]
+name = "proptest"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
+dependencies = [
+ "bit-set 0.8.0",
+ "bit-vec 0.8.0",
+ "bitflags 2.11.1",
+ "num-traits",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "rand_xorshift",
+ "regex-syntax",
+ "rusty-fork",
+ "tempfile",
+ "unarray",
+]
+
+[[package]]
 name = "prost"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8126,6 +8152,12 @@ dependencies = [
  "web-sys",
  "winapi",
 ]
+
+[[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-error"
@@ -8311,6 +8343,15 @@ checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits",
  "rand 0.9.4",
+]
+
+[[package]]
+name = "rand_xorshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+dependencies = [
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -8931,6 +8972,18 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error 1.2.3",
+ "tempfile",
+ "wait-timeout",
+]
 
 [[package]]
 name = "ryu"
@@ -10083,7 +10136,7 @@ dependencies = [
  "fax",
  "flate2",
  "half",
- "quick-error",
+ "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
 ]
@@ -10775,6 +10828,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10989,6 +11048,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d9b2acfb050df409c972a37d3b8e08cdea3bddb0c09db9d53137e504cfabed0"
 dependencies = [
  "utf8parse",
+]
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

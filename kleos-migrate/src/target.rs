@@ -62,13 +62,18 @@ pub fn get_target_columns(conn: &Connection, table: &str) -> Result<Vec<String>>
 }
 
 /// Return true if `table` exists in the target schema.
+///
+/// Only `QueryReturnedNoRows` (table absent) is mapped to `false`; all other
+/// errors (lock, corruption, schema failure) are propagated so callers see
+/// real failures instead of silently proceeding on a missing table.
 pub fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
-    let count: i64 = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?1 LIMIT 1",
-            rusqlite::params![table],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    Ok(count == 1)
+    match conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?1 LIMIT 1",
+        rusqlite::params![table],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(count) => Ok(count == 1),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(anyhow!("table_exists query failed for '{}': {}", table, e)),
+    }
 }

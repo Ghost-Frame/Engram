@@ -14,6 +14,13 @@ describe('buildUrl', () => {
 describe('request', () => {
   beforeEach(() => {
     localStorage.clear();
+    // Clear cookies so CSRF assertions are isolated between tests.
+    for (const c of document.cookie.split(';')) {
+      const name = c.split('=')[0].trim();
+      if (name) {
+        document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+      }
+    }
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -54,16 +61,43 @@ describe('request', () => {
     expect(calls[0][1].headers).toMatchObject({ Authorization: 'Bearer abc' });
   });
 
-  it('uses the saved bearer token by default', async () => {
+  it('does not send a bearer header by default (cookie auth)', async () => {
     const spy = vi.fn(
       async () => new Response('{}', { headers: { 'content-type': 'application/json' }, status: 200 })
     );
+    // A stale localStorage value must NOT be used: auth is via the cookie now.
     localStorage.setItem('kleos_api_key', 'stored');
     vi.stubGlobal('fetch', spy);
 
     await request('/x', { port: '4200' });
 
     const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>;
-    expect(calls[0][1].headers).toMatchObject({ Authorization: 'Bearer stored' });
+    expect((calls[0][1].headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it('echoes the kleos_csrf cookie as X-CSRF-Token on mutating requests', async () => {
+    const spy = vi.fn(
+      async () => new Response('{}', { headers: { 'content-type': 'application/json' }, status: 200 })
+    );
+    document.cookie = 'kleos_csrf=tok123';
+    vi.stubGlobal('fetch', spy);
+
+    await request('/x', { method: 'POST', port: '4200' });
+
+    const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>;
+    expect(calls[0][1].headers).toMatchObject({ 'X-CSRF-Token': 'tok123' });
+  });
+
+  it('does not send X-CSRF-Token on safe GET requests', async () => {
+    const spy = vi.fn(
+      async () => new Response('{}', { headers: { 'content-type': 'application/json' }, status: 200 })
+    );
+    document.cookie = 'kleos_csrf=tok123';
+    vi.stubGlobal('fetch', spy);
+
+    await request('/x', { port: '4200' });
+
+    const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit]>;
+    expect((calls[0][1].headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
   });
 });

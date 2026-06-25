@@ -53,7 +53,7 @@ The 8-layer system that builds what the agent actually sees:
 | Structured facts | Subject-verb-object triples extracted from text |
 | Episode summaries | High-level summaries of past interaction sessions |
 
-All eight layers run in parallel. Results are packed into a token budget with priority-based truncation and prompt-injection sandboxing.
+All eight layers run in parallel. Results are packed into a token budget with priority-based truncation and prompt-injection sandboxing. A relevance gate then drops off-topic and noise-category memories before injection (tunable via `KLEOS_RECALL_MIN_SEMANTIC` and `KLEOS_RECALL_EXCLUDE_CATEGORIES`; curated `plan:` sources are exempt from the category filter).
 
 ### Knowledge graph
 

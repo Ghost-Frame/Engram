@@ -85,6 +85,37 @@ pub fn ensure_tables(conn: &rusqlite::Connection) -> Result<(), CredError> {
     )
     .map_err(|e| CredError::Database(e.to_string()))?;
 
+    // Additive: single-use capability-token hash for out-of-band approval
+    // decisions (SQLite has no ADD COLUMN IF NOT EXISTS, so guard it).
+    let has_decide_token: bool = conn
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('phylax_approvals') WHERE name='decide_token_hash'",
+        )
+        .and_then(|mut s| s.query_row([], |_| Ok(())))
+        .is_ok();
+    if !has_decide_token {
+        conn.execute(
+            "ALTER TABLE phylax_approvals ADD COLUMN decide_token_hash TEXT",
+            [],
+        )
+        .map_err(|e| CredError::Database(e.to_string()))?;
+    }
+
+    // Additive: per-policy exec argv[0] allowlist (kleos-lib migration 86).
+    let has_exec_allowlist: bool = conn
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('phylax_access_policies') WHERE name='exec_allowlist'",
+        )
+        .and_then(|mut s| s.query_row([], |_| Ok(())))
+        .is_ok();
+    if !has_exec_allowlist {
+        conn.execute(
+            "ALTER TABLE phylax_access_policies ADD COLUMN exec_allowlist TEXT",
+            [],
+        )
+        .map_err(|e| CredError::Database(e.to_string()))?;
+    }
+
     ensure_cred_audit_column(conn, "operator_id", "TEXT")?;
     ensure_cred_audit_column(conn, "source_ip", "TEXT")?;
     ensure_cred_audit_column(conn, "policy_id", "INTEGER")?;

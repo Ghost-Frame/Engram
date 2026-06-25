@@ -214,11 +214,16 @@ pub async fn list_secrets(
         .await
         .map_err(|e| CredError::Database(e.to_string()))?;
 
+    // Surface unknown/corrupt secret_type values instead of silently coercing
+    // them to Note (which would risk emitting structured data as raw plaintext).
+    // Matches the fail-loud behavior of get_secret above.
     let secrets = rows
         .into_iter()
         .map(|(id, uid, name, cat, stype_str, created, updated)| {
-            let secret_type = SecretType::parse(&stype_str).unwrap_or(SecretType::Note);
-            SecretRow {
+            let secret_type = SecretType::parse(&stype_str).ok_or_else(|| {
+                CredError::InvalidInput(format!("unknown secret type: {}", stype_str))
+            })?;
+            Ok(SecretRow {
                 id,
                 user_id: uid,
                 name,
@@ -226,9 +231,9 @@ pub async fn list_secrets(
                 secret_type,
                 created_at: created,
                 updated_at: updated,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(secrets)
 }

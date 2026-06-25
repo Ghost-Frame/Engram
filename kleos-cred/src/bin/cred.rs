@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
@@ -131,8 +132,17 @@ enum Commands {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+    /// Initialize a random per-deployment KDF salt (opt into KDF v2).
+    /// Writes ~/.config/cred/kdf_salt (mode 0600). Export CRED_KDF_SALT_FILE
+    /// pointing at it in every cred/credd/phylaxd environment to take effect.
+    KdfSaltInit,
     /// Export all secrets as JSON (for backup/migration)
-    Export,
+    Export {
+        /// Write the JSON export to this file (created mode 0600) instead of
+        /// printing plaintext secrets to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Manage agent keys for service authentication
     AgentKey {
         #[command(subcommand)]
@@ -383,6 +393,46 @@ fn db_path() -> PathBuf {
     config_dir().join("cred.db")
 }
 
+/// Default path of the persisted KDF salt file (KDF v2).
+fn kdf_salt_path() -> PathBuf {
+    config_dir().join("kdf_salt")
+}
+
+/// Create the random KDF salt (opt into KDF v2) and print activation guidance.
+/// Idempotent: never overwrites an existing salt. DB- and key-free so it can
+/// run on a fresh host before `cred init`.
+fn cmd_kdf_salt_init() -> Result<()> {
+    let path = kdf_salt_path();
+    let existed = path.exists();
+    let hex = kleos_cred::crypto::init_kdf_salt_file(&path)?;
+    if existed {
+        eprintln!(
+            "KDF salt already present at {} (left unchanged).",
+            path.display()
+        );
+    } else {
+        eprintln!(
+            "Wrote a new random KDF salt to {} (mode 0600).",
+            path.display()
+        );
+    }
+    eprintln!();
+    eprintln!("To activate KDF v2, export this in EVERY cred/credd/phylaxd environment:");
+    eprintln!(
+        "    export {}={}",
+        kleos_cred::crypto::KDF_SALT_FILE_ENV,
+        path.display()
+    );
+    eprintln!();
+    eprintln!("WARNING: secrets already stored WITHOUT a salt (legacy KDF v1) were derived with");
+    eprintln!("a different key and will NOT decrypt once the salt is active. Enable this on a");
+    eprintln!("fresh vault, or re-import secrets after enabling. The salt is not secret, but");
+    eprintln!("back it up -- losing it makes v2-encrypted secrets unrecoverable.");
+    // Emit the hex salt on stdout so it can be captured/backed up.
+    println!("{hex}");
+    Ok(())
+}
+
 fn get_session_grants_path() -> PathBuf {
     config_dir().join("get-session-grants.json")
 }
@@ -572,10 +622,12 @@ fn has_valid_get_session_grant(path: &Path, token: &str) -> Result<bool> {
     let mut store = load_get_session_grants(path)?;
     let token_hash = hash_get_session_token(token);
     let pruned = prune_expired_get_session_grants(&mut store, now);
-    let valid = store
-        .grants
-        .iter()
-        .any(|grant| grant.token_hash == token_hash && grant.expires_at > now);
+    let valid = store.grants.iter().any(|grant| {
+        // Constant-time hash compare so grant validation does not leak which
+        // bytes of a presented token's hash matched via timing.
+        grant.expires_at > now
+            && bool::from(grant.token_hash.as_bytes().ct_eq(token_hash.as_bytes()))
+    });
     if pruned {
         save_get_session_grants(path, &store)?;
     }
@@ -652,6 +704,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => cmd_init().await,
+        Commands::KdfSaltInit => cmd_kdf_salt_init(),
         Commands::Recover { from } => cmd_recover(&from).await,
         Commands::Session { cmd } => cmd_session(cmd).await,
         Commands::Piv { cmd } => cmd_piv(cmd).await,
@@ -762,7 +815,7 @@ async fn main() -> Result<()> {
                     yes,
                 } => cmd_delete(&db, &key, &service, &secret_key, yes).await,
                 Commands::Import { dry_run } => cmd_import(&db, &key, dry_run).await,
-                Commands::Export => cmd_export(&db, &key).await,
+                Commands::Export { output } => cmd_export(&db, &key, output).await,
                 Commands::AgentKey { action } => cmd_agent_key(&db, action).await,
                 Commands::Exec {
                     service,
@@ -799,6 +852,7 @@ async fn main() -> Result<()> {
                     }
                 },
                 Commands::Init
+                | Commands::KdfSaltInit
                 | Commands::Recover { .. }
                 | Commands::Session { .. }
                 | Commands::Piv { .. }
@@ -1378,7 +1432,11 @@ async fn cmd_import_tsv(
     Ok(())
 }
 
-async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
+async fn cmd_export(
+    db: &Database,
+    master_key: &[u8; KEY_SIZE],
+    output: Option<PathBuf>,
+) -> Result<()> {
     let rows = storage::list_secrets(db, CRED_USER_ID, None).await?;
 
     if rows.is_empty() {
@@ -1414,9 +1472,40 @@ async fn cmd_export(db: &Database, master_key: &[u8; KEY_SIZE]) -> Result<()> {
     }
 
     let json = serde_json::to_string_pretty(&entries)?;
-    println!("{}", json);
 
-    eprintln!("\nexported {} secret(s)", entries.len());
+    match output {
+        Some(path) => {
+            // Write atomically with owner-only perms so the plaintext export
+            // never lands on disk world-readable.
+            let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+            std::fs::write(&tmp, &json)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            }
+            std::fs::rename(&tmp, &path)?;
+            eprintln!(
+                "exported {} secret(s) to {} (mode 0600)",
+                entries.len(),
+                path.display()
+            );
+        }
+        None => {
+            // Refuse to dump plaintext secrets when stdout is redirected to a
+            // file/pipe (which would be created with the default umask).
+            // Printing is allowed only to an interactive terminal.
+            use std::io::IsTerminal;
+            if !io::stdout().is_terminal() {
+                anyhow::bail!(
+                    "refusing to write plaintext secrets to a non-terminal stdout; \
+                     pass --output <file> (written mode 0600)"
+                );
+            }
+            println!("{}", json);
+            eprintln!("\nexported {} secret(s)", entries.len());
+        }
+    }
     Ok(())
 }
 
@@ -1559,30 +1648,33 @@ fn prompt_secret_data(secret_type: &str) -> Result<SecretData> {
 }
 
 fn program_yubikey_slot2(secret_hex: &str) -> Result<()> {
-    #[cfg(windows)]
-    {
-        std::process::Command::new("ykman")
-            .args(["otp", "chalresp", "2", "--force", secret_hex])
-            .status()
-            .context("failed to run ykman")?;
+    // The ykman invocation is identical on every platform; the previous
+    // #[cfg(windows)] / #[cfg(not(windows))] split was dead duplication.
+    // Treat a non-zero exit as a hard error: a silently-discarded failure
+    // (wrong YubiKey state, auth error, busy) would let `cred init` / `cred
+    // recover` report success while the vault key is left unrecoverable via
+    // hardware.
+    let status = std::process::Command::new("ykman")
+        .args(["otp", "chalresp", "2", "--force", secret_hex])
+        .status()
+        .context("failed to run ykman")?;
+    if !status.success() {
+        anyhow::bail!(
+            "ykman exited with {} while programming YubiKey slot 2; \
+             the challenge-response secret was not written",
+            status
+        );
     }
-
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("ykman")
-            .args(["otp", "chalresp", "2", "--force", secret_hex])
-            .status()
-            .context("failed to run ykman")?;
-    }
-
     Ok(())
 }
 
-/// One-shot migration that lifts pre-existing `cred_secrets.user_id = 0`
-/// rows up to `CRED_USER_ID = 1`, the post-fix canonical id.
+/// One-shot migration that lifts pre-existing `user_id = 0` rows in both
+/// `cred_secrets` and `cred_agent_keys` up to `CRED_USER_ID = 1`, the post-fix
+/// canonical id. Returns the combined count of rows promoted across both tables.
 ///
-/// Pre-fix builds wrote `user_id=0` from `cmd_store`/`cmd_get`/etc and
-/// `user_id=1` from `cmd_bootstrap_wrap`. After the fix every site uses
+/// Pre-fix builds wrote `user_id=0` from `cmd_store`/`cmd_get`/etc (and from the
+/// agent-key generate/list/revoke commands) while `cmd_bootstrap_wrap` and the
+/// secret operations used `user_id=1`. After the fix every site uses
 /// `CRED_USER_ID`; rows produced by old binaries would otherwise become
 /// invisible. This function brings them into the visible namespace.
 ///
@@ -1682,7 +1774,84 @@ async fn migrate_legacy_user_id_zero_rows(db: &Database) -> Result<usize> {
                )",
             [],
         )?;
-        Ok(rows_promoted)
+
+        // cred_agent_keys carries the same legacy divergence: pre-fix binaries
+        // wrote keys at user_id=0 while every other cred operation uses
+        // user_id=1, so old keys are invisible to list/revoke. Promote them with
+        // the same collision-safe logic. Its UNIQUE constraint is (user_id, name),
+        // so keys are keyed on `name` alone (no category column).
+        let mut key_collision_stmt = conn.prepare(
+            "SELECT a.id, a.name FROM cred_agent_keys a
+             WHERE a.user_id = 0
+               AND EXISTS (
+                   SELECT 1 FROM cred_agent_keys b
+                   WHERE b.user_id = 1 AND b.name = a.name
+               )",
+        )?;
+        let key_collisions: Vec<(i64, String)> = key_collision_stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(key_collision_stmt);
+
+        for (id, name) in &key_collisions {
+            eprintln!(
+                "warning: legacy cred agent key id={} ({}) cannot be promoted; \
+                 a user_id=1 key with the same name already exists. \
+                 Resolve manually with sqlite3 cred.db (DELETE the legacy key \
+                 or rename one of the entries).",
+                id, name
+            );
+        }
+
+        // Duplicate uid=0 keys sharing a name: promote only the oldest, park the rest.
+        let mut key_dup_stmt = conn.prepare(
+            "SELECT a.id, a.name FROM cred_agent_keys a
+             WHERE a.user_id = 0
+               AND EXISTS (
+                   SELECT 1 FROM cred_agent_keys d
+                   WHERE d.user_id = 0 AND d.name = a.name AND d.id < a.id
+               )",
+        )?;
+        let key_dups: Vec<(i64, String)> = key_dup_stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(key_dup_stmt);
+
+        for (id, name) in &key_dups {
+            eprintln!(
+                "warning: legacy cred agent key id={} ({}) is a duplicate uid=0 entry; \
+                 leaving it in place and promoting only the oldest key for this name. \
+                 Resolve manually with sqlite3 cred.db once access is restored.",
+                id, name
+            );
+        }
+
+        let keys_promoted = conn.execute(
+            "UPDATE cred_agent_keys
+             SET user_id = 1
+             WHERE id IN (
+                 SELECT a.id
+                 FROM cred_agent_keys a
+                 WHERE a.user_id = 0
+                   AND a.id = (
+                       SELECT MIN(d.id)
+                       FROM cred_agent_keys d
+                       WHERE d.user_id = 0 AND d.name = a.name
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM cred_agent_keys b
+                       WHERE b.user_id = 1 AND b.name = a.name
+                   )
+             )
+             AND user_id = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM cred_agent_keys b
+                   WHERE b.user_id = 1 AND b.name = cred_agent_keys.name
+               )",
+            [],
+        )?;
+
+        Ok(rows_promoted + keys_promoted)
     })
     .await
     .context("failed to run user_id=0 -> 1 migration")
@@ -1772,9 +1941,10 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
             } else {
                 // DB-backed three-tier resolve agent key.
                 let perms = kleos_cred::AgentKeyPermissions::default();
-                let (key_str, agent_key) = agent_keys::create_agent_key(db, 0, &name, &perms)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let (key_str, agent_key) =
+                    agent_keys::create_agent_key(db, CRED_USER_ID, &name, &perms)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
                 eprintln!("generated agent key for '{}'", name);
                 if !description.is_empty() {
                     eprintln!("description: {}", description);
@@ -1788,7 +1958,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
             }
         }
         AgentKeyAction::List => {
-            let keys = agent_keys::list_agent_keys(db, 0)
+            let keys = agent_keys::list_agent_keys(db, CRED_USER_ID)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             if keys.is_empty() {
@@ -1824,7 +1994,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
                     return Ok(());
                 }
             }
-            agent_keys::revoke_agent_key(db, 0, &name)
+            agent_keys::revoke_agent_key(db, CRED_USER_ID, &name)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             eprintln!("revoked agent key: {}", name);
@@ -2416,6 +2586,9 @@ async fn resolve_via_credd(
     key: &str,
 ) -> Result<(storage::SecretRow, kleos_cred::types::SecretData)> {
     let credd_url = std::env::var("CREDD_URL").unwrap_or_else(|_| "http://127.0.0.1:4400".into());
+    // The master key authenticates to credd as a Bearer token (credd's auth
+    // model). Refuse to send it over a plaintext non-loopback hop.
+    kleos_cred::net::guard_credd_transport(&credd_url)?;
     let auth_token = hex::encode(master_key);
 
     let resp = reqwest::Client::new()
@@ -2816,7 +2989,16 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
              (refusing factory-default to avoid burning PIN retries)"
             )
         })?;
-    let askpass = std::env::temp_dir().join("cred-ssh-ca-askpass.sh");
+    // F08: write the askpass helper to a random-named O_EXCL tempfile instead of
+    // a predictable /tmp path, so a local attacker cannot pre-create or race it.
+    // into_temp_path() drops the write handle (avoids ETXTBSY when ssh-keygen
+    // execs the script); the returned TempPath auto-removes on drop.
+    let askpass = tempfile::Builder::new()
+        .prefix("cred-ssh-ca-askpass-")
+        .suffix(".sh")
+        .tempfile()
+        .context("create askpass helper")?
+        .into_temp_path();
     std::fs::write(&askpass, format!("#!/bin/sh\necho '{}'\n", pin))
         .context("write askpass helper")?;
     #[cfg(unix)]
@@ -2833,12 +3015,14 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
         .arg(&pkcs11)
         .args(["-I", identity, "-n", principal, "-V", ttl])
         .arg(pubkey)
-        .env("SSH_ASKPASS", &askpass)
+        .env("SSH_ASKPASS", askpass.as_os_str())
         .env("SSH_ASKPASS_REQUIRE", "force")
         .env("DISPLAY", ":0")
         .output()
         .context("ssh-keygen not found")?;
 
+    // Eagerly remove the PIN-bearing helper as soon as ssh-keygen returns to
+    // minimise its lifetime; the TempPath drop is the fallback if this fails.
     let _ = std::fs::remove_file(&askpass);
 
     if !out.status.success() {
@@ -2908,11 +3092,12 @@ async fn ssh_ca_sign_via_phylax(
 ) -> Result<PathBuf> {
     let public_key = std::fs::read_to_string(pubkey)
         .with_context(|| format!("read public key from {}", pubkey.display()))?;
+    // F07: the owner/master key is sent as the Bearer token below; refuse to
+    // transmit it over plaintext http to a non-loopback Phylax host.
+    let base = phylax_url();
+    kleos_cred::net::guard_credd_transport(&base)?;
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/phylax/ssh-ca/sign",
-            phylax_url().trim_end_matches('/')
-        ))
+        .post(format!("{}/phylax/ssh-ca/sign", base.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {}", phylax_auth_token()?))
         .json(&serde_json::json!({
             "identity": identity,
@@ -2945,11 +3130,12 @@ async fn ssh_ca_mint_via_phylax(
     principal: &str,
     ttl: &str,
 ) -> Result<PhylaxMintResponse> {
+    // F07: refuse to send the Bearer token over plaintext http to a non-loopback
+    // Phylax host (same transport guard as the sign path).
+    let base = phylax_url();
+    kleos_cred::net::guard_credd_transport(&base)?;
     let resp = reqwest::Client::new()
-        .post(format!(
-            "{}/phylax/ssh-ca/mint",
-            phylax_url().trim_end_matches('/')
-        ))
+        .post(format!("{}/phylax/ssh-ca/mint", base.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {}", phylax_auth_token()?))
         .json(&serde_json::json!({
             "agent": agent,
@@ -3266,6 +3452,70 @@ mod user_id_migration_tests {
         // Pin the chosen canonical id so future refactors don't silently
         // drift back to 0.
         assert_eq!(CRED_USER_ID, 1);
+    }
+
+    /// Insert a raw cred_agent_keys row at an explicit user_id (test-only).
+    async fn insert_agent_key(db: &Database, user_id: i64, name: &str, key_hash: &str) {
+        let name = name.to_string();
+        let key_hash = key_hash.to_string();
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO cred_agent_keys (user_id, key_hash, name, permissions, created_at)
+                 VALUES (?1, ?2, ?3, '{}', '2026-01-01 00:00:00')",
+                rusqlite::params![user_id, key_hash, name],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn count_agent_keys(db: &Database, user_id: i64) -> i64 {
+        db.read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM cred_agent_keys WHERE user_id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migration_promotes_legacy_agent_keys() {
+        // connect_memory runs the full Kleos migration chain, which creates
+        // cred_agent_keys, so we can insert directly.
+        let db = fresh_cred_db().await;
+        // Two legacy uid=0 keys (the CRED-1 orphaned namespace) ...
+        insert_agent_key(&db, 0, "ci-runner", "hash-a").await;
+        insert_agent_key(&db, 0, "deployer", "hash-b").await;
+        // ... one already-correct uid=1 key that must be left untouched.
+        insert_agent_key(&db, 1, "existing", "hash-c").await;
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(promoted, 2, "both legacy agent keys should be promoted");
+        assert_eq!(count_agent_keys(&db, 0).await, 0, "no uid=0 keys remain");
+        assert_eq!(count_agent_keys(&db, 1).await, 3, "all keys now at uid=1");
+    }
+
+    #[tokio::test]
+    async fn migration_skips_colliding_agent_keys() {
+        let db = fresh_cred_db().await;
+        // A uid=1 key whose name collides with a legacy uid=0 key (UNIQUE(user_id, name)).
+        insert_agent_key(&db, 1, "ci-runner", "hash-live").await;
+        insert_agent_key(&db, 0, "ci-runner", "hash-legacy").await;
+        // A non-colliding legacy key promotes cleanly.
+        insert_agent_key(&db, 0, "deployer", "hash-b").await;
+
+        let promoted = migrate_legacy_user_id_zero_rows(&db).await.unwrap();
+        assert_eq!(promoted, 1, "only the non-colliding legacy key is promoted");
+        assert_eq!(
+            count_agent_keys(&db, 0).await,
+            1,
+            "the colliding legacy key stays parked at uid=0"
+        );
+        assert_eq!(count_agent_keys(&db, 1).await, 2);
     }
 }
 

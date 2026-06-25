@@ -1,0 +1,39 @@
+{
+  "_doc": "Golden retrieval set for the offline eval harness (kleos-lib/tests/retrieval_eval.rs). The in-memory test DB runs the FTS5 + RRF fusion + structured-filter path only (sqlite-vec / LanceDB are not loaded, so the vector channel is inert and embedding is None). FTS5 here uses the default unicode61 tokenizer with NO stemming, so every query token must appear VERBATIM in a relevant doc to match under the current implicit-AND join. 'stable' queries satisfy that and form the CI floor. 'probe_fts_or' queries deliberately omit one token from the relevant docs so the implicit-AND join returns nothing and only OR-fusion (Phase 1.3) recovers them. 'probe_filter' exposes truncate-before-filter (Phase 1.4): high-tf out-of-category docs fill the limit and the in-category docs are dropped until over-fetch lands.",
+  "corpus": [
+    { "key": "ra1", "content": "cancel a running tokio task by calling abort on the join handle", "category": "rust", "tags": ["rust", "tokio", "async"], "importance": 6 },
+    { "key": "ra2", "content": "spawn a tokio task on the multi thread runtime", "category": "rust", "tags": ["rust", "tokio"], "importance": 5 },
+    { "key": "ra3", "content": "structured concurrency awaits child futures together in scope", "category": "rust", "tags": ["rust", "async"], "importance": 5 },
+    { "key": "ra4", "content": "the join handle resolves to the spawn output value", "category": "rust", "tags": ["rust", "tokio"], "importance": 4 },
+    { "key": "rb1", "content": "the embedding model produces dense vectors for semantic similarity", "category": "ml", "tags": ["embeddings", "search"], "importance": 7 },
+    { "key": "rb2", "content": "hybrid search fuses keyword ranking with vector cosine using reciprocal rank fusion", "category": "ml", "tags": ["search", "rrf"], "importance": 8 },
+    { "key": "rb3", "content": "a cross encoder reranker scores query documents to reorder the candidates", "category": "ml", "tags": ["search", "reranker"], "importance": 7 },
+    { "key": "rb4", "content": "spaced repetition schedules review using retrievability decay over elapsed days", "category": "ml", "tags": ["fsrs", "memory"], "importance": 6 },
+    { "key": "rc1", "content": "postgres uses a write ahead log for durability of committed transactions", "category": "db", "tags": ["postgres", "durability"], "importance": 5 },
+    { "key": "rc2", "content": "sqlite stores the database in a single file and supports full text search", "category": "db", "tags": ["sqlite", "fts"], "importance": 6 },
+    { "key": "rd1", "content": "wireguard builds an encrypted tunnel using public key cryptography", "category": "net", "tags": ["wireguard", "vpn"], "importance": 5 },
+    { "key": "rd2", "content": "a reverse proxy terminates tls and forwards requests to backend services", "category": "net", "tags": ["proxy", "tls"], "importance": 4 },
+    { "key": "flt_misc_1", "content": "alpha alpha quarterly orbit telemetry sprocket gamma ledger", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_2", "content": "alpha alpha balloon harbor cascade meadow delta voyage", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_3", "content": "alpha alpha trombone glacier pyramid lantern epsilon cobalt", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_4", "content": "alpha alpha zephyr mango turbine vellum zeta marigold", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_5", "content": "alpha alpha juniper falcon obsidian crayon eta saffron", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_6", "content": "alpha alpha nimbus tractor walrus origami theta basalt", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_7", "content": "alpha alpha kettle prairie satchel iceberg iota verdant", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_misc_8", "content": "alpha alpha dynamo lagoon thistle pewter kappa marlin", "category": "misc", "tags": ["alpha"], "importance": 3 },
+    { "key": "flt_rust_1", "content": "alpha gizmo lambda payload specific marker uno here", "category": "rust", "tags": ["alpha", "rust"], "importance": 4 },
+    { "key": "flt_rust_2", "content": "alpha sprocket nu compiler specific marker dos there", "category": "rust", "tags": ["alpha", "rust"], "importance": 4 },
+    { "key": "flt_rust_3", "content": "alpha widget omicron borrow specific marker tres where", "category": "rust", "tags": ["alpha", "rust"], "importance": 4 }
+  ],
+  "queries": [
+    { "id": "stable-tokio-spawn", "class": "stable", "q": "spawn tokio task runtime", "relevant": ["ra2"], "note": "all four tokens appear verbatim only in ra2" },
+    { "id": "stable-hybrid-search", "class": "stable", "q": "hybrid search vector cosine", "relevant": ["rb2"], "note": "all tokens verbatim in rb2" },
+    { "id": "stable-sqlite-fts", "class": "stable", "q": "sqlite full text search", "relevant": ["rc2"], "note": "all tokens verbatim in rc2" },
+    { "id": "stable-reranker", "class": "stable", "q": "cross encoder reranker candidates", "relevant": ["rb3"], "note": "all tokens verbatim in rb3" },
+    { "id": "stable-wireguard", "class": "stable", "q": "wireguard encrypted tunnel", "relevant": ["rd1"], "note": "all tokens verbatim in rd1" },
+    { "id": "stable-postgres", "class": "stable", "q": "postgres durability transactions", "relevant": ["rc1"], "note": "all tokens verbatim in rc1" },
+    { "id": "probe-implicit-and-1", "class": "probe_fts_or", "q": "stop tokio task", "relevant": ["ra1", "ra2"], "note": "PROBE 1.3: 'stop' is in no doc; implicit-AND returns 0, OR recovers ra1/ra2 via tokio+task" },
+    { "id": "probe-implicit-and-2", "class": "probe_fts_or", "q": "vector cosine ranking documents", "relevant": ["rb2", "rb3"], "note": "PROBE 1.3: no single doc has all four tokens; rb2 lacks 'documents', rb3 lacks vector/cosine/ranking; OR recovers both" },
+    { "id": "probe-filter-truncate", "class": "probe_filter", "q": "alpha", "filter_category": "rust", "limit": 5, "relevant": ["flt_rust_1", "flt_rust_2", "flt_rust_3"], "note": "PROBE 1.4: eight 'alpha alpha' misc docs outrank the three single-alpha rust docs; truncate(5)-then-filter returns 0, over-fetch-then-filter returns the rust docs" }
+  ]
+}

@@ -86,9 +86,12 @@ impl Approval {
     }
 }
 
-/// Create a pending approval request.
+/// Create a pending approval request, generating a single-use capability token
+/// whose SHA-256 hash is stored on the row. Returns the approval and the raw
+/// token, to be handed to an out-of-band notifier exactly once. The raw token
+/// is never persisted and never returned again.
 #[allow(clippy::too_many_arguments)]
-pub async fn create_approval(
+pub async fn create_approval_with_token(
     db: &Database,
     user_id: i64,
     agent_name: &str,
@@ -97,7 +100,8 @@ pub async fn create_approval(
     resolve_mode: &str,
     correlation_id: Option<&str>,
     expires_at: &str,
-) -> Result<Approval> {
+) -> Result<(Approval, String)> {
+    let token = crate::approval_token::generate();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let agent = agent_name.to_string();
     let cat = category.to_string();
@@ -106,22 +110,23 @@ pub async fn create_approval(
     let corr = correlation_id.map(|s| s.to_string());
     let exp = expires_at.to_string();
     let now2 = now.clone();
+    let hash = token.hash_hex.clone();
 
     let id = db
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO phylax_approvals
                  (user_id, agent_name, category, secret_name, resolve_mode,
-                  status, correlation_id, created_at, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)",
-                params![user_id, agent, cat, sec, mode, corr, now2, exp],
+                  status, correlation_id, created_at, expires_at, decide_token_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+                params![user_id, agent, cat, sec, mode, corr, now2, exp, hash],
             )?;
             Ok(conn.last_insert_rowid())
         })
         .await
         .map_err(|e| CredError::Database(e.to_string()))?;
 
-    Ok(Approval {
+    let approval = Approval {
         id,
         user_id,
         agent_name: agent_name.to_string(),
@@ -136,7 +141,36 @@ pub async fn create_approval(
         created_at: now,
         decided_at: None,
         expires_at: expires_at.to_string(),
-    })
+    };
+    Ok((approval, token.raw))
+}
+
+/// Create a pending approval request. Thin wrapper over
+/// [`create_approval_with_token`] that discards the capability token, for call
+/// sites that decide approvals only through the authenticated master path.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_approval(
+    db: &Database,
+    user_id: i64,
+    agent_name: &str,
+    category: &str,
+    secret_name: &str,
+    resolve_mode: &str,
+    correlation_id: Option<&str>,
+    expires_at: &str,
+) -> Result<Approval> {
+    let (approval, _token) = create_approval_with_token(
+        db,
+        user_id,
+        agent_name,
+        category,
+        secret_name,
+        resolve_mode,
+        correlation_id,
+        expires_at,
+    )
+    .await?;
+    Ok(approval)
 }
 
 /// Get an approval by ID.
@@ -225,6 +259,67 @@ pub async fn decide_approval(
         ));
     }
     Ok(())
+}
+
+/// Decide a pending approval using a presented single-use capability token.
+///
+/// Verifies the token against the stored hash, that the approval is still
+/// pending and unexpired, then atomically records the decision and clears the
+/// token hash so it cannot be replayed. Returns the resulting status. The token
+/// hash is fetched directly and never travels in the `Approval` struct.
+pub async fn decide_with_token(
+    db: &Database,
+    id: i64,
+    presented_token: &str,
+    approved: bool,
+) -> Result<ApprovalStatus> {
+    let a = get_approval(db, id).await?;
+    if !matches!(a.status, ApprovalStatus::Pending) {
+        return Ok(a.status); // already decided
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if a.expires_at.as_str() < now.as_str() {
+        return Ok(ApprovalStatus::Expired);
+    }
+
+    let stored: Option<String> = db
+        .read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT decide_token_hash FROM phylax_approvals WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )?)
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+    let stored = stored.ok_or_else(|| CredError::PermissionDenied("no decision token".into()))?;
+    if !crate::approval_token::verify(presented_token, &stored) {
+        return Err(CredError::PermissionDenied("invalid decision token".into()));
+    }
+
+    let new_status = if approved {
+        ApprovalStatus::Approved
+    } else {
+        ApprovalStatus::Denied
+    };
+    let decided_at = now.clone();
+    let updated = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE phylax_approvals
+                 SET status = ?1, decided_by = 'out-of-band', decided_at = ?2,
+                     decide_token_hash = NULL
+                 WHERE id = ?3 AND status = 0",
+                params![new_status as i32, decided_at, id],
+            )?)
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+    if updated == 0 {
+        // Lost a race against another decider; report the current status.
+        return Ok(get_approval(db, id).await?.status);
+    }
+    Ok(new_status)
 }
 
 /// Link a lease ID to an approval after minting.

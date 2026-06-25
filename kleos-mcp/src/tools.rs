@@ -6,8 +6,9 @@
 //! `kleos_client::ROUTES` so schemas and descriptions stay source-aligned.
 
 use crate::App;
-use kleos_client::{find_by_name, Route};
+use kleos_client::{find_by_name, resolve_tool_name, Route};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// The curated daily-driver tool names exposed through `tools/list`.
 ///
@@ -64,6 +65,7 @@ const DAILY_TOOL_NAMES: &[&str] = &[
     "scratchpad.delete_key",
     "scratchpad.delete_session",
     "scratchpad.promote",
+    "scratchpad.get",
     "prompts.generate",
     "context.generate_prompt",
     "prompts.header",
@@ -71,6 +73,46 @@ const DAILY_TOOL_NAMES: &[&str] = &[
     "mcp_schema.get",
     "errors.report",
     "agents.verify",
+    // -- artifacts (read side: attach is inline via memory.store's `artifacts`
+    //    field; the standalone upload endpoint is multipart, not MCP-dispatchable) --
+    "artifacts.list_for_memory",
+    "artifacts.search",
+    // -- forge (agent-forge stateful operations) --
+    "forge.spec_task",
+    "forge_spec_task",
+    "forge.update_spec",
+    "forge_update_spec",
+    "forge.list_specs",
+    "forge_list_specs",
+    "forge.get_spec",
+    "forge_get_spec",
+    "forge.log_hypothesis",
+    "forge_log_hypothesis",
+    "forge.log_outcome",
+    "forge_log_outcome",
+    "forge.recall_errors",
+    "forge_recall_errors",
+    "forge.consider_approaches",
+    "forge_consider_approaches",
+    "forge.verify",
+    "forge_verify",
+    "forge.session_learn",
+    "forge_session_learn",
+    "forge.session_recall",
+    "forge_session_recall",
+    // -- forge compute (stateless) --
+    "forge.think",
+    "forge_think",
+    "forge.declare_unknowns",
+    "forge_declare_unknowns",
+    "forge.comment_check",
+    "forge_comment_check",
+    "forge.challenge_code",
+    "forge_challenge_code",
+    "forge.repo_map",
+    "forge_repo_map",
+    "forge.search_code",
+    "forge_search_code",
 ];
 
 /// Parse one route's schema, falling back to an object-shaped schema on bad metadata.
@@ -90,24 +132,72 @@ fn registry_entry(name: &str, route: &Route) -> Value {
 
 /// Returns the curated tool registry as JSON objects suitable for an MCP
 /// `tools/list` response.
+///
+/// Every tool is advertised under its underscore-normalized name
+/// (`memory.store` -> `memory_store`) because strict MCP clients (VS Code)
+/// reject dot-notation names and silently drop those tools. `tools/call`
+/// resolves the underscore name back to the canonical route via
+/// [`resolve_tool_name`]. `DAILY_TOOL_NAMES` lists some tools under both forms,
+/// so entries are deduplicated by canonical route -- each tool appears once.
 pub fn registry() -> Vec<Value> {
-    DAILY_TOOL_NAMES
-        .iter()
-        .filter_map(|name| {
-            find_by_name(name)
-                .map(|route| registry_entry(name, route))
-                .or_else(|| {
-                    tracing::warn!(tool = %name, "daily MCP tool is missing from route registry");
-                    None
-                })
-        })
-        .collect()
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for name in DAILY_TOOL_NAMES {
+        let Some(route) = find_by_name(name) else {
+            tracing::warn!(tool = %name, "daily MCP tool is missing from route registry");
+            continue;
+        };
+        // Advertise the underscore form of THIS listed name (which may be a
+        // back-compat alias, not the canonical route name), so curated aliases
+        // stay visible. Dedup by the resulting display name collapses exact
+        // dot/underscore pairs (`memory.store` + `memory_store`) to one entry.
+        let display = name.replace('.', "_");
+        if !seen.insert(display.clone()) {
+            continue;
+        }
+        out.push(registry_entry(&display, route));
+    }
+    out
 }
 
 /// Routes an MCP tool call to the registered HTTP route. The arguments are
 /// passed straight through; path templates extract the relevant fields.
 #[tracing::instrument(skip(app, args), fields(name = %name))]
 pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value, String> {
-    let route = find_by_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
+    // Secret-bearing routes (e.g. cred resolve/proxy) are dispatchable by name
+    // even though they are absent from the curated tools/list. Refuse them here
+    // so a raw credential never reaches the MCP/model-context channel.
+    if kleos_client::is_mcp_blocked(name) {
+        return Err(format!("tool '{name}' is not available over MCP"));
+    }
+    let route = resolve_tool_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
     app.client.call_route(route, args).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Every advertised tool name must be dot-free (VS Code's MCP validator
+    /// rejects dots), unique, and resolvable back to its route so `tools/call`
+    /// can dispatch whatever `tools/list` advertised.
+    #[test]
+    fn registry_names_are_underscore_unique_and_resolvable() {
+        let tools = registry();
+        assert!(!tools.is_empty(), "registry must not be empty");
+        let mut seen = HashSet::new();
+        for tool in &tools {
+            let name = tool["name"].as_str().expect("tool has a name");
+            assert!(
+                !name.contains('.'),
+                "tool name {name} contains a dot; VS Code will drop it"
+            );
+            assert!(seen.insert(name.to_string()), "duplicate tool name {name}");
+            assert!(
+                resolve_tool_name(name).is_some(),
+                "advertised tool {name} does not resolve back to a route"
+            );
+        }
+    }
 }

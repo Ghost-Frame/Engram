@@ -178,6 +178,7 @@ async fn store_memory(
             };
             let art_id = artifacts::store_artifact(
                 &db,
+                auth.effective_user_id(),
                 result.id,
                 &art.filename,
                 &art.filename,
@@ -415,7 +416,7 @@ async fn search_memories(
 
     // Batch-load artifact summaries for all returned memories.
     let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
-    let artifact_map = artifacts::enrich_with_artifacts(&db, &memory_ids)
+    let artifact_map = artifacts::enrich_with_artifacts(&db, auth.effective_user_id(), &memory_ids)
         .await
         .unwrap_or_default();
 
@@ -597,6 +598,21 @@ async fn explain_search(
     })))
 }
 
+/// Maximum pinned/static memories the recall "static" tier surfaces, ordered by
+/// importance. Independent of the recency window so old pinned facts still appear.
+const RECALL_STATIC_LIMIT: usize = 25;
+
+/// Importance floor for the recall "important" tier.
+const RECALL_IMPORTANT_MIN: i32 = 7;
+
+/// Maximum memories the recall "important" tier surfaces, ordered by importance.
+const RECALL_IMPORTANT_LIMIT: usize = 10;
+
+/// Slots a recall response reserves for query-relevant semantic hits before admitting the
+/// always-on static/important tiers, so a user with many pinned/important memories still gets
+/// query-relevant results under a small `limit` instead of an all-static response.
+const RECALL_MIN_SEMANTIC_SLOTS: usize = 5;
+
 /// POST /recall -- retrieve memories ranked by importance and recency.
 #[tracing::instrument(skip_all)]
 async fn recall(
@@ -613,18 +629,12 @@ async fn recall(
         .or(body.context)
         .unwrap_or_default();
 
-    let static_opts = ListOptions {
-        limit: 10,
-        offset: 0,
-        category: None,
-        source: None,
-        user_id: Some(user_id),
-        space_id: body.space_id,
-        include_forgotten: false,
-        include_archived: false,
-    };
-    let all_list = memory::list(&db, static_opts).await?;
-    let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
+    // Recall-1.1: fetch pinned/static memories by selecting on `is_static` directly and
+    // ordering by importance, so a pinned fact older than the recency window still
+    // surfaces. The prior path listed the 10 newest rows and filtered `is_static`
+    // afterwards, silently dropping every static memory outside that window.
+    let static_memories =
+        memory::list_static(&db, user_id, body.space_id, RECALL_STATIC_LIMIT).await?;
 
     let query_embedding = {
         if let Some(embedder) = state.current_embedder().await {
@@ -650,60 +660,63 @@ async fn recall(
     };
     let semantic_results = hybrid_search(&db, semantic_req).await?;
 
-    let recent_opts = ListOptions {
-        limit: 20,
-        offset: 0,
-        category: None,
-        source: None,
-        user_id: Some(user_id),
-        space_id: body.space_id,
-        include_forgotten: false,
-        include_archived: false,
-    };
-    let recent_all = memory::list(&db, recent_opts).await?;
-    let important_memories: Vec<_> = recent_all
-        .into_iter()
-        .filter(|m| m.importance >= 7)
-        .take(10)
-        .collect();
+    // Recall-1.2: fetch high-importance memories ordered by importance, not recency, so a
+    // 9-10 importance memory outside the recency window is not invisible. The prior path
+    // listed the 20 newest rows then filtered `importance >= 7`, letting recency outrank
+    // importance.
+    let important_memories = memory::list_important(
+        &db,
+        user_id,
+        body.space_id,
+        RECALL_IMPORTANT_MIN,
+        RECALL_IMPORTANT_LIMIT,
+    )
+    .await?;
 
+    // Build each tier as a deduped list. Dedup priority is static > important > semantic >
+    // recent, so a memory that qualifies for several tiers is attributed to the strongest.
     let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    let static_count = static_memories.len();
-    let important_count = important_memories.len();
-    let mut output: Vec<Value> = Vec::new();
 
-    for m in &static_memories {
-        if seen_ids.insert(m.id) {
-            output.push(json!({
+    // Pinned/static tier.
+    let static_items: Vec<Value> = static_memories
+        .iter()
+        .filter(|m| seen_ids.insert(m.id))
+        .map(|m| {
+            json!({
                 "id": m.id, "content": m.content, "category": m.category,
                 "recall_source": "static", "recall_score": m.importance as f64,
                 "tags": parse_tags(&m.tags),
-            }));
-        }
-    }
-    for m in &important_memories {
-        if seen_ids.insert(m.id) {
-            output.push(json!({
+            })
+        })
+        .collect();
+
+    // High-importance tier.
+    let important_items: Vec<Value> = important_memories
+        .iter()
+        .filter(|m| seen_ids.insert(m.id))
+        .map(|m| {
+            json!({
                 "id": m.id, "content": m.content, "category": m.category,
                 "recall_source": "important", "recall_score": m.importance as f64,
                 "tags": parse_tags(&m.tags),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
-    let mut semantic_count = 0usize;
-    for r in semantic_results.iter() {
-        if seen_ids.insert(r.memory.id) {
-            semantic_count += 1;
-            output.push(json!({
+    // Query-relevant semantic tier.
+    let semantic_items: Vec<Value> = semantic_results
+        .iter()
+        .filter(|r| seen_ids.insert(r.memory.id))
+        .map(|r| {
+            json!({
                 "id": r.memory.id, "content": r.memory.content,
                 "category": r.memory.category, "recall_source": "semantic",
                 "recall_score": r.score, "tags": parse_tags(&r.memory.tags),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
-    let mut recent_count = 0usize;
+    // Recent filler tier (low-importance, non-static rows the other tiers did not cover).
     let recent_extra_opts = ListOptions {
         limit: 10,
         offset: 0,
@@ -715,26 +728,55 @@ async fn recall(
         include_archived: false,
     };
     let recent_extra = memory::list(&db, recent_extra_opts).await?;
-    for m in recent_extra
+    let recent_items: Vec<Value> = recent_extra
         .iter()
         .filter(|m| m.importance < 7 && !m.is_static)
-    {
-        if seen_ids.insert(m.id) {
-            recent_count += 1;
-            output.push(json!({
+        .filter(|m| seen_ids.insert(m.id))
+        .map(|m| {
+            json!({
                 "id": m.id, "content": m.content, "category": m.category,
                 "recall_source": "recent", "recall_score": m.importance as f64,
                 "tags": parse_tags(&m.tags),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
-    output.truncate(limit);
+    // Recall-1.7: compose tiers under `limit` so the always-on static/important tiers cannot
+    // starve the query-relevant semantic tier. The reservation/backfill ordering lives in
+    // memory::compose_recall_tiers so it can be tested independently of the route.
+    let mut output: Vec<Value> = memory::compose_recall_tiers(
+        static_items,
+        important_items,
+        semantic_items,
+        recent_items,
+        limit,
+        RECALL_MIN_SEMANTIC_SLOTS,
+    );
+
+    // Breakdown counts reflect what actually survived composition, not the pre-cap tier sizes.
+    let tier_count = |src: &str| {
+        output
+            .iter()
+            .filter(|v| v["recall_source"].as_str() == Some(src))
+            .count()
+    };
+    let static_count = tier_count("static");
+    let important_count = tier_count("important");
+    let semantic_count = tier_count("semantic");
+    let recent_count = tier_count("recent");
 
     // Background: update FSRS state (grade=Good) for every recalled memory.
     // Fire-and-forget — never delays or fails the recall response.
     {
-        let recalled_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+        // Recall-1.5: only grade genuine query-driven retrieval (the semantic tier) as an
+        // active recall. Static/important/recent filler are not retrieval successes, and
+        // grading the whole output Good inflates FSRS stability and corrupts recall-due
+        // ordering and decay for memories that were never actually used.
+        let recalled_ids: Vec<i64> = output
+            .iter()
+            .filter(|v| v["recall_source"].as_str() == Some("semantic"))
+            .filter_map(|v| v["id"].as_i64())
+            .collect();
         let db_clone = db.clone();
         tokio::spawn(async move {
             for id in recalled_ids {
@@ -745,7 +787,7 @@ async fn recall(
 
     // Batch-load artifact summaries for all recalled memories.
     let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
-    let recall_art_map = artifacts::enrich_with_artifacts(&db, &recall_ids)
+    let recall_art_map = artifacts::enrich_with_artifacts(&db, user_id, &recall_ids)
         .await
         .unwrap_or_default();
     for item in &mut output {

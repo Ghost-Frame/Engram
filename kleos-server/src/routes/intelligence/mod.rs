@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use rusqlite::params;
 
 use crate::{
+    dreamer::active_user_ids,
     error::AppError,
     extractors::{Auth, ResolvedDb},
     state::AppState,
@@ -509,22 +510,27 @@ async fn sentiment_analyze_handler(
 /// GET /intelligence/sentiment/history -- list historical sentiment records.
 #[tracing::instrument(skip_all)]
 async fn sentiment_history_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<SentimentHistoryQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20).min(100);
+    let limit =
+        kleos_lib::validation::clamp_signed_limit(params.limit.unwrap_or(20), 20, 100) as i64;
     let since = params.since.as_deref().unwrap_or("1970-01-01");
 
+    // Scope to the caller: in monolith mode ResolvedDb is the shared DB, so
+    // without the user_id predicate this leaked every tenant's memory ids,
+    // timestamps, and derived sentiment scores.
+    let user_id = auth.effective_user_id();
     let since_owned = since.to_string();
     let history = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, content, created_at FROM memories \
-                     WHERE is_forgotten = 0 AND created_at >= ?1 \
+                     WHERE is_forgotten = 0 AND created_at >= ?1 AND user_id = ?3 \
                      ORDER BY created_at DESC LIMIT ?2",
             )?;
-            let rows = stmt.query_map(params![since_owned, limit], |row| {
+            let rows = stmt.query_map(params![since_owned, limit, user_id], |row| {
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 let created_at: String = row.get(2)?;
@@ -588,10 +594,10 @@ async fn valence_get_handler(
 /// GET /intelligence/valence/profile -- aggregate emotional profile across the corpus.
 #[tracing::instrument(skip_all)]
 async fn valence_profile_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let profile = get_emotional_profile(&db).await?;
+    let profile = get_emotional_profile(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(profile)))
 }
 
@@ -765,10 +771,10 @@ async fn correct_handler(
 
 #[tracing::instrument(skip_all)]
 async fn memory_health_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = memory_health(&db).await?;
+    let report = memory_health(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(report)))
 }
 
@@ -848,17 +854,29 @@ async fn dream_handler(
         )));
     }
     if let Some(ref brain) = state.brain {
-        // Brain manager is available -- invoke dream cycle
-        match brain.dream_cycle().await {
-            Ok(result) => Ok(Json(json!({
-                "status": "completed",
-                "result": format!("{:?}", result),
-            }))),
-            Err(e) => Ok(Json(json!({
-                "status": "error",
-                "error": format!("{}", e),
-            }))),
+        // Use the monolith DB — users table lives in the registry, not tenant shards.
+        let users = active_user_ids(&state.db)
+            .await
+            .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
+        let mut last_result = String::new();
+        for user_id in users {
+            match brain.dream_cycle(user_id).await {
+                Ok(result) => {
+                    last_result = format!("{:?}", result);
+                }
+                Err(e) => {
+                    return Ok(Json(json!({
+                        "status": "error",
+                        "user_id": user_id,
+                        "error": format!("{}", e),
+                    })));
+                }
+            }
         }
+        Ok(Json(json!({
+            "status": "completed",
+            "result": last_result,
+        })))
     } else {
         Ok(Json(json!({
             "status": "unavailable",

@@ -30,6 +30,11 @@ type HmacSha256 = Hmac<Sha256>;
 const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60; // 24 hours
 const COOKIE_NAME: &str = "engram_auth";
 
+/// Readable (non-HttpOnly) cookie carrying the CSRF token for the GUI session,
+/// and the header the SPA echoes it in on mutating requests.
+const CSRF_COOKIE_NAME: &str = "kleos_csrf";
+const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
 /// Process-lifetime cache for the HMAC secret. Avoids file I/O on every
 /// GUI request and eliminates the TOCTOU window between read-check and write.
 static HMAC_SECRET_CACHE: OnceLock<SecretString> = OnceLock::new();
@@ -321,6 +326,42 @@ fn sign_cookie(
     format!("{}.{}", payload, hex)
 }
 
+/// Derive a CSRF token bound to a GUI session cookie:
+/// `HMAC(secret, "csrf:" + session_cookie)`. Because the server recomputes and
+/// validates it from the session cookie rather than trusting a separately
+/// settable cookie, an attacker who can fixate the readable `kleos_csrf` cookie
+/// still cannot forge a token that matches the victim's session. The token is
+/// not a credential on its own -- it is only meaningful alongside the HttpOnly,
+/// HMAC-signed session cookie -- so delivering it to JS is safe and lets the
+/// SPA authenticate writes via the cookie instead of a long-lived localStorage
+/// bearer key.
+fn compute_csrf_token(session_cookie_value: &str, secret: &SecretString) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.expose_secret().as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(b"csrf:");
+    mac.update(session_cookie_value.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Verify the `X-CSRF-Token` header against the session cookie for a mutating
+/// GUI-cookie request. True only when both are present and the header equals
+/// the recomputed token (constant-time).
+pub async fn verify_gui_csrf(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(cookie_value) = get_auth_cookie(headers) else {
+        return false;
+    };
+    let Some(header_token) = headers.get(CSRF_HEADER_NAME).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let secret = get_hmac_secret(&state.config.data_dir).await;
+    let expected = compute_csrf_token(&cookie_value, &secret);
+    expected
+        .as_bytes()
+        .ct_eq(header_token.as_bytes())
+        .unwrap_u8()
+        == 1
+}
+
 /// Verify a cookie value and return the resolved session payload.
 /// Cookie format: {user_id}:{key_id}:{timestamp}:{scopes}.{hmac}
 fn verify_cookie(cookie: &str, secret: &SecretString) -> Option<GuiSession> {
@@ -457,6 +498,23 @@ fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
     }
 }
 
+/// Cookie attributes for the readable CSRF token: same SameSite=Strict / Secure
+/// policy as the session cookie but WITHOUT HttpOnly, so the SPA can read the
+/// token and echo it in the X-CSRF-Token header.
+fn cookie_attributes_readable() -> &'static str {
+    static SECURE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let secure = *SECURE.get_or_init(|| {
+        kleos_lib::kleos_env("SECURE_COOKIES")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    });
+    if secure {
+        "Path=/; Secure; SameSite=Strict"
+    } else {
+        "Path=/; SameSite=Strict"
+    }
+}
+
 /// POST /gui/auth - authenticate with API key
 async fn gui_auth(
     State(state): State<AppState>,
@@ -497,9 +555,23 @@ async fn gui_auth(
         COOKIE_NAME, cookie_value, GUI_COOKIE_MAX_AGE, attrs
     );
 
+    // Companion CSRF cookie (readable by JS) bound to the session cookie. The
+    // SPA echoes it in X-CSRF-Token on mutating requests so cookie-authenticated
+    // writes are CSRF-safe -- removing the need to persist a raw API key in
+    // localStorage.
+    let csrf_token = compute_csrf_token(&cookie_value, &secret);
+    let csrf_cookie = format!(
+        "{}={}; Max-Age={}; {}",
+        CSRF_COOKIE_NAME,
+        csrf_token,
+        GUI_COOKIE_MAX_AGE,
+        cookie_attributes_readable()
+    );
+
     Response::builder()
         .status(StatusCode::OK)
         .header(header::SET_COOKIE, cookie)
+        .header(header::SET_COOKIE, csrf_cookie)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(format!(
             r#"{{"ok":true,"user_id":{}}}"#,
@@ -515,10 +587,16 @@ async fn gui_auth(
 async fn gui_logout(headers: HeaderMap) -> Response {
     let attrs = cookie_attributes(&headers);
     let cookie = format!("{}=; Max-Age=0; {}", COOKIE_NAME, attrs);
+    let csrf_clear = format!(
+        "{}=; Max-Age=0; {}",
+        CSRF_COOKIE_NAME,
+        cookie_attributes_readable()
+    );
 
     Response::builder()
         .status(StatusCode::OK)
         .header(header::SET_COOKIE, cookie)
+        .header(header::SET_COOKIE, csrf_clear)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(r#"{"ok":true}"#))
         .unwrap()
@@ -610,7 +688,6 @@ const LOGIN_JS: &str = "document.getElementById('login-form').addEventListener('
     try {\n\
         const res = await fetch('/gui/auth', { method: 'POST', body: new URLSearchParams(data) });\n\
         if (res.ok) {\n\
-            window.localStorage.setItem('kleos_api_key', data.get('api_key'));\n\
             window.location.href = '/';\n\
             return;\n\
         }\n\
@@ -1013,13 +1090,17 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
 
-    // Verify the login bridge keeps the React bearer token in sync with the GUI cookie login.
+    // The login bridge establishes the cookie session via /gui/auth and
+    // redirects to the app. It must NOT persist the raw API key in localStorage
+    // (the cookie + CSRF token returned by /gui/auth are the credential now).
     #[test]
-    fn login_js_stores_api_key_and_redirects_to_root() {
-        assert!(
-            LOGIN_JS.contains("window.localStorage.setItem('kleos_api_key', data.get('api_key'))")
-        );
+    fn login_js_uses_cookie_session_not_localstorage() {
+        assert!(LOGIN_JS.contains("fetch('/gui/auth'"));
         assert!(LOGIN_JS.contains("window.location.href = '/'"));
+        assert!(
+            !LOGIN_JS.contains("localStorage.setItem('kleos_api_key'"),
+            "the inline login must not persist the raw API key"
+        );
     }
 
     // Verify network failures render a visible login error instead of silently throwing in the page.
@@ -1028,5 +1109,30 @@ mod tests {
         assert!(LOGIN_JS.contains("try {"));
         assert!(LOGIN_JS.contains("catch"));
         assert!(LOGIN_JS.contains("Unable to reach Kleos"));
+    }
+
+    // The CSRF token must be deterministic per session, bound to both the
+    // session cookie and the server secret, and full SHA-256 width.
+    #[test]
+    fn csrf_token_is_session_and_secret_bound() {
+        let secret = SecretString::new("unit-test-secret".to_string());
+        let session_a = "1:7:1700000000:rw.deadbeef";
+        let session_b = "2:9:1700000000:rw.cafebabe";
+
+        let t_a = compute_csrf_token(session_a, &secret);
+        assert_eq!(t_a, compute_csrf_token(session_a, &secret), "deterministic");
+        assert_ne!(
+            t_a,
+            compute_csrf_token(session_b, &secret),
+            "different session -> different token"
+        );
+        assert_eq!(t_a.len(), 64, "hex-encoded sha256");
+
+        let other = SecretString::new("a-different-secret".to_string());
+        assert_ne!(
+            compute_csrf_token(session_a, &other),
+            t_a,
+            "token is bound to the server secret"
+        );
     }
 }

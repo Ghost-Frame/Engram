@@ -68,9 +68,14 @@ fn try_paragraph_or_sentence(window: &str, threshold: usize, default_end: usize)
 /// Split a parsed document into chunks with configurable size, overlap,
 /// and structure-aware boundary detection.
 pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) -> Vec<Chunk> {
+    // Clamp to >=1: a zero (or absurdly small) max_chunk_size would make the
+    // windowing loop below unable to advance (end == pos), spinning forever.
+    // Server routes always pass the 3000 default; this guards future callers
+    // that expose ChunkerOptions directly.
     let max_size = options
         .and_then(|o| o.max_chunk_size)
-        .unwrap_or(DEFAULT_MAX_CHUNK_SIZE);
+        .unwrap_or(DEFAULT_MAX_CHUNK_SIZE)
+        .max(1);
     let overlap = options.and_then(|o| o.overlap).unwrap_or(DEFAULT_OVERLAP);
     let respect_structure = options
         .and_then(|o| o.respect_structure)
@@ -128,8 +133,15 @@ pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) ->
             raw_chunks.push(chunk.to_string());
         }
 
-        let advance = (end - pos).saturating_sub(overlap);
-        pos += advance.max(min_advance);
+        let advance = (end - pos).saturating_sub(overlap).max(min_advance);
+        // Guarantee forward progress: when end == pos (e.g. a multibyte char
+        // wider than the snapped window, or min_advance == 0) advance by at
+        // least one char boundary so the loop always terminates.
+        let mut next = pos + advance.max(1);
+        while next < text.len() && !text.is_char_boundary(next) {
+            next += 1;
+        }
+        pos = next;
     }
 
     let total = raw_chunks.len();
@@ -220,5 +232,38 @@ mod tests {
         let doc = make_doc(&text);
         let chunks = chunk_document(&doc, None);
         assert!(chunks.len() >= 2);
+    }
+
+    // If the loop could spin forever these would hang the suite rather than
+    // assert -- which is exactly the regression guard we want.
+    #[test]
+    fn test_zero_max_chunk_size_terminates() {
+        let doc = make_doc("some text that is longer than zero bytes");
+        let opts = ChunkerOptions {
+            max_chunk_size: Some(0),
+            overlap: Some(0),
+            respect_structure: Some(false),
+        };
+        let chunks = chunk_document(&doc, Some(&opts));
+        assert!(
+            !chunks.is_empty(),
+            "must produce at least one chunk and terminate"
+        );
+    }
+
+    #[test]
+    fn test_tiny_size_multibyte_terminates() {
+        // Multibyte chars wider than the snapped window previously spun.
+        let doc = make_doc("\u{1F600}\u{1F601}\u{1F602} mixed \u{00e9}\u{00e8} text");
+        let opts = ChunkerOptions {
+            max_chunk_size: Some(2),
+            overlap: Some(0),
+            respect_structure: Some(false),
+        };
+        let chunks = chunk_document(&doc, Some(&opts));
+        assert!(
+            !chunks.is_empty(),
+            "must terminate on tiny size with multibyte input"
+        );
     }
 }
