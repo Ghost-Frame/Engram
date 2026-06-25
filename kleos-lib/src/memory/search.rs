@@ -838,8 +838,26 @@ pub async fn hybrid_search(
     for (rank, (id, _)) in vector_ranked.iter().enumerate() {
         *rrf_scores.entry(*id).or_default() += rrf_score(rank) * strategy.vector_weight;
     }
-    for (rank, (id, _)) in fts_ranked.iter().enumerate() {
-        *rrf_scores.entry(*id).or_default() += rrf_score(rank) * effective_fts_weight;
+    // B.4: optionally nudge the FTS contribution by normalized BM25 magnitude so a much
+    // stronger lexical hit outranks a marginal one (pure RRF is rank-only). No-op at the
+    // default blend weight of 0.0.
+    let fts_score_blend = scoring::fts_score_blend();
+    let (bm25_min, bm25_max) = if fts_score_blend > 0.0 {
+        fts_ranked
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), (_, s)| {
+                (lo.min(*s), hi.max(*s))
+            })
+    } else {
+        (0.0, 0.0)
+    };
+    let bm25_range = (bm25_max - bm25_min).max(1e-9);
+    for (rank, (id, bm25)) in fts_ranked.iter().enumerate() {
+        let mut contribution = rrf_score(rank) * effective_fts_weight;
+        if fts_score_blend > 0.0 {
+            contribution += (*bm25 - bm25_min) / bm25_range * fts_score_blend;
+        }
+        *rrf_scores.entry(*id).or_default() += contribution;
     }
 
     // Temporal boost date extraction
@@ -1104,7 +1122,11 @@ pub async fn hybrid_search(
     // the over-fetch collapses to `limit` and gives the post-filter no extra candidates. That is
     // acceptable: a max-limit request already scans the widest legal pool. Over-fetch matters at
     // the common small limits, where matching rows can sit below the global top-`limit`.
-    let pool_limit = if filters_present {
+    // B.3: MMR diversity (applied after materialization below) needs a pool wider than
+    // `limit` to pick a diverse subset from, so widen the over-fetch when it is enabled --
+    // the same limit*5 pool the filter path already uses.
+    let mmr_lambda = scoring::mmr_lambda();
+    let pool_limit = if filters_present || mmr_lambda > 0.0 {
         (limit * 5).min(MAX_LIMIT)
     } else {
         limit
@@ -1226,9 +1248,17 @@ pub async fn hybrid_search(
         });
     }
 
+    // B.3: MMR diversity re-ranking. Greedily reorder the (over-fetched) pool to balance
+    // relevance against novelty so a cluster of near-duplicate memories cannot crowd out the
+    // top results, then keep the requested limit. No-op at the default lambda of 0.0.
+    if mmr_lambda > 0.0 && final_results.len() > 1 {
+        final_results = mmr_reorder(final_results, mmr_lambda, limit);
+    }
+
     // Re-truncate to the caller's requested limit after filtering. With no filters this
     // is a no-op (the pool was already `limit`); with filters it trims the limit*5
-    // over-fetch back down once the non-matching rows have been removed.
+    // over-fetch back down once the non-matching rows have been removed. When MMR ran it
+    // already selected `limit`, so this is a safe no-op in that case.
     if filters_present {
         final_results.truncate(limit);
     }
@@ -1277,6 +1307,81 @@ pub async fn hybrid_search(
     cache_put(user_id, param_hash, Arc::clone(&arc_results));
 
     Ok(arc_results)
+}
+
+/// Jaccard similarity between two token sets: |A intersect B| / |A union B|. Returns 0.0 when
+/// both sets are empty (no shared signal, so treat them as maximally diverse).
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    let inter = a.intersection(b).count() as f64;
+    let union = (a.len() + b.len()) as f64 - inter;
+    if union <= 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
+}
+
+/// Greedy Maximal Marginal Relevance reorder of an over-fetched result pool.
+///
+/// Repeatedly picks the result maximizing
+/// `lambda * normalized_relevance - (1 - lambda) * max_similarity_to_already_picked`,
+/// where similarity is Jaccard over the canonical tokens of the matched chunk (or full
+/// content). This keeps the most relevant result first while preventing a cluster of
+/// near-duplicate memories from filling the top, then returns the best `limit` items.
+/// Relevance is min-max normalized to [0,1] so it is comparable to the [0,1] similarity term.
+fn mmr_reorder(results: Vec<SearchResult>, lambda: f64, limit: usize) -> Vec<SearchResult> {
+    let n = results.len();
+    let take = limit.min(n);
+    if take <= 1 {
+        let mut out = results;
+        out.truncate(take);
+        return out;
+    }
+    // Token set per candidate, taken from the matched passage where available so diversity is
+    // judged on what actually matched rather than the whole (possibly multi-topic) memory.
+    let token_sets: Vec<HashSet<String>> = results
+        .iter()
+        .map(|r| {
+            let text = r
+                .matching_chunk
+                .as_deref()
+                .unwrap_or(r.memory.content.as_str());
+            super::simhash::canonical_tokens(text).into_iter().collect()
+        })
+        .collect();
+    // Min-max normalize the relevance score so the lambda-weighted relevance term is on the
+    // same [0,1] scale as the Jaccard diversity term.
+    let (min_s, max_s) = results.iter().fold((f64::MAX, f64::MIN), |(lo, hi), r| {
+        (lo.min(r.score), hi.max(r.score))
+    });
+    let range = (max_s - min_s).max(1e-9);
+    let rel: Vec<f64> = results.iter().map(|r| (r.score - min_s) / range).collect();
+
+    let mut chosen: Vec<usize> = Vec::with_capacity(take);
+    let mut remaining: Vec<usize> = (0..n).collect();
+    while chosen.len() < take && !remaining.is_empty() {
+        let mut best_pos = 0usize;
+        let mut best_score = f64::MIN;
+        for (pos, &i) in remaining.iter().enumerate() {
+            // Similarity to the closest already-chosen result (0.0 for the first pick).
+            let max_sim = chosen
+                .iter()
+                .map(|&j| jaccard(&token_sets[i], &token_sets[j]))
+                .fold(0.0_f64, f64::max);
+            let mmr = lambda * rel[i] - (1.0 - lambda) * max_sim;
+            if mmr > best_score {
+                best_score = mmr;
+                best_pos = pos;
+            }
+        }
+        chosen.push(remaining.remove(best_pos));
+    }
+    // Materialize in the chosen order, moving each result out exactly once (no clone).
+    let mut slots: Vec<Option<SearchResult>> = results.into_iter().map(Some).collect();
+    chosen
+        .into_iter()
+        .map(|i| slots[i].take().expect("each index is chosen at most once"))
+        .collect()
 }
 
 /// SEC-recall-1.5: run `hybrid_search` then apply the supplied reranker.

@@ -75,6 +75,40 @@ pub fn rrf_k() -> f64 {
     *RRF_K_OVERRIDE
 }
 
+// B.4: optional BM25-magnitude blend. RRF is rank-only, so a strong lexical hit (high BM25)
+// and a weak one contribute identically once ranked. This weight adds a small
+// min-max-normalized magnitude term to the FTS contribution. Default 0.0 (pure RRF) until the
+// offline harness tunes it; clamped to [0,1] so it cannot dominate the rank signal.
+const DEFAULT_FTS_SCORE_BLEND: f64 = 0.0;
+static FTS_SCORE_BLEND_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_FTS_SCORE_BLEND")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_FTS_SCORE_BLEND)
+});
+/// Runtime BM25-magnitude blend weight (KLEOS_FTS_SCORE_BLEND override, clamped to [0, 1]).
+pub fn fts_score_blend() -> f64 {
+    *FTS_SCORE_BLEND_OVERRIDE
+}
+
+// B.3: Maximal Marginal Relevance diversity weight. lambda=1.0 is pure relevance (no
+// diversification); lambda=0.0 disables MMR entirely (the default, so behavior is unchanged
+// until the harness tunes it). Lower values trade relevance for novelty, preventing a cluster
+// of near-duplicate memories from crowding the top of the result list. Clamped to [0,1].
+const DEFAULT_MMR_LAMBDA: f64 = 0.0;
+static MMR_LAMBDA_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_MMR_LAMBDA")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_MMR_LAMBDA)
+});
+/// Runtime MMR diversity weight (KLEOS_MMR_LAMBDA override, clamped to [0, 1]; 0 disables MMR).
+pub fn mmr_lambda() -> f64 {
+    *MMR_LAMBDA_OVERRIDE
+}
+
 /// Extra classifier keywords loaded once from env vars at first use.
 /// Each var is a comma-separated list of lowercase phrases that are
 /// merged with the built-in keyword arrays inside `classify_question_mixed`.
