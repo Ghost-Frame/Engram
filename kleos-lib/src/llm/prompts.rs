@@ -55,31 +55,34 @@ fn cache() -> &'static RwLock<HashMap<String, CacheEntry>> {
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn repo_root() -> Option<&'static PathBuf> {
-    static REPO: OnceLock<Option<PathBuf>> = OnceLock::new();
-    REPO.get_or_init(|| {
-        // 1. Explicit override: KLEOS_LLM_PROMPT_REPOSITORY (any directory).
-        if let Some(raw) = std::env::var_os("KLEOS_LLM_PROMPT_REPOSITORY") {
-            let p = PathBuf::from(raw);
-            if !p.as_os_str().is_empty() {
-                return Some(p);
+/// Resolve the prompt override repository root, if one is configured.
+///
+/// Re-evaluated on every call. It is only reached on the LLM-invocation path,
+/// which is far more expensive than these few env reads and one `is_dir`
+/// check, so resolving fresh keeps the overlay hot: a prompt repository
+/// created after process start, or an env var repointed at a new location, is
+/// picked up on the next prompt load instead of being frozen at first use.
+fn repo_root() -> Option<PathBuf> {
+    // 1. Explicit override: KLEOS_LLM_PROMPT_REPOSITORY (any directory).
+    if let Some(raw) = std::env::var_os("KLEOS_LLM_PROMPT_REPOSITORY") {
+        let p = PathBuf::from(raw);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    // 2. Implicit fallback: <KLEOS_DATA_DIR>/prompts when the convention
+    //    directory exists. Avoids introducing a second env var when the
+    //    operator already provides a canonical data root. Both the
+    //    `KLEOS_` and legacy `ENGRAM_` prefixes are honored.
+    for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+        if let Some(raw) = std::env::var_os(env) {
+            let candidate = PathBuf::from(raw).join("prompts");
+            if candidate.is_dir() {
+                return Some(candidate);
             }
         }
-        // 2. Implicit fallback: <KLEOS_DATA_DIR>/prompts when the convention
-        //    directory exists. Avoids introducing a second env var when the
-        //    operator already provides a canonical data root. Both the
-        //    `KLEOS_` and legacy `ENGRAM_` prefixes are honored.
-        for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
-            if let Some(raw) = std::env::var_os(env) {
-                let candidate = PathBuf::from(raw).join("prompts");
-                if candidate.is_dir() {
-                    return Some(candidate);
-                }
-            }
-        }
-        None
-    })
-    .as_ref()
+    }
+    None
 }
 
 fn path_for(repo: &Path, id: &str) -> PathBuf {
@@ -107,7 +110,7 @@ pub fn load_prompt(id: &str, embedded_default: &'static str) -> Cow<'static, str
     let Some(repo) = repo_root() else {
         return Cow::Borrowed(embedded_default);
     };
-    match resolve_override(repo, id) {
+    match resolve_override(&repo, id) {
         Some(content) => Cow::Owned((*content).clone()),
         None => Cow::Borrowed(embedded_default),
     }

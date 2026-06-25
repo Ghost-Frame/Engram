@@ -80,10 +80,6 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
 pub const ANALYSIS_SYSTEM_PROMPT_DEFAULT: &str =
     include_str!("../../prompts/skills/analyze_execution/system.txt");
 
-/// Backward-compatible alias for the embedded default. Prefer
-/// [`analysis_system_prompt`] when an override should be honored.
-pub const ANALYSIS_SYSTEM_PROMPT: &str = ANALYSIS_SYSTEM_PROMPT_DEFAULT;
-
 /// Resolve the skill-execution analysis system prompt, honoring any runtime
 /// override.
 pub fn analysis_system_prompt() -> std::borrow::Cow<'static, str> {
