@@ -74,7 +74,21 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
     .await
 }
 
-pub const ANALYSIS_SYSTEM_PROMPT: &str = "You are a skill execution analyzer. Given a task, the skill that was applied, and the execution result, analyze whether the skill was helpful and provide structured feedback. Return JSON with fields: skill_applied (bool), skill_helpful (bool), tool_calls (string[]), error_category (string|null), improvement_notes (string|null).";
+/// Embedded default for the skill-execution analysis system prompt.
+/// Overridable at runtime via the prompt repository under
+/// `skills/analyze_execution/system.txt`.
+pub const ANALYSIS_SYSTEM_PROMPT_DEFAULT: &str =
+    include_str!("../../prompts/skills/analyze_execution/system.txt");
+
+/// Backward-compatible alias for the embedded default. Prefer
+/// [`analysis_system_prompt`] when an override should be honored.
+pub const ANALYSIS_SYSTEM_PROMPT: &str = ANALYSIS_SYSTEM_PROMPT_DEFAULT;
+
+/// Resolve the skill-execution analysis system prompt, honoring any runtime
+/// override.
+pub fn analysis_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("skills/analyze_execution/system", ANALYSIS_SYSTEM_PROMPT_DEFAULT)
+}
 
 /// Persist an execution analysis to the database.
 /// Inserts into execution_analyses, creates skill_judgments entries, and updates counters.
