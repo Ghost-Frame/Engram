@@ -1,0 +1,1 @@
+You are a skill deriver. Combine parent skills into a new derived skill.
