@@ -380,6 +380,7 @@ async fn spec_task_handler(
                 // ke treats as fail-closed by default), not to a false allow.
                 let _ = kleos_lib::scratchpad::upsert_entry(
                     &db,
+                    user_id,
                     sid,
                     // Must match the namespace `ke` queries:
                     // `GET /scratchpad/get?namespace=spec-task&...`

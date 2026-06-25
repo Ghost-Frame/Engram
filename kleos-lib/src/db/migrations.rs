@@ -421,6 +421,15 @@ pub static MIGRATIONS: &[Migration] = &[
     // the Kleos tenant DB so forge.db can be deleted. All tables are prefixed
     // `forge_` and carry `user_id` for monolith-mode row isolation.
     migration!(91, "forge_tables", run_migration_forge_tables, tx),
+    // Re-add user_id to scratchpad (reverses migration 26). Restores tenant
+    // isolation for the monolith scratchpad: list/get/delete/upsert are scoped
+    // by user_id again. 12-step rebuild toggles PRAGMA foreign_keys, so it runs
+    // outside a transaction (no `tx`), like migration 26.
+    migration!(
+        92,
+        "readd_user_id_scratchpad",
+        run_migration_readd_user_id_scratchpad
+    ),
 ];
 
 // --- Version constants ---
@@ -2624,6 +2633,74 @@ fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<
     )?;
 
     info!("Migration 26 complete: user_id dropped from scratchpad");
+    Ok(())
+}
+
+// --- Migration 92: re-add user_id to scratchpad (reverses migration 26) ---
+
+/// Migration 92: re-add `user_id` to scratchpad via the 12-step rebuild path,
+/// reversing migration 26. Migration 26 dropped user_id and widened the
+/// constraint to UNIQUE(session, agent, entry_key), which left the monolith
+/// scratchpad unscoped: in single-DB mode every tenant shares one table, so an
+/// unscoped read (`scratchpad::list_entries`) leaked other users' working
+/// memory into `assemble_context`, and an unscoped delete or ON CONFLICT upsert
+/// could clobber another tenant's row.
+///
+/// This rebuilds the table WITH user_id and the tightened
+/// UNIQUE(user_id, session, agent, entry_key). Existing rows carry no user
+/// attribution (the column was dropped by migration 26), so they backfill to
+/// user_id=1, matching migration 26's "all surviving rows were user_id=1"
+/// assumption; new writes are correctly scoped by the caller. Idempotent: if
+/// scratchpad already has user_id the migration is a no-op.
+fn run_migration_readd_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_user_id == 1 {
+        info!("scratchpad.user_id already present, migration 92 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+
+         ALTER TABLE scratchpad RENAME TO _scratchpad_old_v91;
+
+         DROP INDEX IF EXISTS idx_scratchpad_agent;
+         DROP INDEX IF EXISTS idx_scratchpad_session;
+         DROP INDEX IF EXISTS idx_scratchpad_expires;
+
+         CREATE TABLE scratchpad (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             user_id INTEGER NOT NULL DEFAULT 1,
+             agent TEXT NOT NULL DEFAULT 'unknown',
+             session TEXT NOT NULL DEFAULT 'default',
+             model TEXT NOT NULL DEFAULT '',
+             entry_key TEXT NOT NULL,
+             value TEXT NOT NULL DEFAULT '',
+             expires_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(user_id, session, agent, entry_key)
+         );
+
+         INSERT INTO scratchpad (id, agent, session, model, entry_key, value, expires_at, created_at, updated_at)
+         SELECT id, agent, session, model, entry_key, value, expires_at, created_at, updated_at
+         FROM _scratchpad_old_v91;
+
+         DROP TABLE _scratchpad_old_v91;
+
+         CREATE INDEX idx_scratchpad_agent ON scratchpad(agent);
+         CREATE INDEX idx_scratchpad_session ON scratchpad(session);
+         CREATE INDEX idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
+         CREATE INDEX idx_scratchpad_user ON scratchpad(user_id);
+
+         PRAGMA foreign_keys = ON;",
+    )?;
+
+    info!("Migration 92 complete: user_id re-added to scratchpad");
     Ok(())
 }
 

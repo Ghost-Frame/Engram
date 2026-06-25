@@ -382,6 +382,17 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // tables. All tables carry `user_id`; forge_specs and forge_hypotheses also
     // carry `session_id` for the gate enforcement query. No backfill needed.
     tenant_migration!(74, "forge_tables", apply_schema_v74_forge),
+    // Re-add user_id to scratchpad (reverses v23). v23 dropped the column on the
+    // per-shard-file isolation assumption, leaving scratchpad unscoped: in
+    // single-DB mode assemble_context working-memory and the delete/get/list
+    // paths returned or mutated other tenants' rows. The runner backfills existing
+    // scratchpad rows to the shard owner after this file runs (see
+    // TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD / backfill_owner_tables_for_version).
+    tenant_migration!(
+        75,
+        "scratchpad_user_id_readd",
+        apply_schema_v75_scratchpad_user_id_readd
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -460,6 +471,11 @@ const TENANT_MIGRATION_READD_USER_ID_SKILLS: i64 = 69;
 /// table (reverses v24). The runner backfills existing session rows to the
 /// shard owner after this runs.
 const TENANT_MIGRATION_READD_USER_ID_SESSIONS: i64 = 72;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// scratchpad table (reverses v23). The runner backfills existing scratchpad
+/// rows to the shard owner after this runs.
+const TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD: i64 = 75;
 
 /// Generates a tenant migration function that loads SQL from an external file.
 macro_rules! tenant_migration_sql {
@@ -781,6 +797,11 @@ tenant_migration_sql!(
     apply_schema_v74_forge,
     "v74",
     "../tenant/schema_v74_forge_tables.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v75_scratchpad_user_id_readd,
+    "v75",
+    "../tenant/schema_v75_scratchpad_user_id_readd.sql"
 );
 
 /// Tenant v37: drops user_id from portability tables including conversations.
@@ -1360,6 +1381,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES => &["user_preferences"],
         TENANT_MIGRATION_READD_USER_ID_SKILLS => &["skill_records"],
         TENANT_MIGRATION_READD_USER_ID_SESSIONS => &["sessions"],
+        TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD => &["scratchpad"],
         _ => &[],
     };
     for table in tables {
@@ -1560,12 +1582,13 @@ mod tests {
         assert_eq!(value, "v2");
     }
 
-    /// v23: scratchpad must NOT have a user_id column after the full
-    /// migration chain completes.
+    /// v23: scratchpad has no user_id column at the v23 boundary. v75 later
+    /// re-adds it (see `scratchpad_user_id_readded_after_v75`), so this test
+    /// pins to exactly v23 to keep covering the v23 drop in isolation.
     #[test]
     fn user_id_absent_from_scratchpad_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn, None).unwrap();
+        run_tenant_migrations_to(&conn, None, 23).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1577,12 +1600,14 @@ mod tests {
         assert_eq!(count, 0, "scratchpad still has user_id column after v23");
     }
 
-    /// v23: the new UNIQUE(session, agent, entry_key) supports per-agent
+    /// v23: the UNIQUE(session, agent, entry_key) constraint supports per-agent
     /// upsert within a session, and collisions on that triple still collapse.
+    /// Pinned to exactly v23 because v75 tightens the constraint to include
+    /// user_id (see `scratchpad_user_id_readded_after_v75`).
     #[test]
     fn scratchpad_constraint_reshaped_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn, None).unwrap();
+        run_tenant_migrations_to(&conn, None, 23).unwrap();
 
         // Two different agents in the same (session, entry_key) coexist.
         conn.execute(
@@ -1621,6 +1646,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value_a, "vA2");
+    }
+
+    /// v75: re-adds user_id to scratchpad, backfills existing rows to the shard
+    /// owner, and tightens UNIQUE to include user_id so two tenants sharing a
+    /// (session, agent, entry_key) get distinct rows instead of clobbering.
+    #[test]
+    fn scratchpad_user_id_readded_after_v75() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Migrate to v74 (pre-readd) and seed a row the old, unscoped way.
+        run_tenant_migrations_to(&conn, None, 74).unwrap();
+        conn.execute(
+            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) \
+             VALUES ('s1', 'agentA', 'm', 'k1', 'vold', datetime('now', '+5 minutes'))",
+            [],
+        )
+        .unwrap();
+
+        // Apply v75 as shard owner 7; the runner backfills existing rows to 7.
+        run_tenant_migrations_to(&conn, Some(7), 75).unwrap();
+
+        // user_id column is back.
+        let has_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_uid, 1, "scratchpad must have user_id after v75");
+
+        // The pre-existing row backfilled to the shard owner, not the default.
+        let owner: i64 = conn
+            .query_row(
+                "SELECT user_id FROM scratchpad WHERE session='s1' AND entry_key='k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            owner, 7,
+            "existing scratchpad row backfilled to shard owner"
+        );
+
+        // The tightened UNIQUE(user_id, session, agent, entry_key) lets the same
+        // (session, agent, entry_key) under a different user coexist.
+        conn.execute(
+            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) \
+             VALUES (8, 's1', 'agentA', 'm', 'k1', 'vuser8', datetime('now', '+5 minutes')) \
+             ON CONFLICT(user_id, session, agent, entry_key) DO UPDATE SET value = excluded.value",
+            [],
+        )
+        .unwrap();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scratchpad WHERE session='s1' AND agent='agentA' AND entry_key='k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            total, 2,
+            "same (session, agent, key) under two users coexist"
+        );
     }
 
     /// v23: rows inserted under the v2 shim shape survive the rebuild intact.
@@ -1718,7 +1806,8 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        // Run the chain; v2 adds user_id, v23 later drops it. End state: absent.
+        // Run the chain; v2 adds user_id, v23 drops it, v75 re-adds it.
+        // End state: present (tenant isolation restored).
         run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
@@ -1728,7 +1817,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(post, 0);
+        assert_eq!(post, 1, "v75 re-adds user_id to scratchpad");
     }
 
     /// Verifies sessions tables have user_id after applying v3.

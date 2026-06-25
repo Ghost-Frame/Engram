@@ -39,9 +39,14 @@ pub struct ScratchKV {
 
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(db, session, agent, model, key, value))]
-/// Inserts or updates one scratchpad entry with a TTL.
+/// Inserts or updates one scratchpad entry with a TTL, scoped to `user_id`.
+///
+/// The ON CONFLICT target includes `user_id` so two tenants writing the same
+/// session+agent+entry_key produce two distinct rows rather than clobbering
+/// each other.
 pub async fn upsert_entry(
     db: &Database,
+    user_id: i64,
     session: &str,
     agent: &str,
     model: &str,
@@ -57,8 +62,8 @@ pub async fn upsert_entry(
     let value = value.to_string();
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+' || ?6 || ' minutes')) ON CONFLICT(session, agent, entry_key) DO UPDATE SET model = excluded.model, value = excluded.value, updated_at = datetime('now'), expires_at = datetime('now', '+' || ?7 || ' minutes')",
-            params![session, agent, model, key, value, ttl_str.clone(), ttl_str],
+            "INSERT INTO scratchpad (user_id, session, agent, model, entry_key, value, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+' || ?7 || ' minutes')) ON CONFLICT(user_id, session, agent, entry_key) DO UPDATE SET model = excluded.model, value = excluded.value, updated_at = datetime('now'), expires_at = datetime('now', '+' || ?8 || ' minutes')",
+            params![user_id, session, agent, model, key, value, ttl_str.clone(), ttl_str],
         )
         ?;
         Ok(())
@@ -67,9 +72,12 @@ pub async fn upsert_entry(
 }
 
 #[tracing::instrument(skip(db, agent, model, session))]
-/// Lists active scratchpad entries filtered by agent, model, and session.
+/// Lists active scratchpad entries for `user_id`, filtered by agent, model, and
+/// session. The `user_id` predicate is always applied so a caller can never see
+/// another tenant's entries.
 pub async fn list_entries(
     db: &Database,
+    user_id: i64,
     agent: Option<&str>,
     model: Option<&str>,
     session: Option<&str>,
@@ -80,12 +88,12 @@ pub async fn list_entries(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE expires_at > datetime('now') AND (?1 IS NULL OR agent = ?2) AND (?3 IS NULL OR model = ?4) AND (?5 IS NULL OR session = ?6) ORDER BY updated_at DESC, agent, session, entry_key",
+                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE user_id = ?1 AND expires_at > datetime('now') AND (?2 IS NULL OR agent = ?3) AND (?4 IS NULL OR model = ?5) AND (?6 IS NULL OR session = ?7) ORDER BY updated_at DESC, agent, session, entry_key",
             )
             ?;
         let rows = stmt
             .query_map(
-                params![agent.clone(), agent, model.clone(), model, session.clone(), session],
+                params![user_id, agent.clone(), agent, model.clone(), model, session.clone(), session],
                 row_to_entry_rusqlite,
             )
             ?;
@@ -99,17 +107,22 @@ pub async fn list_entries(
 }
 
 #[tracing::instrument(skip(db, session))]
-/// Loads every entry for one scratchpad session in creation order.
-pub async fn get_session_entries(db: &Database, session: &str) -> Result<Vec<ScratchEntry>> {
+/// Loads every entry for one scratchpad session owned by `user_id`, in creation
+/// order.
+pub async fn get_session_entries(
+    db: &Database,
+    user_id: i64,
+    session: &str,
+) -> Result<Vec<ScratchEntry>> {
     let session = session.to_string();
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE session = ?1 ORDER BY created_at ASC",
+                "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE user_id = ?1 AND session = ?2 ORDER BY created_at ASC",
             )
             ?;
         let rows = stmt
-            .query_map(params![session], row_to_entry_rusqlite)
+            .query_map(params![user_id, session], row_to_entry_rusqlite)
             ?;
         let mut result = Vec::new();
         for row in rows {
@@ -121,13 +134,15 @@ pub async fn get_session_entries(db: &Database, session: &str) -> Result<Vec<Scr
 }
 
 #[tracing::instrument(skip(db, session))]
-/// Deletes every scratchpad entry for one session.
-pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
+/// Deletes every scratchpad entry for one session owned by `user_id`. The
+/// `user_id` predicate prevents one tenant deleting another tenant's session
+/// when session ids collide in single-DB mode.
+pub async fn delete_session(db: &Database, user_id: i64, session: &str) -> Result<()> {
     let session = session.to_string();
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM scratchpad WHERE session = ?1",
-            params![session],
+            "DELETE FROM scratchpad WHERE user_id = ?1 AND session = ?2",
+            params![user_id, session],
         )?;
         Ok(())
     })
@@ -135,14 +150,19 @@ pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
 }
 
 #[tracing::instrument(skip(db, session, key))]
-/// Deletes one key from one scratchpad session.
-pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Result<()> {
+/// Deletes one key from one scratchpad session owned by `user_id`.
+pub async fn delete_session_key(
+    db: &Database,
+    user_id: i64,
+    session: &str,
+    key: &str,
+) -> Result<()> {
     let session = session.to_string();
     let key = key.to_string();
     db.write(move |conn| {
         conn.execute(
-            "DELETE FROM scratchpad WHERE session = ?1 AND entry_key = ?2",
-            params![session, key],
+            "DELETE FROM scratchpad WHERE user_id = ?1 AND session = ?2 AND entry_key = ?3",
+            params![user_id, session, key],
         )?;
         Ok(())
     })
@@ -158,6 +178,7 @@ pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Resu
 #[tracing::instrument(skip(db, namespace, key))]
 pub async fn get_by_namespace_key(
     db: &Database,
+    user_id: i64,
     namespace: &str,
     key: &str,
 ) -> Result<Option<String>> {
@@ -165,9 +186,9 @@ pub async fn get_by_namespace_key(
     let key = key.to_string();
     db.read(move |conn| {
         let mut stmt = conn.prepare(
-            "SELECT value FROM scratchpad WHERE agent = ?1 AND entry_key = ?2 AND expires_at > datetime('now') LIMIT 1",
+            "SELECT value FROM scratchpad WHERE user_id = ?1 AND agent = ?2 AND entry_key = ?3 AND expires_at > datetime('now') LIMIT 1",
         )?;
-        let mut rows = stmt.query(rusqlite::params![namespace, key])?;
+        let mut rows = stmt.query(rusqlite::params![user_id, namespace, key])?;
         if let Some(row) = rows.next()? {
             let value: String = row.get(0)?;
             Ok(Some(value))
@@ -202,7 +223,7 @@ pub async fn promote_entries(
     combine: bool,
     category: &str,
 ) -> Result<Vec<i64>> {
-    let entries = get_session_entries(db, session).await?;
+    let entries = get_session_entries(db, user_id, session).await?;
     if entries.is_empty() {
         return Err(crate::EngError::NotFound(
             "No entries found for session".into(),
@@ -319,6 +340,7 @@ mod tests {
 
         upsert_entry(
             &db,
+            2,
             "combined-session",
             "agent-a",
             "model-a",
@@ -330,6 +352,7 @@ mod tests {
         .expect("combined alpha entry");
         upsert_entry(
             &db,
+            2,
             "combined-session",
             "agent-a",
             "model-a",
@@ -359,6 +382,7 @@ mod tests {
 
         upsert_entry(
             &db,
+            2,
             "individual-session",
             "agent-b",
             "model-b",
@@ -370,6 +394,7 @@ mod tests {
         .expect("individual gamma entry");
         upsert_entry(
             &db,
+            2,
             "individual-session",
             "agent-b",
             "model-b",
@@ -399,5 +424,66 @@ mod tests {
             .await
             .expect("individual memory owners");
         assert_eq!(individual_owners, vec![2, 2]);
+    }
+
+    /// Tenant isolation: scratchpad reads and deletes are scoped to user_id, so
+    /// one tenant can never see or remove another tenant's entries even when
+    /// they share a session+agent+key. This is the cross-tenant fix restored by
+    /// tenant migration v75 / monolith migration 92.
+    #[tokio::test]
+    async fn scratchpad_is_user_scoped() {
+        let db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-memory db");
+
+        // User 1 and user 2 both write the SAME session+agent+entry_key.
+        upsert_entry(&db, 1, "shared", "agent", "model", "k", "u1-secret", 30)
+            .await
+            .expect("u1 write");
+        upsert_entry(&db, 2, "shared", "agent", "model", "k", "u2-secret", 30)
+            .await
+            .expect("u2 write");
+
+        // The user-scoped UNIQUE keeps them distinct: no clobber.
+        let u1 = list_entries(&db, 1, None, None, None)
+            .await
+            .expect("u1 list");
+        let u2 = list_entries(&db, 2, None, None, None)
+            .await
+            .expect("u2 list");
+        assert_eq!(u1.len(), 1);
+        assert_eq!(u2.len(), 1);
+        assert_eq!(u1[0].value, "u1-secret");
+        assert_eq!(
+            u2[0].value, "u2-secret",
+            "user 2's write must not clobber user 1's row"
+        );
+
+        // list_entries never returns the other tenant's value.
+        assert!(
+            u2.iter().all(|e| e.value != "u1-secret"),
+            "list_entries leaked across tenants"
+        );
+
+        // get_session_entries is scoped too.
+        let u2_session = get_session_entries(&db, 2, "shared")
+            .await
+            .expect("u2 session");
+        assert!(
+            u2_session.iter().all(|e| e.value != "u1-secret"),
+            "get_session_entries leaked across tenants"
+        );
+
+        // delete_session is scoped: user 2 deleting the shared session must NOT
+        // remove user 1's row.
+        delete_session(&db, 2, "shared").await.expect("u2 delete");
+        let u1_after = list_entries(&db, 1, None, None, None)
+            .await
+            .expect("u1 list after");
+        assert_eq!(u1_after.len(), 1, "user 2's delete removed user 1's entry");
+        let u2_after = list_entries(&db, 2, None, None, None)
+            .await
+            .expect("u2 list after");
+        assert_eq!(u2_after.len(), 0, "user 2's own entry was not deleted");
     }
 }

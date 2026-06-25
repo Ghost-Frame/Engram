@@ -24,13 +24,16 @@ pub fn router() -> Router<AppState> {
         .route("/scratchpad/get", get(get_scratch))
 }
 
+/// Lists the caller's active scratchpad entries, scoped to the authenticated
+/// user, optionally filtered by agent, model, and session.
 async fn list_scratch(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(q): Query<ScratchQuery>,
 ) -> Result<Json<Value>, AppError> {
     let entries = kleos_lib::scratchpad::list_entries(
         &db,
+        auth.effective_user_id(),
         q.agent.as_deref(),
         q.model.as_deref(),
         q.session.as_deref(),
@@ -40,11 +43,13 @@ async fn list_scratch(
     Ok(Json(json!({ "entries": entries, "count": count })))
 }
 
+/// Upserts one or more scratchpad entries for the authenticated user.
 async fn put_scratch(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<kleos_lib::scratchpad::ScratchPutBody>,
 ) -> Result<Json<Value>, AppError> {
+    let user_id = auth.effective_user_id();
     let session = body.session.as_deref().unwrap_or("default");
     let agent = body.agent.as_deref().unwrap_or("unknown");
     let model = body.model.as_deref().unwrap_or("");
@@ -53,7 +58,10 @@ async fn put_scratch(
     let mut stored = 0;
     for e in &entries {
         let value = e.value.as_deref().unwrap_or("");
-        kleos_lib::scratchpad::upsert_entry(&db, session, agent, model, &e.key, value, ttl).await?;
+        kleos_lib::scratchpad::upsert_entry(
+            &db, user_id, session, agent, model, &e.key, value, ttl,
+        )
+        .await?;
         stored += 1;
     }
     Ok(Json(
@@ -61,26 +69,31 @@ async fn put_scratch(
     ))
 }
 
+/// Deletes every scratchpad entry in one session owned by the authenticated user.
 async fn delete_session(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(session): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::scratchpad::delete_session(&db, &session).await?;
+    kleos_lib::scratchpad::delete_session(&db, auth.effective_user_id(), &session).await?;
     Ok(Json(json!({ "deleted": true, "session": session })))
 }
 
+/// Deletes one key from one scratchpad session owned by the authenticated user.
 async fn delete_key(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path((session, key)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::scratchpad::delete_session_key(&db, &session, &key).await?;
+    kleos_lib::scratchpad::delete_session_key(&db, auth.effective_user_id(), &session, &key)
+        .await?;
     Ok(Json(
         json!({ "deleted": true, "session": session, "key": key }),
     ))
 }
 
+/// Promotes selected scratchpad entries in a session into permanent memories
+/// owned by the authenticated user.
 async fn promote(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -115,11 +128,18 @@ async fn promote(
 /// The response shape is designed to satisfy ke's exact success conditions:
 /// HTTP 200, body non-empty, no `"value":null`, no `not found`.
 async fn get_scratch(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(q): Query<ScratchGetQuery>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), AppError> {
-    match kleos_lib::scratchpad::get_by_namespace_key(&db, &q.namespace, &q.key).await? {
+    match kleos_lib::scratchpad::get_by_namespace_key(
+        &db,
+        auth.effective_user_id(),
+        &q.namespace,
+        &q.key,
+    )
+    .await?
+    {
         Some(value) => Ok((
             axum::http::StatusCode::OK,
             Json(json!({ "value": value, "key": q.key })),
@@ -144,9 +164,10 @@ mod tests {
             .await
             .expect("in-memory db");
 
-        // Write a ledger entry the way the forge spec-task handler does.
+        // Write a ledger entry the way the forge spec-task handler does, as user 1.
         upsert_entry(
             &db,
+            1,           // user_id
             "S",         // session
             "spec-task", // agent == namespace ke queries
             "",          // model
@@ -157,22 +178,32 @@ mod tests {
         .await
         .expect("upsert spec-task ledger entry");
 
-        // Hit: correct namespace + key returns the spec id.
-        let found = get_by_namespace_key(&db, "spec-task", "S:/x/a.rs")
+        // Hit: correct user + namespace + key returns the spec id.
+        let found = get_by_namespace_key(&db, 1, "spec-task", "S:/x/a.rs")
             .await
             .expect("query hit");
         assert_eq!(found, Some("spec_1".to_string()));
 
         // Miss: different key under same namespace returns None.
-        let miss = get_by_namespace_key(&db, "spec-task", "S:/x/b.rs")
+        let miss = get_by_namespace_key(&db, 1, "spec-task", "S:/x/b.rs")
             .await
             .expect("query miss");
         assert_eq!(miss, None);
 
         // Miss: same key but wrong namespace returns None.
-        let miss2 = get_by_namespace_key(&db, "forge", "S:/x/a.rs")
+        let miss2 = get_by_namespace_key(&db, 1, "forge", "S:/x/a.rs")
             .await
             .expect("query wrong namespace");
         assert_eq!(miss2, None);
+
+        // Isolation: user 2 cannot read user 1's ledger entry even with the
+        // exact namespace + key. This is the cross-tenant fix (v75 readd).
+        let other_tenant = get_by_namespace_key(&db, 2, "spec-task", "S:/x/a.rs")
+            .await
+            .expect("query as other tenant");
+        assert_eq!(
+            other_tenant, None,
+            "user 2 must not see user 1's ledger entry"
+        );
     }
 }

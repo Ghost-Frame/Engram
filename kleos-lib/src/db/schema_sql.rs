@@ -669,6 +669,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         -- Tier4: scratchpad
         CREATE TABLE IF NOT EXISTS scratchpad (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 1,
             agent TEXT NOT NULL DEFAULT 'unknown',
             session TEXT NOT NULL DEFAULT 'default',
             model TEXT NOT NULL DEFAULT '',
@@ -677,11 +678,12 @@ pub const CORE_SCHEMA_SQL: &str = r#"
             expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(session, agent, entry_key)
+            UNIQUE(user_id, session, agent, entry_key)
         );
         CREATE INDEX IF NOT EXISTS idx_scratchpad_agent ON scratchpad(agent);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_session ON scratchpad(session);
         CREATE INDEX IF NOT EXISTS idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_scratchpad_user ON scratchpad(user_id);
 
         -- Skill system: skill records
         CREATE TABLE IF NOT EXISTS skill_records (
