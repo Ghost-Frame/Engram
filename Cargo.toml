@@ -17,7 +17,7 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
 tracing-opentelemetry = "0.28"
 thiserror = "2"
@@ -60,7 +60,7 @@ base64 = "0.22"
 secrecy = { version = "0.8", features = ["serde"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 mimalloc = { version = "0.1", default-features = false }
-lru = "0.16"
+lru = "0.18"
 dashmap = "6"
 arc-swap = "1"
 walkdir = "2"
