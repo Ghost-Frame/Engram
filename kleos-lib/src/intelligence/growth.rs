@@ -81,14 +81,11 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
 /// Embedded defaults for the service-specific reflection system prompts.
 /// Each is overridable at runtime via the prompt repository under
 /// `growth/<service>/system.txt`.
-const ENGRAM_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/engram/system.txt");
+const ENGRAM_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/engram/system.txt");
 const CLAUDE_CODE_REFLECTION_DEFAULT: &str =
     include_str!("../../prompts/growth/claude_code/system.txt");
-const EIDOLON_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/eidolon/system.txt");
-const DEFAULT_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/default/system.txt");
+const EIDOLON_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/eidolon/system.txt");
+const DEFAULT_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/default/system.txt");
 
 /// Service-specific reflection prompts. An explicit `prompt_override` wins;
 /// otherwise the per-service embedded default is resolved through the prompt

@@ -87,7 +87,10 @@ pub const ANALYSIS_SYSTEM_PROMPT: &str = ANALYSIS_SYSTEM_PROMPT_DEFAULT;
 /// Resolve the skill-execution analysis system prompt, honoring any runtime
 /// override.
 pub fn analysis_system_prompt() -> std::borrow::Cow<'static, str> {
-    crate::llm::prompts::load_prompt("skills/analyze_execution/system", ANALYSIS_SYSTEM_PROMPT_DEFAULT)
+    crate::llm::prompts::load_prompt(
+        "skills/analyze_execution/system",
+        ANALYSIS_SYSTEM_PROMPT_DEFAULT,
+    )
 }
 
 /// Persist an execution analysis to the database.

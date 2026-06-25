@@ -92,6 +92,18 @@ fn path_for(repo: &PathBuf, id: &str) -> PathBuf {
 /// (no override repo configured, or override missing). Returns an owned
 /// `Cow` over the file content when an override is in effect.
 pub fn load_prompt(id: &str, embedded_default: &'static str) -> Cow<'static, str> {
+    // Reject ids that could escape the prompt repository. Real ids are
+    // slash-separated relative paths of known prompts (for example
+    // "broca/ask_plan/system"); a ".." segment, an absolute path, a backslash,
+    // or a NUL byte is never legitimate and could traverse out of the repo if a
+    // future caller passed user input. Fall back to the embedded default.
+    if id.starts_with('/')
+        || id.contains('\\')
+        || id.contains('\0')
+        || id.split('/').any(|seg| seg == ".." || seg.is_empty())
+    {
+        return Cow::Borrowed(embedded_default);
+    }
     let Some(repo) = repo_root() else {
         return Cow::Borrowed(embedded_default);
     };
@@ -162,8 +174,25 @@ fn resolve_override(repo: &PathBuf, id: &str) -> Option<Arc<String>> {
         }
     }
 
-    // mtime missing or different: re-read from disk.
-    let new_content = std::fs::read_to_string(&path).ok().map(Arc::new);
+    // mtime missing or different: re-read from disk. Cap the size first so a
+    // large or hostile override file (in a directory an attacker or a
+    // misconfiguration made writable) cannot be loaded into memory and sent
+    // verbatim to the LLM endpoint (DoS / API-cost exhaustion). Oversized
+    // overrides fall back to the embedded default.
+    const MAX_PROMPT_BYTES: u64 = 64 * 1024;
+    let oversized = std::fs::metadata(&path)
+        .map(|m| m.len() > MAX_PROMPT_BYTES)
+        .unwrap_or(false);
+    let new_content = if oversized {
+        tracing::warn!(
+            prompt_id = id,
+            path = %path.display(),
+            "prompt override exceeds {MAX_PROMPT_BYTES} bytes; using embedded default"
+        );
+        None
+    } else {
+        std::fs::read_to_string(&path).ok().map(Arc::new)
+    };
     if new_content.is_none() {
         // Log a single warning per id-miss so operators can spot typos.
         // We use `debug` for the case where no override file is expected
@@ -296,6 +325,9 @@ mod tests {
     fn render_interpolates_overridden_template() {
         let tmpl = "Hello {{who}}!";
         let vars = serde_json::json!({ "who": "kleos" });
-        assert_eq!(super::super::template::interpolate(tmpl, &vars), "Hello kleos!");
+        assert_eq!(
+            super::super::template::interpolate(tmpl, &vars),
+            "Hello kleos!"
+        );
     }
 }

@@ -389,8 +389,7 @@ struct LlmAtomItem {
 
 /// Embedded default for the atom-extraction system prompt, overridable at
 /// runtime via the prompt repository under `extraction/atoms/system.txt`.
-const ATOMS_SYSTEM_PROMPT_DEFAULT: &str =
-    include_str!("../../prompts/extraction/atoms/system.txt");
+const ATOMS_SYSTEM_PROMPT_DEFAULT: &str = include_str!("../../prompts/extraction/atoms/system.txt");
 
 /// Resolves the atom-extraction system prompt through the prompt repository,
 /// falling back to the embedded default.

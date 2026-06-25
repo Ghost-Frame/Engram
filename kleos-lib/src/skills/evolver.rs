@@ -27,7 +27,10 @@ fn derive_system_prompt() -> std::borrow::Cow<'static, str> {
 }
 /// Resolve the skill-capture system prompt, honoring any runtime override.
 fn capture_system_prompt() -> std::borrow::Cow<'static, str> {
-    crate::llm::prompts::load_prompt("skills/capture_prompt/system", CAPTURE_SYSTEM_PROMPT_DEFAULT)
+    crate::llm::prompts::load_prompt(
+        "skills/capture_prompt/system",
+        CAPTURE_SYSTEM_PROMPT_DEFAULT,
+    )
 }
 
 const NAME_SHOT_SUFFIX: &str = "\n\nRespond with ONLY a short kebab-case slug (2 to 5 words, lowercase letters, digits, and hyphens). No punctuation, no quotes, no explanation, no code fences.";
