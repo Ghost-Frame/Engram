@@ -1312,12 +1312,25 @@ pub async fn hybrid_search_reranked(
     let arc_results = hybrid_search(db, pool_req).await?;
 
     let mut results = (*arc_results).clone();
-    if let Err(e) = reranker
+    // Time the rerank so its per-call latency is observable. The backends mark each
+    // cross-encoded row reranked=Some(true); we stamp those rows with the measured latency
+    // instead of the hardcoded reranker_ms=0.0 that hybrid_search sets, so the eval harness
+    // and callers can actually see the reranker's cost and reach.
+    let rerank_start = std::time::Instant::now();
+    match reranker
         .rerank_results(query_for_rerank, &mut results)
         .await
     {
+        Ok(()) => {
+            let rerank_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
+            for r in results.iter_mut() {
+                if r.reranked == Some(true) {
+                    r.reranker_ms = Some(rerank_ms);
+                }
+            }
+        }
         // On failure keep the fusion order; still trim the over-fetched pool to limit.
-        tracing::warn!("reranker failed in hybrid_search_reranked: {}", e);
+        Err(e) => tracing::warn!("reranker failed in hybrid_search_reranked: {}", e),
     }
     results.truncate(final_limit);
     Ok(Arc::new(results))

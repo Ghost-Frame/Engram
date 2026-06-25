@@ -206,7 +206,14 @@ impl Reranker for OnnxReranker {
         let k = self.top_k.min(results.len());
 
         for result in results.iter_mut().take(k) {
-            let doc = result.memory.content.clone();
+            // Prefer the best-matching chunk over the full memory content: a long memory
+            // truncated at the cross-encoder's 512-token window can hide the very passage
+            // that matched the query. Fall back to full content for short/unchunked memories.
+            let doc = result
+                .matching_chunk
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| result.memory.content.clone());
             let q = query.to_string();
             let inner = Arc::clone(&self.inner);
 
@@ -218,6 +225,9 @@ impl Reranker for OnnxReranker {
             // KLEOS_RERANKER_CE_WEIGHT tunable).
             let w = reranker_ce_weight();
             result.score = ce_score as f64 * w + result.score * (1.0 - w);
+            // Provenance: mark this row as cross-encoded so callers and the eval harness can
+            // see the reranker actually ran (hybrid_search defaults reranked=false).
+            result.reranked = Some(true);
         }
 
         results.sort_by(|a, b| {
@@ -383,7 +393,13 @@ impl Reranker for HttpReranker {
         let documents: Vec<String> = results
             .iter()
             .take(k)
-            .map(|r| r.memory.content.clone())
+            // Prefer the best-matching chunk over full content (see the ONNX backend).
+            .map(|r| {
+                r.matching_chunk
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| r.memory.content.clone())
+            })
             .collect();
 
         let format = self.format;
@@ -526,6 +542,8 @@ impl Reranker for HttpReranker {
         for item in &rerank_resp {
             if item.index < results.len() {
                 results[item.index].score = item.score * w + results[item.index].score * (1.0 - w);
+                // Provenance: mark this row as reranked (see the ONNX backend).
+                results[item.index].reranked = Some(true);
             }
         }
 

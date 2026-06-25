@@ -59,6 +59,22 @@ pub fn recency_weight() -> f64 {
     *RECENCY_WEIGHT_OVERRIDE
 }
 
+// Make the reciprocal-rank-fusion constant tunable at runtime, mirroring the weight
+// overrides above. Larger K flattens the rank-position weighting (rank-1 vs rank-10 differ
+// less); smaller K sharpens it. Exposing it lets the offline eval harness sweep RRF_K
+// without a rebuild; clamped so a typo cannot collapse the fusion denominator.
+static RRF_K_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_RRF_K")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|k| k.clamp(1.0, 1000.0))
+        .unwrap_or(RRF_K)
+});
+/// Runtime RRF constant (KLEOS_RRF_K override, clamped to [1, 1000]).
+pub fn rrf_k() -> f64 {
+    *RRF_K_OVERRIDE
+}
+
 /// Extra classifier keywords loaded once from env vars at first use.
 /// Each var is a comma-separated list of lowercase phrases that are
 /// merged with the built-in keyword arrays inside `classify_question_mixed`.
@@ -506,7 +522,7 @@ pub fn extract_query_date(query: &str) -> Option<String> {
 
 /// Computes a reciprocal-rank score for one result position.
 pub fn rrf_score(rank: usize) -> f64 {
-    1.0 / (RRF_K + rank as f64 + 1.0)
+    1.0 / (rrf_k() + rank as f64 + 1.0)
 }
 
 /// Boosts memories that are close to the query date.
