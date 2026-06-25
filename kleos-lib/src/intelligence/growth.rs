@@ -78,39 +78,33 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
     .await
 }
 
-/// Service-specific reflection prompts.
+/// Embedded defaults for the service-specific reflection system prompts.
+/// Each is overridable at runtime via the prompt repository under
+/// `growth/<service>/system.txt`.
+const ENGRAM_REFLECTION_DEFAULT: &str =
+    include_str!("../../prompts/growth/engram/system.txt");
+const CLAUDE_CODE_REFLECTION_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/system.txt");
+const EIDOLON_REFLECTION_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon/system.txt");
+const DEFAULT_REFLECTION_DEFAULT: &str =
+    include_str!("../../prompts/growth/default/system.txt");
+
+/// Service-specific reflection prompts. An explicit `prompt_override` wins;
+/// otherwise the per-service embedded default is resolved through the prompt
+/// repository so operators can override it at runtime.
 fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> String {
     if let Some(override_prompt) = prompt_override {
         return override_prompt.to_string();
     }
 
-    match service {
-        "engram" => "You are Kleos's internal self-reflection process. Kleos is a persistent memory system.\n\
-            Examine the recent activity and ask yourself:\n\
-            - Which memories get searched most vs never?\n\
-            - What contradictions persist unresolved?\n\
-            - What knowledge gaps exist (frequent searches with no results)?\n\
-            - What categories are growing fastest?\n\
-            - Are memory quality patterns improving or degrading?".to_string(),
-
-        "claude-code" => "You are the self-reflection process for Claude Code agent sessions.\n\
-            Examine the session activity and ask yourself:\n\
-            - Did a particular approach to a task work well or poorly?\n\
-            - Did the user correct a pattern that should be remembered?\n\
-            - Was there drift from expected behavior? Why?\n\
-            - Was something learned about the codebase or infrastructure?\n\
-            - Was there a communication style the user preferred?".to_string(),
-
-        "eidolon" => "You are Eidolon's self-reflection process. Eidolon is the daemon that orchestrates the neurosymbolic brain.\n\
-            Examine the dream cycle results and ask yourself:\n\
-            - What did this dream cycle reveal about memory patterns?\n\
-            - Which patterns keep merging (over-correlated)?\n\
-            - What connections are surprising?\n\
-            - Is the substrate getting better or worse at targeted activation?".to_string(),
-
-        _ => "You are a self-reflection process for a service in the Syntheos ecosystem.\n\
-            Examine the recent activity and extract ONE useful observation about patterns, improvements, or concerns.".to_string(),
-    }
+    let (id, default) = match service {
+        "engram" => ("growth/engram/system", ENGRAM_REFLECTION_DEFAULT),
+        "claude-code" => ("growth/claude_code/system", CLAUDE_CODE_REFLECTION_DEFAULT),
+        "eidolon" => ("growth/eidolon/system", EIDOLON_REFLECTION_DEFAULT),
+        _ => ("growth/default/system", DEFAULT_REFLECTION_DEFAULT),
+    };
+    crate::llm::prompts::load_prompt(id, default).into_owned()
 }
 
 /// Validate that an observation is meaningful (not empty, not meta-commentary).
