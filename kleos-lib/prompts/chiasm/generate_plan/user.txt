@@ -1,0 +1,7 @@
+Create a concise step-by-step execution plan for this task:
+
+Title: {{title}}
+Project: {{project}}
+Agent: {{agent}}
+{{expected_block}}{{summary_block}}
+Respond with a numbered list of concrete steps. Be specific and actionable.
