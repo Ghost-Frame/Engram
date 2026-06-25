@@ -387,17 +387,23 @@ struct LlmAtomItem {
     confidence: Option<f64>,
 }
 
+/// Embedded default for the atom-extraction system prompt, overridable at
+/// runtime via the prompt repository under `extraction/atoms/system.txt`.
+const ATOMS_SYSTEM_PROMPT_DEFAULT: &str =
+    include_str!("../../prompts/extraction/atoms/system.txt");
+
+/// Resolves the atom-extraction system prompt through the prompt repository,
+/// falling back to the embedded default.
+fn atoms_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("extraction/atoms/system", ATOMS_SYSTEM_PROMPT_DEFAULT)
+}
+
 /// Attempts to extract atoms from `text` via an Ollama-compatible LLM endpoint.
 ///
 /// On any failure (network, parse, timeout) this function logs a warning and
 /// returns an empty vector -- callers should fall back to [`extract_heuristic`].
 pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
-    let system_prompt = "You are a semantic extraction engine. \
-        Given text, extract key atoms as JSON. \
-        Return ONLY a JSON object with an \"atoms\" array. \
-        Each atom has: atom_type (decision|constraint|task|entity|question|belief|relation), \
-        content (string), confidence (0.0-1.0). \
-        Extract only atoms clearly present in the text. Be concise.";
+    let system_prompt = atoms_system_prompt();
 
     let body = serde_json::json!({
         "model": "llama3",
