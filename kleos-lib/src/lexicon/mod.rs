@@ -101,11 +101,16 @@ pub fn word_class(lang: &str, class: &str) -> Vec<String> {
 }
 
 /// Convenience: pipe-joined alternation suitable for direct interpolation
-/// into a regex template. The values are emitted verbatim -- callers that
-/// need regex-escaping should escape themselves (a future change may add a
-/// helper once the consumer call sites are concrete).
+/// into a regex template. Each word is `regex::escape`-ed so a lexicon entry
+/// containing regex metacharacters (`.`, `*`, `(`, and the like) cannot
+/// produce a broken or injectable pattern. For inflected matching that also
+/// stems each word, use [`word_class_alternation_stemmed`].
 pub fn word_class_alternation(lang: &str, class: &str) -> String {
-    word_class(lang, class).join("|")
+    word_class(lang, class)
+        .iter()
+        .map(|w| regex::escape(w))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// Pipe-joined alternation of the **stemmed** words for a class. The
