@@ -1,0 +1,4 @@
+# Prompt baselines are embedded verbatim via include_str! and must stay
+# byte-identical across platforms. Force LF so a CRLF checkout on Windows
+# cannot alter the compiled-in default prompts.
+* text eol=lf
