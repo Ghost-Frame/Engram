@@ -11,9 +11,8 @@
 
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::KeyValue;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use std::sync::OnceLock;
 use tracing_subscriber::layer::SubscriberExt;
@@ -23,13 +22,19 @@ use tracing_subscriber::EnvFilter;
 /// RAII guard that holds the OTel tracer provider (if one was installed) and
 /// shuts it down on drop. Ignored when OTLP export is not configured.
 pub struct OtelGuard {
-    provider: Option<TracerProvider>,
+    provider: Option<SdkTracerProvider>,
 }
 
+/// Flush and tear down the tracer provider when the guard goes out of scope.
 impl Drop for OtelGuard {
+    /// Shut down the owned provider (if any), flushing pending spans.
     fn drop(&mut self) {
-        if self.provider.take().is_some() {
-            global::shutdown_tracer_provider();
+        // The 0.30+ SDK replaced the global `shutdown_tracer_provider` helper
+        // with a per-provider `shutdown`, which flushes the batch span
+        // processor and joins its background thread. Best-effort: a failed
+        // flush at process exit must not panic.
+        if let Some(provider) = self.provider.take() {
+            let _ = provider.shutdown();
         }
     }
 }
@@ -112,22 +117,27 @@ pub fn init_tracing(service_name: &str, default_filter: &str) -> OtelGuard {
     }
 }
 
+/// Build an OTLP/gRPC tracer provider exporting to `endpoint`, tagged with
+/// `service.name = service_name`. Uses the default batch span processor.
 fn build_otlp_provider(
     service_name: &str,
     endpoint: &str,
-) -> Result<TracerProvider, Box<dyn std::error::Error>> {
+) -> Result<SdkTracerProvider, Box<dyn std::error::Error>> {
     let exporter = SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()?;
 
-    let resource = Resource::new(vec![KeyValue::new(
-        "service.name",
-        service_name.to_string(),
-    )]);
+    // `Resource::new(vec![..])` became private in 0.30; the builder is the
+    // supported way to set `service.name`. The batch span processor now runs
+    // on its own dedicated thread, so `with_batch_exporter` no longer takes a
+    // runtime argument.
+    let resource = Resource::builder()
+        .with_service_name(service_name.to_string())
+        .build();
 
-    let provider = TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
         .with_resource(resource)
         .build();
     Ok(provider)
