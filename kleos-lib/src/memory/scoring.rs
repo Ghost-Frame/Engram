@@ -26,9 +26,17 @@ static DECAY_FLOOR_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
 pub fn decay_floor() -> f64 {
     *DECAY_FLOOR_OVERRIDE
 }
+/// Default weight applied to the PageRank graph-centrality boost in the score chain.
 pub const PAGERANK_WEIGHT: f64 = 0.15;
+/// Default minimum vector-cosine score a candidate must clear to enter the vector channel.
 pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
-pub const RRF_K: f64 = 60.0;
+/// Default Reciprocal Rank Fusion constant. Larger K flattens the rank-position weighting
+/// (later ranks contribute relatively more); smaller K sharpens toward the top. Raised from
+/// 60 to 90 after offline-harness cross-validation: BEIR SciFact recall@10 0.936 -> 0.956 and
+/// LoCoMo metrics all up, with no golden-FTS-gate regression (single-channel fusion is
+/// rank-monotonic in K). Overridable at runtime via KLEOS_RRF_K; see `rrf_k()`.
+pub const RRF_K: f64 = 90.0;
+/// Default weight applied to the recency boost in the score chain.
 pub const RECENCY_WEIGHT: f64 = 0.15;
 
 // 2.3: make the two global ranking-boost weights tunable at runtime without a rebuild,
