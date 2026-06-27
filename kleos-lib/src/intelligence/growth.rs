@@ -353,18 +353,20 @@ fn score_observation(
     };
 
     // Recency: decay over days. 1.0 at age=0, ~0.5 at 7 days, ~0.2 at 30 days.
-    let recency_score = {
-        let days = chrono::Utc::now()
-            .signed_duration_since(
-                chrono::NaiveDateTime::parse_from_str(&obs.created_at, "%Y-%m-%d %H:%M:%S")
-                    .map(|dt| dt.and_utc())
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-            )
-            .num_seconds()
-            .max(0) as f64
-            / 86_400.0;
-        1.0 / (1.0 + days * 0.1)
-    };
+    // An unparseable timestamp sinks the row (recency 0.0) instead of falling
+    // back to "now", which would wrongly float a malformed observation to the top.
+    let recency_score =
+        match chrono::NaiveDateTime::parse_from_str(&obs.created_at, "%Y-%m-%d %H:%M:%S") {
+            Ok(dt) => {
+                let days = chrono::Utc::now()
+                    .signed_duration_since(dt.and_utc())
+                    .num_seconds()
+                    .max(0) as f64
+                    / 86_400.0;
+                1.0 / (1.0 + days * 0.1)
+            }
+            Err(_) => 0.0,
+        };
 
     keyword_score * 0.6 + recency_score * 0.4
 }
@@ -581,6 +583,25 @@ mod tests {
         assert!(
             score_new > score_old,
             "newer={score_new:.3} should beat older={score_old:.3}"
+        );
+    }
+
+    /// A malformed timestamp yields zero recency instead of falling back to
+    /// "now", so a bad-`created_at` row cannot float to the top on recency.
+    #[test]
+    fn test_score_observation_unparseable_timestamp_sinks() {
+        let empty_kw = extract_keywords("");
+        let valid_recent = make_obs("some observation about memory", "2099-01-01 00:00:00");
+        let malformed = make_obs("some observation about memory", "not-a-timestamp");
+        let score_valid = score_observation(&valid_recent, &empty_kw);
+        let score_bad = score_observation(&malformed, &empty_kw);
+        assert_eq!(
+            score_bad, 0.0,
+            "unparseable timestamp must score 0 on an empty query, not max recency"
+        );
+        assert!(
+            score_valid > score_bad,
+            "valid recent={score_valid:.3} must beat malformed-timestamp row={score_bad:.3}"
         );
     }
 
