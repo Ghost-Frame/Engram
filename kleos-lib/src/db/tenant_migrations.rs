@@ -397,6 +397,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // (virtual table + sync triggers + rebuild); structured_facts.user_id was already re-added
     // and backfilled at v67, so no owner backfill arm is needed here.
     tenant_migration!(76, "facts_fts", apply_schema_v76_facts_fts),
+    // Rebuild the tenant external-content FTS tables with the language-neutral
+    // unicode61+diacritics tokenizer (mirror of global migration 94).
+    tenant_migration!(
+        77,
+        "fts_unicode61_diacritics",
+        apply_schema_v77_fts_unicode61
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -716,6 +723,12 @@ tenant_migration_sql!(
     apply_schema_v76_facts_fts,
     "v76",
     "../tenant/schema_v76_facts_fts.sql"
+);
+// Tenant v77: rebuild FTS tables with the unicode61+diacritics tokenizer.
+tenant_migration_sql!(
+    apply_schema_v77_fts_unicode61,
+    "v77",
+    "../tenant/schema_v77_fts_unicode61.sql"
 );
 tenant_migration_sql!(
     apply_schema_v55_memories_readd,
@@ -1474,6 +1487,61 @@ pub fn latest_version() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tenant migration v77: rebuilding the shard FTS tables with the
+    /// unicode61+diacritics tokenizer must preserve row parity, fold diacritics
+    /// for keyword match, and leave the base-table sync triggers firing. Migrates
+    /// to v76 (pre-change), seeds non-English rows, then applies v77.
+    #[test]
+    fn tenant_migration_77_rebuild_parity_folds_diacritics_triggers() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations_to(&conn, None, 76).unwrap();
+        conn.execute(
+            "INSERT INTO memories (content) VALUES ('Häuser stehen am Fluss')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (content) VALUES ('La forêt française est dense')",
+            [],
+        )
+        .unwrap();
+
+        // Apply v77 (the FTS tokenizer rebuild).
+        run_tenant_migrations_to(&conn, None, 77).unwrap();
+
+        let base: i64 = conn
+            .query_row("SELECT count(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM memories_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts, base, "tenant FTS row parity after v77 rebuild");
+
+        let de: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'hauser'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(de, 1, "'hauser' folds to match 'Häuser' after v77");
+
+        // Trigger still fires after the rebuild.
+        conn.execute(
+            "INSERT INTO memories (content) VALUES ('Müller wohnt in München')",
+            [],
+        )
+        .unwrap();
+        let trig: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'munchen'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(trig, 1, "tenant trigger fires post-v77 and folds 'München'");
+    }
 
     /// Verifies that a fresh in-memory database lands at the latest migration version.
     #[test]
