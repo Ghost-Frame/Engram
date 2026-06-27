@@ -2,7 +2,7 @@
 //!
 //! Compatible with private cred's data format when using legacy mode.
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -517,19 +517,37 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn detect_get_access_context() -> GetAccessContext {
-    if env_truthy(AI_AGENT_ENV) || env_truthy(CRED_AGENT_CONTEXT_ENV) {
+/// Pure access-context policy, split out so the rules are unit-testable without
+/// touching process env or the real terminal.
+///
+/// `cred get` prints a plaintext secret. The old policy only recognised agents
+/// by env signals and otherwise fell through to `Interactive` (print freely),
+/// so any subprocess that did not set a known agent var leaked the secret. The
+/// robust signal is interactivity: a human runs `cred get` attached to a real
+/// terminal (stdout is a TTY); an agent or script captures stdout through a
+/// pipe. Captured stdout therefore requires a session grant -- fail closed --
+/// while a real terminal still prints. Authorized non-interactive use mints a
+/// grant via `cred session start`.
+fn classify_get_access_context(
+    agent_env: bool,
+    managed_env: bool,
+    stdout_is_tty: bool,
+) -> GetAccessContext {
+    if agent_env {
         return GetAccessContext::Agent;
     }
-
-    if std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok()
-        || std::env::var("CLAUDE_SESSION_ID").is_ok()
-        || std::env::var("KLEOS_SESSION_ID").is_ok()
-    {
+    if managed_env || !stdout_is_tty {
         return GetAccessContext::ManagedSession;
     }
-
     GetAccessContext::Interactive
+}
+
+fn detect_get_access_context() -> GetAccessContext {
+    let agent_env = env_truthy(AI_AGENT_ENV) || env_truthy(CRED_AGENT_CONTEXT_ENV);
+    let managed_env = std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok()
+        || std::env::var("CLAUDE_SESSION_ID").is_ok()
+        || std::env::var("KLEOS_SESSION_ID").is_ok();
+    classify_get_access_context(agent_env, managed_env, io::stdout().is_terminal())
 }
 
 fn default_get_session_ttl_secs() -> i64 {
@@ -3534,6 +3552,32 @@ mod get_session_guard_tests {
         let err = enforce_get_access_policy(GetAccessContext::ManagedSession, false).unwrap_err();
         assert!(err.to_string().contains("requires a valid session grant"));
         assert!(enforce_get_access_policy(GetAccessContext::ManagedSession, true).is_ok());
+    }
+
+    #[test]
+    fn non_interactive_stdout_requires_managed_session() {
+        // Agent env hard-blocks regardless of TTY.
+        assert_eq!(
+            classify_get_access_context(true, false, true),
+            GetAccessContext::Agent
+        );
+        // No agent env: a real interactive terminal prints freely.
+        assert_eq!(
+            classify_get_access_context(false, false, true),
+            GetAccessContext::Interactive
+        );
+        // Captured (non-TTY) stdout -- an agent or script reading the output --
+        // requires a session grant. This is the fail-closed gate that stops
+        // plaintext leaking to a process that did not set an agent env var.
+        assert_eq!(
+            classify_get_access_context(false, false, false),
+            GetAccessContext::ManagedSession
+        );
+        // A managed-session env signal requires a grant even at a TTY.
+        assert_eq!(
+            classify_get_access_context(false, true, true),
+            GetAccessContext::ManagedSession
+        );
     }
 
     #[test]
