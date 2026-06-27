@@ -1,0 +1,14 @@
+{"query": "Quelles vitesses maximales sont autorisées sur les autoroutes françaises sous la pluie ?", "expect_id": 1}
+{"query": "Comment est remboursée une consultation chez le médecin généraliste par l'Assurance maladie ?", "expect_id": 5}
+{"query": "Quels ingrédients entrent dans la composition d'une quiche lorraine authentique ?", "expect_id": 8}
+{"query": "Comment installer Python sur Windows et l'ajouter automatiquement au PATH ?", "expect_id": 11}
+{"query": "Quel document d'identité est suffisant pour prendre l'avion à destination d'un pays de l'UE ?", "expect_id": 14}
+{"query": "Quel temps est prévu cet après-midi en Île-de-France ?", "expect_id": 17}
+{"query": "Quelles pièces justificatives sont exigées pour ouvrir un compte courant en France en tant qu'étranger ?", "expect_id": 20}
+{"query": "Quel événement symbolique a marqué le début de la Révolution française ?", "expect_id": 23}
+{"query": "Dans quels cas l'arbitre accorde-t-il un penalty au cours d'un match de football ?", "expect_id": 26}
+{"query": "Qui a écrit Les Misérables et quel est le nom du protagoniste principal ?", "expect_id": 29}
+{"query": "Quels sont les symptômes grippaux les plus fréquents en période hivernale ?", "expect_id": 32}
+{"query": "Comment s'affilier au régime général de la Sécurité sociale lors de son premier emploi ?", "expect_id": 7}
+{"query": "Quelles vaccinations sont recommandées pour les nourrissons dès les premiers mois de vie ?", "expect_id": 34}
+{"query": "Comment les bacheliers sont-ils évalués depuis la réforme du lycée ?", "expect_id": 36}

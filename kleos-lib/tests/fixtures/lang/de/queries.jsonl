@@ -1,0 +1,14 @@
+{"query": "Übernimmt die gesetzliche Krankenkasse Kosten beim Zahnarzt?", "expect_id": 1}
+{"query": "Wie schnell darf man auf der Autobahn in Deutschland fahren?", "expect_id": 5}
+{"query": "Was braucht man, um selbst Brot zu backen?", "expect_id": 9}
+{"query": "Wie funktioniert ein Werkzeug zur Versionsverwaltung von Quellcode?", "expect_id": 13}
+{"query": "Wie lange fährt der Zug von München nach Hamburg?", "expect_id": 16}
+{"query": "Welches Wetter ist in Bayern am Wochenende zu erwarten?", "expect_id": 19}
+{"query": "Welche Unternehmen sind im DAX an der Frankfurter Börse gelistet?", "expect_id": 22}
+{"query": "Wann und warum wurde die Berliner Mauer geöffnet?", "expect_id": 25}
+{"query": "Welcher Fußballclub hat die Bundesliga am häufigsten gewonnen?", "expect_id": 28}
+{"query": "Welche Vorteile bietet das Lesen von Büchern für Gesundheit und Wohlbefinden?", "expect_id": 31}
+{"query": "Was deckt eine Hausratversicherung bei Einbruch ab?", "expect_id": 34}
+{"query": "Welche Geschwindigkeit ist auf Straßen in Wohngebieten erlaubt?", "expect_id": 6}
+{"query": "Wie hoch ist der Beitrag zur Krankenversicherung in Deutschland?", "expect_id": 3}
+{"query": "Warum scheiterte die erste deutsche Demokratie in der Weimarer Republik?", "expect_id": 27}

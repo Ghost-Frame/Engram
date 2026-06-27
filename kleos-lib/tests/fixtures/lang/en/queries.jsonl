@@ -1,0 +1,14 @@
+{"query": "dental coverage health insurance", "expect_id": 1}
+{"query": "highway speed limit miles per hour", "expect_id": 5}
+{"query": "cooking pasta al dente", "expect_id": 8}
+{"query": "git commit message best practices", "expect_id": 11}
+{"query": "passport validity international travel", "expect_id": 14}
+{"query": "hurricane warning evacuation zones", "expect_id": 17}
+{"query": "compound interest savings growth", "expect_id": 20}
+{"query": "Napoleon final military defeat", "expect_id": 23}
+{"query": "marathon training schedule weeks", "expect_id": 26}
+{"query": "running shoes", "expect_id": 29}
+{"query": "cars", "expect_id": 30}
+{"query": "studies", "expect_id": 31}
+{"query": "better pricing", "expect_id": 32}
+{"query": "flash flood river overflow", "expect_id": 19}
