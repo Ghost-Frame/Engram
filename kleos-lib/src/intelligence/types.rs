@@ -335,6 +335,16 @@ pub struct GrowthObservation {
     pub created_at: String,
 }
 
+/// A growth observation ranked by relevance to a query, for prompt injection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredGrowthObservation {
+    pub id: i64,
+    pub content: String,
+    pub source: String,
+    pub score: f64,
+    pub created_at: String,
+}
+
 // --- LLM options ---
 
 /// Options for LLM calls.

@@ -10,6 +10,7 @@ use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available};
 use crate::intelligence::types::{
     GrowthObservation, GrowthReflectRequest, GrowthReflectResult, LlmOptions,
+    ScoredGrowthObservation,
 };
 use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
@@ -315,6 +316,98 @@ pub async fn reflect(
     })
 }
 
+/// Extract lowercase keyword tokens from text, filtering short words and
+/// common English/German stopwords to reduce noise in overlap scoring.
+fn extract_keywords(text: &str) -> std::collections::HashSet<String> {
+    const STOPWORDS: &[&str] = &[
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "that", "this", "these", "those", "i", "my", "we", "our", "it", "its", "in", "on", "at",
+        "to", "for", "of", "and", "or", "but", "not", "with", "from", "by", "as",
+        // German
+        "ich", "mein", "wir", "unser", "es", "ist", "sind", "war", "waren", "die", "der", "das",
+        "ein", "eine", "und", "oder", "aber", "nicht", "mit", "von", "zu", "für", "als", "aus",
+        "bei", "nach", "über",
+    ];
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(|w| w.to_lowercase())
+        .filter(|w| !STOPWORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// Score a single observation against query keywords.
+/// Returns a value in [0.0, 1.0]: keyword_overlap * 0.6 + recency * 0.4.
+fn score_observation(
+    obs: &GrowthObservation,
+    query_keywords: &std::collections::HashSet<String>,
+) -> f64 {
+    let obs_keywords = extract_keywords(&obs.content);
+
+    let keyword_score = if query_keywords.is_empty() || obs_keywords.is_empty() {
+        0.0
+    } else {
+        let overlap = query_keywords.intersection(&obs_keywords).count() as f64;
+        let denominator = (query_keywords.len() as f64).sqrt() * (obs_keywords.len() as f64).sqrt();
+        overlap / denominator
+    };
+
+    // Recency: decay over days. 1.0 at age=0, ~0.5 at 7 days, ~0.2 at 30 days.
+    let recency_score = {
+        let days = chrono::Utc::now()
+            .signed_duration_since(
+                chrono::NaiveDateTime::parse_from_str(&obs.created_at, "%Y-%m-%d %H:%M:%S")
+                    .map(|dt| dt.and_utc())
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            )
+            .num_seconds()
+            .max(0) as f64
+            / 86_400.0;
+        1.0 / (1.0 + days * 0.1)
+    };
+
+    keyword_score * 0.6 + recency_score * 0.4
+}
+
+/// Retrieve the top-N growth observations most relevant to `query`.
+///
+/// Fetches a candidate pool (up to `pool_size` recent observations), scores
+/// each by keyword overlap and recency, and returns the top `limit` results.
+/// When `query` is empty all scoring collapses to pure recency.
+#[tracing::instrument(skip(db), fields(user_id, limit))]
+pub async fn context_growth(
+    db: &Database,
+    user_id: i64,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ScoredGrowthObservation>> {
+    let pool_size = (limit * 10).min(200);
+    let observations = list_observations(db, user_id, pool_size).await?;
+
+    let query_keywords = extract_keywords(query);
+    let mut scored: Vec<(f64, GrowthObservation)> = observations
+        .into_iter()
+        .map(|obs| {
+            let score = score_observation(&obs, &query_keywords);
+            (score, obs)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(scored
+        .into_iter()
+        .take(limit)
+        .map(|(score, obs)| ScoredGrowthObservation {
+            id: obs.id,
+            content: obs.content,
+            source: obs.source,
+            score: (score * 1000.0).round() / 1000.0,
+            created_at: obs.created_at,
+        })
+        .collect())
+}
+
 /// Tests the growth reflection helpers and validation rules.
 #[cfg(test)]
 mod tests {
@@ -359,5 +452,76 @@ mod tests {
     fn test_get_prompt_default() {
         let p = get_prompt_for_service("unknown_service", None);
         assert!(p.contains("self-reflection process"));
+    }
+
+    /// Stopwords and short words are excluded from keyword extraction.
+    #[test]
+    fn test_extract_keywords_filters_stopwords() {
+        let kw = extract_keywords("the quick brown fox and a dog");
+        assert!(!kw.contains("the"));
+        assert!(!kw.contains("and"));
+        assert!(kw.contains("fox")); // len=3 passes the >2 filter and is not a stopword
+        assert!(kw.contains("quick"));
+        assert!(kw.contains("brown"));
+    }
+
+    /// Words of length <= 2 are always filtered out.
+    #[test]
+    fn test_extract_keywords_min_length() {
+        let kw = extract_keywords("I am ok go now");
+        assert!(!kw.contains("i"));
+        assert!(!kw.contains("am"));
+        assert!(!kw.contains("ok"));
+        assert!(!kw.contains("go"));
+    }
+
+    /// German stopwords are excluded.
+    #[test]
+    fn test_extract_keywords_german_stopwords() {
+        let kw = extract_keywords("ich habe eine neue Erkenntnis gemacht");
+        assert!(!kw.contains("ich"));
+        assert!(!kw.contains("eine"));
+        assert!(kw.contains("neue"));
+        assert!(kw.contains("erkenntnis"));
+        assert!(kw.contains("gemacht"));
+    }
+
+    fn make_obs(content: &str, created_at: &str) -> GrowthObservation {
+        GrowthObservation {
+            id: 1,
+            content: content.to_string(),
+            source: "test".to_string(),
+            importance: 7,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    /// A perfectly matching observation scores higher than an unrelated one.
+    #[test]
+    fn test_score_observation_keyword_ranking() {
+        let query_kw = extract_keywords("docker compose sidecar");
+        let recent = "2099-01-01 00:00:00"; // far future = maximum recency
+        let relevant = make_obs("fixing docker compose sidecar configuration", recent);
+        let irrelevant = make_obs("the German lexicon was migrated to toml", recent);
+        let score_rel = score_observation(&relevant, &query_kw);
+        let score_irrel = score_observation(&irrelevant, &query_kw);
+        assert!(
+            score_rel > score_irrel,
+            "relevant={score_rel:.3} should beat irrelevant={score_irrel:.3}"
+        );
+    }
+
+    /// An empty query collapses scoring to pure recency.
+    #[test]
+    fn test_score_observation_empty_query_uses_recency() {
+        let empty_kw = extract_keywords("");
+        let newer = make_obs("some observation about memory", "2099-06-01 12:00:00");
+        let older = make_obs("some observation about memory", "2020-01-01 00:00:00");
+        let score_new = score_observation(&newer, &empty_kw);
+        let score_old = score_observation(&older, &empty_kw);
+        assert!(
+            score_new > score_old,
+            "newer={score_new:.3} should beat older={score_old:.3}"
+        );
     }
 }
