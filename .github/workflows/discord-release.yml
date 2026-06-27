@@ -54,5 +54,5 @@ jobs:
           rel=$(jq -cn --arg t "$PROJECT $VERSION released" --arg u "$REL_URL" \
             --arg d "${REL_NAME:-$PROJECT $VERSION is out.}" --arg ts "$PUBLISHED" --argjson c "$COLOR" \
             '{title:$t,url:$u,description:$d,color:$c,timestamp:$ts}')
-          curl -sS --fail-with-body -X POST "$RELEASES_WEBHOOK" -H "Content-Type: application/json" --data "$(jq -cn --argjson e "$rel" '{embeds:[$e]}')"
-          curl -sS --fail-with-body -X POST "$CHANGELOG_WEBHOOK" -H "Content-Type: application/json" --data "$(jq -cn --argjson e "$chg" '{embeds:[$e]}')"
+          curl -sS --fail-with-body -X POST "$RELEASES_WEBHOOK" -H "Content-Type: application/json" --data-raw "$(jq -cn --argjson e "$rel" '{embeds:[$e]}')"
+          curl -sS --fail-with-body -X POST "$CHANGELOG_WEBHOOK" -H "Content-Type: application/json" --data-raw "$(jq -cn --argjson e "$chg" '{embeds:[$e]}')"
