@@ -6,6 +6,11 @@ on:
   delete:
   workflow_dispatch:
 
+# Least-privilege GITHUB_TOKEN: the mirror only reads the repo (checkout) and
+# pushes to an external remote via MIRROR_TOKEN, so read-only contents suffices.
+permissions:
+  contents: read
+
 # Serialize mirror runs. Every run force-pushes the FULL set of branches and
 # tags, so the newest run always carries complete state -- cancel any older
 # in-flight run rather than letting two concurrent force-pushes race on the
