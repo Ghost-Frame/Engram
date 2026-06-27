@@ -1,5 +1,5 @@
 //! File watcher for Claude Code session JSONL files.
-//! Monitors ~/.claude/projects/*/sessions/*.jsonl for changes,
+//! Monitors ~/.claude/projects/*/*.jsonl for changes,
 //! extracts assistant text turns, feeds them through the LLM quality gate,
 //! and stores only curated memories to Kleos.
 
@@ -296,13 +296,10 @@ fn get_watch_dir() -> PathBuf {
 }
 
 /// Parse project and session_id from a path like:
-/// ~/.claude/projects/<proj-hash>/sessions/<session-id>.jsonl
+/// ~/.claude/projects/<proj-hash>/<session-id>.jsonl
 fn parse_session_path(path: &Path) -> Option<(String, String)> {
     let stem = path.file_stem()?.to_str()?.to_string();
-    let mut ancestors = path.ancestors();
-    ancestors.next(); // the file itself
-    let _sessions_dir = ancestors.next()?; // sessions/
-    let project_dir = ancestors.next()?; // <project-hash>/
+    let project_dir = path.parent()?;
     let project = project_dir.file_name()?.to_str()?.to_string();
     Some((project, stem))
 }
