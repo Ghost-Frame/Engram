@@ -9,6 +9,7 @@ import {
   type GraphSearchResult,
   type MemoryDetail
 } from '$lib/api/graph';
+import { selectRenderEdges } from '$lib/graph/selectRenderEdges';
 import './graph.css';
 
 // ── Working types ──────────────────────────────────────────
@@ -472,7 +473,10 @@ export function Graph() {
         threeRef = THREE;
 
         const [graphData, commData, statsData] = await Promise.all([
-          getMemoryGraph(3, 50000),
+          // min_component=2 prunes singleton "dust" (unlinked memories, mostly
+          // session auto-captures) so the view shows connected structure rather
+          // than a starfield of disconnected points.
+          getMemoryGraph(3, 50000, 2),
           getCommunities(),
           getStats()
         ]);
@@ -503,18 +507,22 @@ export function Graph() {
         }
 
         // Performance: a browser can't draw tens of thousands of edges (or
-        // animate that many sprites) smoothly. Past a threshold we render only
-        // the STRONGEST edges -- they carry the structure -- and turn off the
-        // per-frame extras (flow particles, breathing); nodes collapse to a
-        // single GPU point cloud (see below). The Edge Floor slider filters
-        // within the rendered set. All thresholds are constants, so this scales
-        // on its own.
+        // animate that many sprites) smoothly. Past a threshold we render only a
+        // bounded subset and turn off the per-frame extras (flow particles,
+        // breathing); nodes collapse to a single GPU point cloud (see below).
+        // The Edge Floor slider filters within the rendered set. All thresholds
+        // are constants, so this scales on its own.
+        //
+        // The subset is chosen to PRESERVE CONNECTIVITY (see selectRenderEdges):
+        // a plain top-N-by-weight slice silently drops every edge of any node
+        // whose links all sit below the global cutoff, fragmenting clusters into
+        // disconnected dust. selectRenderEdges keeps each node's strongest edge
+        // first, then fills the budget by weight -- so the structure survives the
+        // cap. The cap is higher than the old flat 9k because the skeleton pass
+        // spends most of its budget on the connective edges that actually matter.
         const big = nodes.length > 2500;
-        const MAX_RENDER_EDGES = 9000;
-        const edges: GLink[] =
-          big && allEdges.length > MAX_RENDER_EDGES
-            ? [...allEdges].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, MAX_RENDER_EDGES)
-            : allEdges;
+        const MAX_RENDER_EDGES = 14000;
+        const edges: GLink[] = big ? selectRenderEdges(allEdges, MAX_RENDER_EDGES) : allEdges;
         // Report what's actually drawn so the header isn't misleading.
         setEdgeCount(edges.length);
 
