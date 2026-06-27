@@ -835,9 +835,15 @@ async fn run_pipeline_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = default_pipeline(state.config.consolidation_enabled)
-        .run(&db, auth.effective_user_id())
-        .await?;
+    let report = default_pipeline(
+        state.config.consolidation_enabled,
+        state
+            .config
+            .auto_link_enabled
+            .then_some(state.config.auto_link_batch),
+    )
+    .run(&db, auth.effective_user_id())
+    .await?;
     Ok(Json(json!(report)))
 }
 
