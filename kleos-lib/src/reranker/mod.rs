@@ -206,7 +206,14 @@ impl Reranker for OnnxReranker {
         let k = self.top_k.min(results.len());
 
         for result in results.iter_mut().take(k) {
-            let doc = result.memory.content.clone();
+            // Prefer the best-matching chunk over the full memory content: a long memory
+            // truncated at the cross-encoder's 512-token window can hide the very passage
+            // that matched the query. Fall back to full content for short/unchunked memories.
+            let doc = result
+                .matching_chunk
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| result.memory.content.clone());
             let q = query.to_string();
             let inner = Arc::clone(&self.inner);
 
@@ -214,10 +221,18 @@ impl Reranker for OnnxReranker {
                 .await
                 .map_err(|e| EngError::Internal(format!("spawn_blocking join error: {}", e)))??;
 
+            // L2 ABSTAIN: preserve the raw cross-encoder score (already a sigmoid of
+            // the logit; see `score_pair`) BEFORE the fusion blend, so the abstain
+            // gate reads an uncontaminated [0,1] confidence rather than the compound
+            // `score` (which is entangled with decay/pagerank/recency).
+            result.ce_confidence = Some(ce_score as f64);
             // Blend cross-encoder with the original fusion score (default 70/30,
             // KLEOS_RERANKER_CE_WEIGHT tunable).
             let w = reranker_ce_weight();
             result.score = ce_score as f64 * w + result.score * (1.0 - w);
+            // Provenance: mark this row as cross-encoded so callers and the eval harness can
+            // see the reranker actually ran (hybrid_search defaults reranked=false).
+            result.reranked = Some(true);
         }
 
         results.sort_by(|a, b| {
@@ -383,7 +398,13 @@ impl Reranker for HttpReranker {
         let documents: Vec<String> = results
             .iter()
             .take(k)
-            .map(|r| r.memory.content.clone())
+            // Prefer the best-matching chunk over full content (see the ONNX backend).
+            .map(|r| {
+                r.matching_chunk
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| r.memory.content.clone())
+            })
             .collect();
 
         let format = self.format;
@@ -525,7 +546,20 @@ impl Reranker for HttpReranker {
         let w = reranker_ce_weight();
         for item in &rerank_resp {
             if item.index < results.len() {
+                // L2 ABSTAIN: capture a [0,1]-normalized cross-encoder confidence
+                // BEFORE the blend. Cohere returns a relevance score already in
+                // range; TEI returns a raw logit, so map it through a sigmoid so a
+                // single abstain threshold is comparable across backends. (If a TEI
+                // deployment pre-normalizes its scores, recalibrate the threshold --
+                // mandatory after any backend/model change regardless.)
+                let ce_norm = match self.format {
+                    RerankFormat::Tei => 1.0 / (1.0 + (-item.score).exp()),
+                    RerankFormat::Cohere => item.score,
+                };
+                results[item.index].ce_confidence = Some(ce_norm);
                 results[item.index].score = item.score * w + results[item.index].score * (1.0 - w);
+                // Provenance: mark this row as reranked (see the ONNX backend).
+                results[item.index].reranked = Some(true);
             }
         }
 

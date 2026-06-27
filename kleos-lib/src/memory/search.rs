@@ -253,24 +253,123 @@ fn apply_personality_boost(
     }
 }
 
+/// L4a: gate hop-2 graph traversal. Default off (it changes ranked output); enable per
+/// deployment with KLEOS_HOP2_ENABLED=1 once hop-1 quality is confirmed.
+static HOP2_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("KLEOS_HOP2_ENABLED")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+});
+/// Whether hop-2 graph traversal is enabled (KLEOS_HOP2_ENABLED, default false).
+fn hop2_enabled() -> bool {
+    *HOP2_ENABLED
+}
+
+/// L4b: gate the community-cluster retrieval channel. Default off (changes ranked output and
+/// depends on community detection having run); enable per deployment with
+/// KLEOS_COMMUNITY_CHANNEL_ENABLED=1.
+static COMMUNITY_CHANNEL_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("KLEOS_COMMUNITY_CHANNEL_ENABLED")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+});
+/// Whether the community channel is enabled (KLEOS_COMMUNITY_CHANNEL_ENABLED, default false).
+fn community_channel_enabled() -> bool {
+    *COMMUNITY_CHANNEL_ENABLED
+}
+
+/// Distinct non-null `community_id`s among the given candidate memory ids, scoped to the owner.
+/// Used by the community channel to find which clusters the strongest results belong to.
+async fn fetch_candidate_community_ids(
+    db: &Database,
+    ids: Vec<i64>,
+    user_id: i64,
+) -> crate::Result<Vec<i64>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    db.read(move |conn| {
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT DISTINCT community_id FROM memories \
+             WHERE id IN ({placeholders}) AND community_id IS NOT NULL AND user_id = ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = ids
+            .iter()
+            .map(|&i| Box::new(i) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        params.push(Box::new(user_id));
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt
+            .query_map(refs.as_slice(), |r| r.get(0))?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+        Ok(rows)
+    })
+    .await
+}
+
 /// Apply a graph RRF increment without discarding earlier additive boosts.
 fn apply_graph_rrf_increment(candidate: &mut Candidate, rrf_delta: f64) {
     candidate.score += rrf_delta;
     candidate.combined_score = candidate.score;
 }
 
-/// Insert graph-hop candidates while enforcing a global hop1 cap.
-fn inject_graph_hop1_neighbors(
+/// Build a placeholder candidate for a memory surfaced only by an injected channel (facts or
+/// community). Content and scoring fields are left empty/zero: these channels inject after the
+/// main score-composition pass (like the graph channel), and the final `SearchResult` hydrates
+/// the `Memory` from the user-scoped `memory_map`, so only `id` and the RRF-derived score are
+/// read past this point.
+fn minimal_injected_candidate(id: i64) -> Candidate {
+    Candidate {
+        id,
+        content: String::new(),
+        category: String::new(),
+        source: None,
+        model: None,
+        importance: 0,
+        created_at: String::new(),
+        version: None,
+        is_latest: Some(true),
+        is_static: false,
+        source_count: 1,
+        root_memory_id: None,
+        access_count: 0,
+        pagerank_score: 0.0,
+        fsrs_stability: None,
+        semantic_score: None,
+        personality_signal_score: None,
+        score: 0.0,
+        combined_score: 0.0,
+        decay_score: None,
+        temporal_boost: None,
+        rrf_pre_boost: None,
+        verbose_decay_factor: None,
+        verbose_pr_boost: None,
+        verbose_src_boost: None,
+        verbose_stat_boost: None,
+        verbose_contradiction: None,
+        is_archived: false,
+        is_consolidated: false,
+    }
+}
+
+/// Insert graph-hop candidates while enforcing a global `cap`, scaling each neighbor's graph
+/// relevance by `multiplier` (1.0 for hop-1, 0.5 for hop-2 to damp cascade amplification).
+/// New ids get a placeholder Candidate; existing ids only have their graph relevance bumped
+/// (the final Memory is hydrated later from the user-scoped `memory_map`).
+fn inject_graph_neighbors(
     results: &mut HashMap<i64, Candidate>,
     graph_score_map: &mut HashMap<i64, f64>,
     neighbor_results: Vec<Vec<GraphExpansionRow>>,
-    strategy: &crate::memory::types::SearchStrategy,
+    cap: usize,
+    multiplier: f64,
 ) {
     let mut added = 0usize;
 
     for rows in neighbor_results.into_iter() {
         for row in rows {
-            if added >= strategy.hop1_limit {
+            if added >= cap {
                 break;
             }
             if row.is_forgotten {
@@ -278,7 +377,7 @@ fn inject_graph_hop1_neighbors(
             }
 
             let tw = scoring::link_type_weight(&row.link_type);
-            let gs = row.similarity * tw * strategy.relationship_multiplier;
+            let gs = row.similarity * tw * multiplier;
             let prev = graph_score_map.get(&row.link_id).copied().unwrap_or(0.0);
             graph_score_map.insert(row.link_id, prev.max(gs));
 
@@ -317,10 +416,26 @@ fn inject_graph_hop1_neighbors(
                 added += 1;
             }
         }
-        if added >= strategy.hop1_limit {
+        if added >= cap {
             break;
         }
     }
+}
+
+/// Hop-1 graph injection: full relationship weight, capped at `strategy.hop1_limit`.
+fn inject_graph_hop1_neighbors(
+    results: &mut HashMap<i64, Candidate>,
+    graph_score_map: &mut HashMap<i64, f64>,
+    neighbor_results: Vec<Vec<GraphExpansionRow>>,
+    strategy: &crate::memory::types::SearchStrategy,
+) {
+    inject_graph_neighbors(
+        results,
+        graph_score_map,
+        neighbor_results,
+        strategy.hop1_limit,
+        strategy.relationship_multiplier,
+    );
 }
 
 /// Hydrate candidate rows by ID so the scorer can finish assembling results.
@@ -838,8 +953,26 @@ pub async fn hybrid_search(
     for (rank, (id, _)) in vector_ranked.iter().enumerate() {
         *rrf_scores.entry(*id).or_default() += rrf_score(rank) * strategy.vector_weight;
     }
-    for (rank, (id, _)) in fts_ranked.iter().enumerate() {
-        *rrf_scores.entry(*id).or_default() += rrf_score(rank) * effective_fts_weight;
+    // B.4: optionally nudge the FTS contribution by normalized BM25 magnitude so a much
+    // stronger lexical hit outranks a marginal one (pure RRF is rank-only). No-op at the
+    // default blend weight of 0.0.
+    let fts_score_blend = scoring::fts_score_blend();
+    let (bm25_min, bm25_max) = if fts_score_blend > 0.0 {
+        fts_ranked
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), (_, s)| {
+                (lo.min(*s), hi.max(*s))
+            })
+    } else {
+        (0.0, 0.0)
+    };
+    let bm25_range = (bm25_max - bm25_min).max(1e-9);
+    for (rank, (id, bm25)) in fts_ranked.iter().enumerate() {
+        let mut contribution = rrf_score(rank) * effective_fts_weight;
+        if fts_score_blend > 0.0 {
+            contribution += (*bm25 - bm25_min) / bm25_range * fts_score_blend;
+        }
+        *rrf_scores.entry(*id).or_default() += contribution;
     }
 
     // Temporal boost date extraction
@@ -1023,6 +1156,41 @@ pub async fn hybrid_search(
 
         inject_graph_hop1_neighbors(&mut results, &mut graph_score_map, neighbor_rows, &strategy);
 
+        // L4a hop-2: re-expand from the strongest hop-1 neighbors at half weight so
+        // connected-but-indirect memories surface. Gated by strategy.hop2_limit (0 for
+        // FactRecall) AND KLEOS_HOP2_ENABLED (default off), so this is a no-op on the default
+        // path. The half multiplier damps cascade amplification; injected ids join the same
+        // graph RRF ranking below, so a hop-2 neighbor ranks beneath its hop-1 parents.
+        if strategy.hop2_limit > 0 && hop2_enabled() {
+            let mut hop1_ranked: Vec<(i64, f64)> =
+                graph_score_map.iter().map(|(&id, &s)| (id, s)).collect();
+            hop1_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let hop2_seeds: Vec<i64> = hop1_ranked
+                .iter()
+                .take(strategy.hop2_limit)
+                .map(|(id, _)| *id)
+                .collect();
+            let hop2_futures: Vec<_> = hop2_seeds
+                .iter()
+                .map(|seed| fetch_graph_neighbors(db, *seed, user_id))
+                .collect();
+            let hop2_rows: Vec<Vec<GraphExpansionRow>> = futures::future::join_all(hop2_futures)
+                .await
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect();
+            // `hop2_limit` (the `.take` above) bounds how many hop-1 seeds we re-expand; the
+            // injection itself shares the `hop1_limit` cap, so hop-2 adds at most `hop1_limit`
+            // further candidates -- bounded amplification, not a second unbounded fan-out.
+            inject_graph_neighbors(
+                &mut results,
+                &mut graph_score_map,
+                hop2_rows,
+                strategy.hop1_limit,
+                strategy.relationship_multiplier * 0.5,
+            );
+        }
+
         // Apply graph RRF scores
         let mut graph_ranked: Vec<(i64, f64)> =
             graph_score_map.iter().map(|(&id, &s)| (id, s)).collect();
@@ -1034,6 +1202,98 @@ pub async fn hybrid_search(
         }
     }
     let graph_set: HashSet<i64> = graph_score_map.keys().copied().collect();
+
+    // L5: facts retrieval channel. Match the query against current structured_facts
+    // (via the facts_fts index) and fuse the parent memories through RRF, mirroring the graph
+    // channel. Gated by db.facts_channel_enabled (default off): when disabled facts_set stays
+    // empty and every line below is a no-op, so ranked output is byte-identical to before.
+    // Requires at least a Mid budget (it adds one FTS + join read), matching the FTS channel.
+    let mut facts_set: HashSet<i64> = HashSet::new();
+    if db.facts_channel_enabled
+        && budget >= SearchBudget::Mid
+        && !req.query.is_empty()
+        && req.query.len() <= crate::validation::MAX_FTS_QUERY_LEN
+    {
+        let facts_match = crate::memory::fts::fts_or_match_query(&req.query);
+        if !facts_match.is_empty() {
+            let facts_limit = limit.saturating_mul(2).clamp(limit, 100);
+            match crate::memory::facts_channel::search_facts_fts(
+                db,
+                &facts_match,
+                user_id,
+                facts_limit,
+            )
+            .await
+            {
+                Ok(hits) => {
+                    for (rank, hit) in hits.iter().enumerate() {
+                        // Reuse the entry's &mut Candidate (no second lookup). RRF by the fact's
+                        // BM25 rank, scaled by its stored confidence so a low-confidence fact
+                        // contributes proportionally less.
+                        let c = results
+                            .entry(hit.memory_id)
+                            .or_insert_with(|| minimal_injected_candidate(hit.memory_id));
+                        apply_graph_rrf_increment(c, rrf_score(rank) * hit.confidence);
+                        facts_set.insert(hit.memory_id);
+                    }
+                }
+                Err(e) => tracing::warn!("facts channel search failed: {e}"),
+            }
+        }
+    }
+
+    // L4b: community-cluster channel. Find the distinct communities of the strongest
+    // current candidates and inject other members of those clusters at the lowest channel weight,
+    // so a query that lands inside a cluster surfaces related cluster memories. Gated by
+    // KLEOS_COMMUNITY_CHANNEL_ENABLED (default off) AND budget >= High; silently no-ops when
+    // community detection has never run (no community_id), so un-clustered corpora pay nothing.
+    let mut community_set: HashSet<i64> = HashSet::new();
+    if community_channel_enabled() && budget >= SearchBudget::High {
+        const COMMUNITY_SEED_LIMIT: usize = 5;
+        const COMMUNITY_MAX_CLUSTERS: usize = 3;
+        const COMMUNITY_MEMBERS_LIMIT: usize = 8;
+        let mut seeds: Vec<(i64, f64)> = results
+            .iter()
+            .map(|(&id, c)| (id, c.combined_score))
+            .collect();
+        seeds.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let seed_ids: Vec<i64> = seeds
+            .iter()
+            .take(COMMUNITY_SEED_LIMIT)
+            .map(|(id, _)| *id)
+            .collect();
+        match fetch_candidate_community_ids(db, seed_ids, user_id).await {
+            Ok(community_ids) => {
+                for cid in community_ids.iter().take(COMMUNITY_MAX_CLUSTERS) {
+                    match crate::graph::communities::get_community_members(
+                        db,
+                        *cid,
+                        user_id,
+                        COMMUNITY_MEMBERS_LIMIT,
+                    )
+                    .await
+                    {
+                        Ok(members) => {
+                            for (rank, m) in members.iter().enumerate() {
+                                let c = results
+                                    .entry(m.id)
+                                    .or_insert_with(|| minimal_injected_candidate(m.id));
+                                // Lowest-weight channel: community membership is weak evidence,
+                                // so 0.3x the vector weight keeps it a nudge, not a driver.
+                                apply_graph_rrf_increment(
+                                    c,
+                                    rrf_score(rank) * strategy.vector_weight * 0.3,
+                                );
+                                community_set.insert(m.id);
+                            }
+                        }
+                        Err(e) => tracing::warn!("community channel members failed: {e}"),
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("community channel lookup failed: {e}"),
+        }
+    }
 
     // SEC-recall-1.2: enforce strategy.vector_floor as a real filter. Drop
     // candidates whose vector channel score is below the floor AND that did
@@ -1049,9 +1309,13 @@ pub async fn hybrid_search(
     let effective_floor = env_floor.unwrap_or(strategy.vector_floor);
     if effective_floor > 0.0 {
         results.retain(|id, c| {
-            // Always keep candidates that surfaced from FTS or graph -- they
-            // carry signal beyond cosine similarity.
-            if fts_set.contains(id) || graph_set.contains(id) {
+            // Always keep candidates that surfaced from FTS, graph, facts, or community --
+            // they carry signal beyond cosine similarity.
+            if fts_set.contains(id)
+                || graph_set.contains(id)
+                || facts_set.contains(id)
+                || community_set.contains(id)
+            {
                 return true;
             }
             // Vector-only candidate: enforce the floor when we have a real
@@ -1104,7 +1368,11 @@ pub async fn hybrid_search(
     // the over-fetch collapses to `limit` and gives the post-filter no extra candidates. That is
     // acceptable: a max-limit request already scans the widest legal pool. Over-fetch matters at
     // the common small limits, where matching rows can sit below the global top-`limit`.
-    let pool_limit = if filters_present {
+    // B.3: MMR diversity (applied after materialization below) needs a pool wider than
+    // `limit` to pick a diverse subset from, so widen the over-fetch when it is enabled --
+    // the same limit*5 pool the filter path already uses.
+    let mmr_lambda = scoring::mmr_lambda();
+    let pool_limit = if filters_present || mmr_lambda > 0.0 {
         (limit * 5).min(MAX_LIMIT)
     } else {
         limit
@@ -1130,6 +1398,12 @@ pub async fn hybrid_search(
         }
         if graph_set.contains(&c.id) {
             channels.push(String::from("graph"));
+        }
+        if facts_set.contains(&c.id) {
+            channels.push(String::from("facts"));
+        }
+        if community_set.contains(&c.id) {
+            channels.push(String::from("community"));
         }
 
         // Look up from pre-fetched batch
@@ -1170,6 +1444,9 @@ pub async fn hybrid_search(
             matching_chunk: chunk_text_map.get(&c.id).cloned(),
             linked: None,
             version_chain: None,
+            // Populated later by the reranker (hybrid_search_reranked) before the
+            // CE/fusion blend; None here on the base fusion path.
+            ce_confidence: None,
         });
     }
 
@@ -1226,9 +1503,17 @@ pub async fn hybrid_search(
         });
     }
 
+    // B.3: MMR diversity re-ranking. Greedily reorder the (over-fetched) pool to balance
+    // relevance against novelty so a cluster of near-duplicate memories cannot crowd out the
+    // top results, then keep the requested limit. No-op at the default lambda of 0.0.
+    if mmr_lambda > 0.0 && final_results.len() > 1 {
+        final_results = mmr_reorder(final_results, mmr_lambda, limit);
+    }
+
     // Re-truncate to the caller's requested limit after filtering. With no filters this
     // is a no-op (the pool was already `limit`); with filters it trims the limit*5
-    // over-fetch back down once the non-matching rows have been removed.
+    // over-fetch back down once the non-matching rows have been removed. When MMR ran it
+    // already selected `limit`, so this is a safe no-op in that case.
     if filters_present {
         final_results.truncate(limit);
     }
@@ -1279,6 +1564,81 @@ pub async fn hybrid_search(
     Ok(arc_results)
 }
 
+/// Jaccard similarity between two token sets: |A intersect B| / |A union B|. Returns 0.0 when
+/// both sets are empty (no shared signal, so treat them as maximally diverse).
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    let inter = a.intersection(b).count() as f64;
+    let union = (a.len() + b.len()) as f64 - inter;
+    if union <= 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
+}
+
+/// Greedy Maximal Marginal Relevance reorder of an over-fetched result pool.
+///
+/// Repeatedly picks the result maximizing
+/// `lambda * normalized_relevance - (1 - lambda) * max_similarity_to_already_picked`,
+/// where similarity is Jaccard over the canonical tokens of the matched chunk (or full
+/// content). This keeps the most relevant result first while preventing a cluster of
+/// near-duplicate memories from filling the top, then returns the best `limit` items.
+/// Relevance is min-max normalized to [0,1] so it is comparable to the [0,1] similarity term.
+fn mmr_reorder(results: Vec<SearchResult>, lambda: f64, limit: usize) -> Vec<SearchResult> {
+    let n = results.len();
+    let take = limit.min(n);
+    if take <= 1 {
+        let mut out = results;
+        out.truncate(take);
+        return out;
+    }
+    // Token set per candidate, taken from the matched passage where available so diversity is
+    // judged on what actually matched rather than the whole (possibly multi-topic) memory.
+    let token_sets: Vec<HashSet<String>> = results
+        .iter()
+        .map(|r| {
+            let text = r
+                .matching_chunk
+                .as_deref()
+                .unwrap_or(r.memory.content.as_str());
+            super::simhash::canonical_tokens(text).into_iter().collect()
+        })
+        .collect();
+    // Min-max normalize the relevance score so the lambda-weighted relevance term is on the
+    // same [0,1] scale as the Jaccard diversity term.
+    let (min_s, max_s) = results.iter().fold((f64::MAX, f64::MIN), |(lo, hi), r| {
+        (lo.min(r.score), hi.max(r.score))
+    });
+    let range = (max_s - min_s).max(1e-9);
+    let rel: Vec<f64> = results.iter().map(|r| (r.score - min_s) / range).collect();
+
+    let mut chosen: Vec<usize> = Vec::with_capacity(take);
+    let mut remaining: Vec<usize> = (0..n).collect();
+    while chosen.len() < take && !remaining.is_empty() {
+        let mut best_pos = 0usize;
+        let mut best_score = f64::MIN;
+        for (pos, &i) in remaining.iter().enumerate() {
+            // Similarity to the closest already-chosen result (0.0 for the first pick).
+            let max_sim = chosen
+                .iter()
+                .map(|&j| jaccard(&token_sets[i], &token_sets[j]))
+                .fold(0.0_f64, f64::max);
+            let mmr = lambda * rel[i] - (1.0 - lambda) * max_sim;
+            if mmr > best_score {
+                best_score = mmr;
+                best_pos = pos;
+            }
+        }
+        chosen.push(remaining.remove(best_pos));
+    }
+    // Materialize in the chosen order, moving each result out exactly once (no clone).
+    let mut slots: Vec<Option<SearchResult>> = results.into_iter().map(Some).collect();
+    chosen
+        .into_iter()
+        .map(|i| slots[i].take().expect("each index is chosen at most once"))
+        .collect()
+}
+
 /// SEC-recall-1.5: run `hybrid_search` then apply the supplied reranker.
 /// Wrapping (rather than threading reranker into `hybrid_search` itself)
 /// keeps the existing 10+ call sites untouched while letting any in-process
@@ -1312,12 +1672,25 @@ pub async fn hybrid_search_reranked(
     let arc_results = hybrid_search(db, pool_req).await?;
 
     let mut results = (*arc_results).clone();
-    if let Err(e) = reranker
+    // Time the rerank so its per-call latency is observable. The backends mark each
+    // cross-encoded row reranked=Some(true); we stamp those rows with the measured latency
+    // instead of the hardcoded reranker_ms=0.0 that hybrid_search sets, so the eval harness
+    // and callers can actually see the reranker's cost and reach.
+    let rerank_start = std::time::Instant::now();
+    match reranker
         .rerank_results(query_for_rerank, &mut results)
         .await
     {
+        Ok(()) => {
+            let rerank_ms = rerank_start.elapsed().as_secs_f64() * 1000.0;
+            for r in results.iter_mut() {
+                if r.reranked == Some(true) {
+                    r.reranker_ms = Some(rerank_ms);
+                }
+            }
+        }
         // On failure keep the fusion order; still trim the over-fetched pool to limit.
-        tracing::warn!("reranker failed in hybrid_search_reranked: {}", e);
+        Err(e) => tracing::warn!("reranker failed in hybrid_search_reranked: {}", e),
     }
     results.truncate(final_limit);
     Ok(Arc::new(results))
@@ -1638,6 +2011,8 @@ async fn faceted_db_scan(
                 matching_chunk: None,
                 linked: None,
                 version_chain: None,
+                // Filter path is never reranked; no cross-encoder signal.
+                ce_confidence: None,
             })
             .collect())
     })
@@ -1753,8 +2128,8 @@ fn parse_iso_date(s: &str) -> Option<String> {
 mod tests {
     use super::{
         apply_graph_rrf_increment, apply_personality_boost, hash_search_params,
-        inject_graph_hop1_neighbors, parse_iso_date, semantic_score_from_distance, Candidate,
-        GraphExpansionRow,
+        inject_graph_hop1_neighbors, inject_graph_neighbors, parse_iso_date,
+        semantic_score_from_distance, Candidate, GraphExpansionRow,
     };
     use crate::memory::types::{SearchBudget, SearchRequest, SearchStrategy};
 
@@ -1811,6 +2186,61 @@ mod tests {
     #[test]
     fn semantic_distance_above_one_clamps_to_zero() {
         assert_eq!(semantic_score_from_distance(1.25), 0.0);
+    }
+
+    /// L4a: the generic injector scales graph relevance by the multiplier (0.5 for hop-2) and
+    /// honors the cap, so a hop-2 neighbor always ranks beneath its full-weight hop-1 parents.
+    #[test]
+    fn inject_graph_neighbors_applies_multiplier_and_cap() {
+        fn row(id: i64) -> GraphExpansionRow {
+            GraphExpansionRow {
+                link_id: id,
+                similarity: 0.8,
+                link_type: "related".into(), // link_type_weight("related") == 1.0
+                content: "n".into(),
+                category: "general".into(),
+                importance: 5,
+                created_at: "2026-05-31T00:00:00Z".into(),
+                is_latest: true,
+                is_forgotten: false,
+                version: Some(1),
+                source_count: 1,
+                model: None,
+                source: None,
+            }
+        }
+
+        // Half weight (hop-2): relevance = similarity * link_weight(1.0) * 0.5 = 0.4.
+        let mut results = std::collections::HashMap::new();
+        let mut gsm = std::collections::HashMap::new();
+        inject_graph_neighbors(&mut results, &mut gsm, vec![vec![row(2), row(3)]], 5, 0.5);
+        assert_eq!(
+            results.len(),
+            2,
+            "both fresh neighbors injected under the cap"
+        );
+        assert!(
+            (gsm[&2] - 0.4).abs() < 1e-9,
+            "hop-2 half weight = 0.4, got {}",
+            gsm[&2]
+        );
+
+        // Full weight (hop-1) scores higher (0.8) -> hop-2 always ranks beneath hop-1.
+        let mut r1 = std::collections::HashMap::new();
+        let mut g1 = std::collections::HashMap::new();
+        inject_graph_neighbors(&mut r1, &mut g1, vec![vec![row(2)]], 5, 1.0);
+        assert!(
+            g1[&2] > gsm[&2],
+            "full-weight hop-1 ({}) must exceed half-weight hop-2 ({})",
+            g1[&2],
+            gsm[&2]
+        );
+
+        // The cap is global across seed groups, not per group.
+        let mut r2 = std::collections::HashMap::new();
+        let mut g2 = std::collections::HashMap::new();
+        inject_graph_neighbors(&mut r2, &mut g2, vec![vec![row(2)], vec![row(3)]], 1, 0.5);
+        assert_eq!(r2.len(), 1, "cap=1 limits total injections across groups");
     }
 
     /// Enforces the hop1 cap across all graph seeds instead of per seed.

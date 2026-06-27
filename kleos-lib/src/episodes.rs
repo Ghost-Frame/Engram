@@ -150,30 +150,47 @@ pub async fn search_episodes_fts(
     query: &str,
     limit: usize,
 ) -> Result<Vec<EpisodeRow>> {
-    let like = format!("%{}%", query);
+    // SECURITY: bound the query size before tokenisation, mirroring memory `fts_search`,
+    // so a pathologically large input cannot drive CPU-heavy FTS expression building.
+    if query.len() > crate::validation::MAX_FTS_QUERY_LEN {
+        return Err(EngError::InvalidInput(format!(
+            "query exceeds maximum length of {} bytes",
+            crate::validation::MAX_FTS_QUERY_LEN
+        )));
+    }
+    // Build a bounded OR-of-tokens FTS5 MATCH expression (each token alphanumeric-only and
+    // quoted, stopwords dropped) using the same builder memory search uses. This replaces the
+    // prior `title/summary LIKE %query%` scan, which bypassed the `episodes_fts` index, did no
+    // BM25 ranking or stemming, and fed raw user input straight into a LIKE pattern. Returns
+    // empty (no error) when no usable token remains, matching `fts_search`.
+    //
+    // Behavior change: results are now ordered by BM25 relevance (best match first) instead of
+    // the prior `started_at DESC` recency order -- the correct ranking for a search endpoint.
+    let match_expr = crate::memory::fts::fts_or_match_query(query);
+    if match_expr.is_empty() {
+        return Ok(vec![]);
+    }
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
-                 FROM episodes
-                 WHERE user_id = ?3 AND (title LIKE ?1 OR summary LIKE ?1)
-                 ORDER BY started_at DESC
-                 LIMIT ?2",
-            )
-            ?;
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.title, e.session_id, e.agent, e.summary, e.memory_count, \
+                    e.duration_seconds, e.decay_score, e.started_at, e.ended_at, e.created_at \
+             FROM episodes_fts f \
+             JOIN episodes e ON e.id = f.rowid \
+             WHERE episodes_fts MATCH ?1 AND e.user_id = ?2 \
+             ORDER BY bm25(episodes_fts) \
+             LIMIT ?3",
+        )?;
 
-        let rows = stmt
-            .query_map(params![like, limit as i64, user_id], |row| {
-                row_to_episode(row, user_id).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Null,
-                        Box::new(std::io::Error::other(e.to_string())),
-                    )
-                })
+        let rows = stmt.query_map(params![match_expr, user_id, limit as i64], |row| {
+            row_to_episode(row, user_id).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Null,
+                    Box::new(std::io::Error::other(e.to_string())),
+                )
             })
-            ?;
+        })?;
 
         collect_episodes(rows)
     })

@@ -15,6 +15,7 @@
 //! failures are surfaced via `tracing::warn` / `tracing::error`, never
 //! swallowed -- regressions break CI via the swallowed-errors sweep.
 
+pub mod community_detection;
 pub mod deprovision;
 pub mod disk_sampler;
 pub mod pagerank_refresh;

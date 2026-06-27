@@ -393,6 +393,10 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         "scratchpad_user_id_readd",
         apply_schema_v75_scratchpad_user_id_readd
     ),
+    // facts_fts FTS5 index over structured_facts for the L5 facts channel. Additive
+    // (virtual table + sync triggers + rebuild); structured_facts.user_id was already re-added
+    // and backfilled at v67, so no owner backfill arm is needed here.
+    tenant_migration!(76, "facts_fts", apply_schema_v76_facts_fts),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -707,6 +711,11 @@ tenant_migration_sql!(
     apply_schema_v71_artifacts_fts,
     "v71",
     "../tenant/schema_v55_artifacts_fts.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v76_facts_fts,
+    "v76",
+    "../tenant/schema_v76_facts_fts.sql"
 );
 tenant_migration_sql!(
     apply_schema_v55_memories_readd,

@@ -26,9 +26,17 @@ static DECAY_FLOOR_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
 pub fn decay_floor() -> f64 {
     *DECAY_FLOOR_OVERRIDE
 }
+/// Default weight applied to the PageRank graph-centrality boost in the score chain.
 pub const PAGERANK_WEIGHT: f64 = 0.15;
+/// Default minimum vector-cosine score a candidate must clear to enter the vector channel.
 pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
-pub const RRF_K: f64 = 60.0;
+/// Default Reciprocal Rank Fusion constant. Larger K flattens the rank-position weighting
+/// (later ranks contribute relatively more); smaller K sharpens toward the top. Raised from
+/// 60 to 90 after offline-harness cross-validation: BEIR SciFact recall@10 0.936 -> 0.956 and
+/// LoCoMo metrics all up, with no golden-FTS-gate regression (single-channel fusion is
+/// rank-monotonic in K). Overridable at runtime via KLEOS_RRF_K; see `rrf_k()`.
+pub const RRF_K: f64 = 90.0;
+/// Default weight applied to the recency boost in the score chain.
 pub const RECENCY_WEIGHT: f64 = 0.15;
 
 // 2.3: make the two global ranking-boost weights tunable at runtime without a rebuild,
@@ -57,6 +65,56 @@ static RECENCY_WEIGHT_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
 /// Runtime recency boost weight (KLEOS_RECENCY_WEIGHT override, clamped to [0, 5]).
 pub fn recency_weight() -> f64 {
     *RECENCY_WEIGHT_OVERRIDE
+}
+
+// Make the reciprocal-rank-fusion constant tunable at runtime, mirroring the weight
+// overrides above. Larger K flattens the rank-position weighting (rank-1 vs rank-10 differ
+// less); smaller K sharpens it. Exposing it lets the offline eval harness sweep RRF_K
+// without a rebuild; clamped so a typo cannot collapse the fusion denominator.
+static RRF_K_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_RRF_K")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|k| k.clamp(1.0, 1000.0))
+        .unwrap_or(RRF_K)
+});
+/// Runtime RRF constant (KLEOS_RRF_K override, clamped to [1, 1000]).
+pub fn rrf_k() -> f64 {
+    *RRF_K_OVERRIDE
+}
+
+// B.4: optional BM25-magnitude blend. RRF is rank-only, so a strong lexical hit (high BM25)
+// and a weak one contribute identically once ranked. This weight adds a small
+// min-max-normalized magnitude term to the FTS contribution. Default 0.0 (pure RRF) until the
+// offline harness tunes it; clamped to [0,1] so it cannot dominate the rank signal.
+const DEFAULT_FTS_SCORE_BLEND: f64 = 0.0;
+static FTS_SCORE_BLEND_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_FTS_SCORE_BLEND")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_FTS_SCORE_BLEND)
+});
+/// Runtime BM25-magnitude blend weight (KLEOS_FTS_SCORE_BLEND override, clamped to [0, 1]).
+pub fn fts_score_blend() -> f64 {
+    *FTS_SCORE_BLEND_OVERRIDE
+}
+
+// B.3: Maximal Marginal Relevance diversity weight. lambda=1.0 is pure relevance (no
+// diversification); lambda=0.0 disables MMR entirely (the default, so behavior is unchanged
+// until the harness tunes it). Lower values trade relevance for novelty, preventing a cluster
+// of near-duplicate memories from crowding the top of the result list. Clamped to [0,1].
+const DEFAULT_MMR_LAMBDA: f64 = 0.0;
+static MMR_LAMBDA_OVERRIDE: LazyLock<f64> = LazyLock::new(|| {
+    std::env::var("KLEOS_MMR_LAMBDA")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|w| w.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_MMR_LAMBDA)
+});
+/// Runtime MMR diversity weight (KLEOS_MMR_LAMBDA override, clamped to [0, 1]; 0 disables MMR).
+pub fn mmr_lambda() -> f64 {
+    *MMR_LAMBDA_OVERRIDE
 }
 
 /// Extra classifier keywords loaded once from env vars at first use.
@@ -506,7 +564,7 @@ pub fn extract_query_date(query: &str) -> Option<String> {
 
 /// Computes a reciprocal-rank score for one result position.
 pub fn rrf_score(rank: usize) -> f64 {
-    1.0 / (RRF_K + rank as f64 + 1.0)
+    1.0 / (rrf_k() + rank as f64 + 1.0)
 }
 
 /// Boosts memories that are close to the query date.
