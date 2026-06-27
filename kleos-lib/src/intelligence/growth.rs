@@ -369,11 +369,61 @@ fn score_observation(
     keyword_score * 0.6 + recency_score * 0.4
 }
 
+/// Retrieve growth observations matching `query` via the full-text index,
+/// regardless of age. Complements the recency pool in `context_growth` so an
+/// old but highly relevant observation is not excluded by the recency window.
+/// Mirrors `list_observations`' ownership/forgotten predicates, and returns an
+/// empty vec when `query` has no usable FTS tokens (empty or all-stopword).
+async fn match_observations(
+    db: &Database,
+    user_id: i64,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<GrowthObservation>> {
+    // Best-effort relevance channel: on oversized input, skip the FTS match
+    // (degrade to the recency pool) rather than rejecting the whole request.
+    if query.len() > crate::validation::MAX_FTS_QUERY_LEN {
+        return Ok(Vec::new());
+    }
+    let match_expr = crate::memory::fts::fts_or_match_query(query);
+    if match_expr.is_empty() {
+        return Ok(Vec::new());
+    }
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.content, m.source, m.importance, m.created_at \
+                 FROM memories_fts \
+                 JOIN memories m ON m.id = memories_fts.rowid \
+                 WHERE memories_fts MATCH ?1 \
+                   AND m.category = 'growth' AND m.is_forgotten = 0 AND m.user_id = ?2 \
+                 ORDER BY memories_fts.rank LIMIT ?3",
+        )?;
+        let observations = stmt
+            .query_map(
+                rusqlite::params![match_expr, user_id, limit as i64],
+                |row| {
+                    Ok(GrowthObservation {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(observations)
+    })
+    .await
+}
+
 /// Retrieve the top-N growth observations most relevant to `query`.
 ///
-/// Fetches a candidate pool (up to `pool_size` recent observations), scores
-/// each by keyword overlap and recency, and returns the top `limit` results.
-/// When `query` is empty all scoring collapses to pure recency.
+/// Builds a candidate pool from the most recent observations UNION the
+/// full-text matches for `query` (so an old but highly relevant observation
+/// still competes), scores each by keyword overlap and recency, and returns
+/// the top `limit`. When `query` is empty the FTS pool is empty and scoring
+/// collapses to pure recency.
 #[tracing::instrument(skip(db), fields(user_id, limit))]
 pub async fn context_growth(
     db: &Database,
@@ -382,7 +432,16 @@ pub async fn context_growth(
     limit: usize,
 ) -> Result<Vec<ScoredGrowthObservation>> {
     let pool_size = (limit * 10).min(200);
-    let observations = list_observations(db, user_id, pool_size).await?;
+
+    // Recency pool (also the sole pool when `query` is empty), then merge in
+    // full-text matches of any age, de-duplicated by id.
+    let mut observations = list_observations(db, user_id, pool_size).await?;
+    let mut seen: std::collections::HashSet<i64> = observations.iter().map(|o| o.id).collect();
+    for obs in match_observations(db, user_id, query, pool_size).await? {
+        if seen.insert(obs.id) {
+            observations.push(obs);
+        }
+    }
 
     let query_keywords = extract_keywords(query);
     let mut scored: Vec<(f64, GrowthObservation)> = observations
@@ -522,6 +581,48 @@ mod tests {
         assert!(
             score_new > score_old,
             "newer={score_new:.3} should beat older={score_old:.3}"
+        );
+    }
+
+    /// The candidate pool is FTS-augmented: an old observation pushed out of the
+    /// recency window still surfaces when it matches the query. Regression guard
+    /// for the recency-window limitation (recency-only pools could never see it).
+    #[tokio::test]
+    async fn test_context_growth_surfaces_old_relevant_observation() {
+        let db = Database::connect_memory().await.expect("connect_memory");
+        db.write(move |conn| {
+            // Fill the recency window with recent, unrelated growth observations.
+            for i in 0..40 {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, user_id, created_at) \
+                         VALUES (?1, 'growth', 'test', 1, datetime('now'))",
+                    rusqlite::params![format!(
+                        "recent unrelated reflection {i} about cooking dinner"
+                    )],
+                )?;
+            }
+            // One OLD observation -- the only one matching the query terms.
+            conn.execute(
+                "INSERT INTO memories (content, category, source, user_id, created_at) \
+                     VALUES (?1, 'growth', 'test', 1, '2020-01-01 00:00:00')",
+                rusqlite::params!["learned to fix the docker compose sidecar networking"],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed growth observations");
+
+        // limit=3 -> recency pool caps at 30 rows, so the 41st-by-recency old
+        // observation is excluded from the recency pool; only the FTS channel
+        // can surface it.
+        let results = context_growth(&db, 1, "docker compose sidecar", 3)
+            .await
+            .expect("context_growth");
+        assert!(
+            results
+                .iter()
+                .any(|o| o.content.contains("docker compose sidecar")),
+            "old but FTS-relevant observation must surface; got {results:?}"
         );
     }
 }
