@@ -53,13 +53,15 @@ async fn run_eval(lang: &str) {
     // File-backed temp DB so LanceDB vector search is exercised (connect_memory
     // would set vector_index = None and degrade to FTS-only).
     let temp_dir = tempfile::tempdir().expect("temp eval dir");
-    let mut config = Config::default();
-    config.db_path = temp_dir
-        .path()
-        .join("eval.sqlite")
-        .to_string_lossy()
-        .into_owned();
-    config.lance_index_path = Some(temp_dir.path().join("lance").to_string_lossy().into_owned());
+    let config = Config {
+        db_path: temp_dir
+            .path()
+            .join("eval.sqlite")
+            .to_string_lossy()
+            .into_owned(),
+        lance_index_path: Some(temp_dir.path().join("lance").to_string_lossy().into_owned()),
+        ..Default::default()
+    };
     let db = Database::connect_with_config(&config, None)
         .await
         .expect("fresh eval db");
