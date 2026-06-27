@@ -265,17 +265,62 @@ fn hop2_enabled() -> bool {
     *HOP2_ENABLED
 }
 
+/// L4b: gate the community-cluster retrieval channel. Default off (changes ranked output and
+/// depends on community detection having run); enable per deployment with
+/// KLEOS_COMMUNITY_CHANNEL_ENABLED=1.
+static COMMUNITY_CHANNEL_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("KLEOS_COMMUNITY_CHANNEL_ENABLED")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+});
+/// Whether the community channel is enabled (KLEOS_COMMUNITY_CHANNEL_ENABLED, default false).
+fn community_channel_enabled() -> bool {
+    *COMMUNITY_CHANNEL_ENABLED
+}
+
+/// Distinct non-null `community_id`s among the given candidate memory ids, scoped to the owner.
+/// Used by the community channel to find which clusters the strongest results belong to.
+async fn fetch_candidate_community_ids(
+    db: &Database,
+    ids: Vec<i64>,
+    user_id: i64,
+) -> crate::Result<Vec<i64>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    db.read(move |conn| {
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT DISTINCT community_id FROM memories \
+             WHERE id IN ({placeholders}) AND community_id IS NOT NULL AND user_id = ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = ids
+            .iter()
+            .map(|&i| Box::new(i) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+        params.push(Box::new(user_id));
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt
+            .query_map(refs.as_slice(), |r| r.get(0))?
+            .collect::<std::result::Result<Vec<i64>, _>>()?;
+        Ok(rows)
+    })
+    .await
+}
+
 /// Apply a graph RRF increment without discarding earlier additive boosts.
 fn apply_graph_rrf_increment(candidate: &mut Candidate, rrf_delta: f64) {
     candidate.score += rrf_delta;
     candidate.combined_score = candidate.score;
 }
 
-/// Build a placeholder candidate for a memory surfaced only by the facts channel (L5).
-/// Content and scoring fields are left empty/zero: facts inject after the main score-composition
-/// pass (like the graph channel), and the final `SearchResult` hydrates the `Memory` from the
-/// user-scoped `memory_map`, so only `id` and the RRF-derived score are read past this point.
-fn minimal_facts_candidate(id: i64) -> Candidate {
+/// Build a placeholder candidate for a memory surfaced only by an injected channel (facts or
+/// community). Content and scoring fields are left empty/zero: these channels inject after the
+/// main score-composition pass (like the graph channel), and the final `SearchResult` hydrates
+/// the `Memory` from the user-scoped `memory_map`, so only `id` and the RRF-derived score are
+/// read past this point.
+fn minimal_injected_candidate(id: i64) -> Candidate {
     Candidate {
         id,
         content: String::new(),
@@ -1187,13 +1232,66 @@ pub async fn hybrid_search(
                         // contributes proportionally less.
                         let c = results
                             .entry(hit.memory_id)
-                            .or_insert_with(|| minimal_facts_candidate(hit.memory_id));
+                            .or_insert_with(|| minimal_injected_candidate(hit.memory_id));
                         apply_graph_rrf_increment(c, rrf_score(rank) * hit.confidence);
                         facts_set.insert(hit.memory_id);
                     }
                 }
                 Err(e) => tracing::warn!("facts channel search failed: {e}"),
             }
+        }
+    }
+
+    // L4b: community-cluster channel. Find the distinct communities of the strongest
+    // current candidates and inject other members of those clusters at the lowest channel weight,
+    // so a query that lands inside a cluster surfaces related cluster memories. Gated by
+    // KLEOS_COMMUNITY_CHANNEL_ENABLED (default off) AND budget >= High; silently no-ops when
+    // community detection has never run (no community_id), so un-clustered corpora pay nothing.
+    let mut community_set: HashSet<i64> = HashSet::new();
+    if community_channel_enabled() && budget >= SearchBudget::High {
+        const COMMUNITY_SEED_LIMIT: usize = 5;
+        const COMMUNITY_MAX_CLUSTERS: usize = 3;
+        const COMMUNITY_MEMBERS_LIMIT: usize = 8;
+        let mut seeds: Vec<(i64, f64)> = results
+            .iter()
+            .map(|(&id, c)| (id, c.combined_score))
+            .collect();
+        seeds.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let seed_ids: Vec<i64> = seeds
+            .iter()
+            .take(COMMUNITY_SEED_LIMIT)
+            .map(|(id, _)| *id)
+            .collect();
+        match fetch_candidate_community_ids(db, seed_ids, user_id).await {
+            Ok(community_ids) => {
+                for cid in community_ids.iter().take(COMMUNITY_MAX_CLUSTERS) {
+                    match crate::graph::communities::get_community_members(
+                        db,
+                        *cid,
+                        user_id,
+                        COMMUNITY_MEMBERS_LIMIT,
+                    )
+                    .await
+                    {
+                        Ok(members) => {
+                            for (rank, m) in members.iter().enumerate() {
+                                let c = results
+                                    .entry(m.id)
+                                    .or_insert_with(|| minimal_injected_candidate(m.id));
+                                // Lowest-weight channel: community membership is weak evidence,
+                                // so 0.3x the vector weight keeps it a nudge, not a driver.
+                                apply_graph_rrf_increment(
+                                    c,
+                                    rrf_score(rank) * strategy.vector_weight * 0.3,
+                                );
+                                community_set.insert(m.id);
+                            }
+                        }
+                        Err(e) => tracing::warn!("community channel members failed: {e}"),
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("community channel lookup failed: {e}"),
         }
     }
 
@@ -1211,9 +1309,13 @@ pub async fn hybrid_search(
     let effective_floor = env_floor.unwrap_or(strategy.vector_floor);
     if effective_floor > 0.0 {
         results.retain(|id, c| {
-            // Always keep candidates that surfaced from FTS, graph, or facts -- they
-            // carry signal beyond cosine similarity.
-            if fts_set.contains(id) || graph_set.contains(id) || facts_set.contains(id) {
+            // Always keep candidates that surfaced from FTS, graph, facts, or community --
+            // they carry signal beyond cosine similarity.
+            if fts_set.contains(id)
+                || graph_set.contains(id)
+                || facts_set.contains(id)
+                || community_set.contains(id)
+            {
                 return true;
             }
             // Vector-only candidate: enforce the floor when we have a real
@@ -1299,6 +1401,9 @@ pub async fn hybrid_search(
         }
         if facts_set.contains(&c.id) {
             channels.push(String::from("facts"));
+        }
+        if community_set.contains(&c.id) {
+            channels.push(String::from("community"));
         }
 
         // Look up from pre-fetched batch

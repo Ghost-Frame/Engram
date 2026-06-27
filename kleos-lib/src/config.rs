@@ -149,6 +149,11 @@ fn default_dream_interval_secs() -> u64 {
     300
 }
 
+/// Default interval between scheduled community-detection cycles (6h; communities change slowly).
+fn default_community_detection_interval_secs() -> u64 {
+    21600
+}
+
 /// Default idle window before dreamer work starts.
 fn default_dream_idle_threshold_secs() -> u64 {
     60
@@ -548,6 +553,14 @@ pub struct Config {
     pub pagerank_dirty_threshold: u32,
     pub pagerank_max_concurrent: usize,
     pub pagerank_enabled: bool,
+    /// L4b: run the scheduled community-detection job that keeps `community_id` fresh for
+    /// the community retrieval channel. Default false (periodic compute + ranked-output change
+    /// once the channel is enabled).
+    #[serde(default)]
+    pub community_detection_enabled: bool,
+    /// Interval between scheduled community-detection cycles, in seconds. Default 21600 (6h).
+    #[serde(default = "default_community_detection_interval_secs")]
+    pub community_detection_interval_secs: u64,
     /// Whether consolidation endpoints are available. Default false --
     /// consolidation merges memories into vague summaries and hides the
     /// originals, degrading search quality.
@@ -715,6 +728,8 @@ impl Default for Config {
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
             pagerank_enabled: true,
+            community_detection_enabled: false,
+            community_detection_interval_secs: default_community_detection_interval_secs(),
             consolidation_enabled: false,
             dreamer_enabled: default_dreamer_enabled(),
             dream_interval_secs: default_dream_interval_secs(),
@@ -1016,6 +1031,19 @@ impl Config {
         }
         if let Ok(v) = crate::kleos_env("PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("COMMUNITY_DETECTION_ENABLED") {
+            config.community_detection_enabled = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = crate::kleos_env("COMMUNITY_DETECTION_INTERVAL_SECS") {
+            match v.parse() {
+                Ok(n) => config.community_detection_interval_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env community detection interval {}, using default {}",
+                    v,
+                    config.community_detection_interval_secs
+                ),
+            }
         }
         if let Ok(v) = std::env::var("KLEOS_CONSOLIDATION_ENABLED") {
             config.consolidation_enabled = v == "1" || v.eq_ignore_ascii_case("true");

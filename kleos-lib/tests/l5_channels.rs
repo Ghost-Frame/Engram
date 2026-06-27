@@ -189,3 +189,52 @@ async fn episode_fts_matches_and_isolates_by_user() {
         "no usable token -> empty result, not an error"
     );
 }
+
+/// L4b data path: detect_communities (env-tunable cap) assigns a community_id to every
+/// memory and get_community_members -- the community channel's source -- returns them, user-scoped.
+#[tokio::test]
+async fn community_detection_populates_and_members_are_scoped() {
+    use kleos_lib::graph::communities::{detect_communities, get_community_members};
+    let db = Database::connect_memory().await.expect("connect_memory");
+    let m1 = store_memory(&db, "graph cluster node one", 1).await;
+    let m2 = store_memory(&db, "graph cluster node two", 1).await;
+    // A different owner's memory must never appear in user 1's communities.
+    let other = store_memory(&db, "another tenant note", 2).await;
+
+    let res = detect_communities(&db, 1, 25).await.expect("detect");
+    assert!(
+        res.memories >= 2,
+        "both user-1 memories clustered; got {res:?}"
+    );
+
+    let covered: i64 = db
+        .read(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE user_id = 1 AND community_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(covered, 2, "detection populated community_id for user 1");
+
+    let cid: i64 = db
+        .read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT community_id FROM memories WHERE id = ?1",
+                params![m1],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    let members = get_community_members(&db, cid, 1, 10)
+        .await
+        .expect("members");
+    assert!(members.iter().any(|mm| mm.id == m1 || mm.id == m2));
+    assert!(
+        !members.iter().any(|mm| mm.id == other),
+        "get_community_members must be user-scoped"
+    );
+}
