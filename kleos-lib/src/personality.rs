@@ -177,15 +177,18 @@ fn valence_from_signed(signed: f64) -> Valence {
     }
 }
 
-/// Build the intensifier word -> multiplier map from the i18n lexicon.
+/// Process-lifetime intensifier word -> multiplier map from the i18n lexicon.
 ///
-/// Replaces the hardcoded English-only INTENSIFIERS
-/// static. The map is rebuilt per derive_signals call (cheap given a
-/// small number of tiers and words). Tier multipliers stay in code
-/// because they encode a semantic policy about how strongly each tier
-/// modulates the signal; the words themselves live in the lexicon and
-/// can be extended per language without recompilation.
-fn build_intensifier_map() -> HashMap<String, f64> {
+/// Built ONCE for the process lifetime (was previously rebuilt per signal
+/// inside the rule-based scoring loop). Intentionally a UNION across all
+/// supported languages: the downstream fold at the call site uses
+/// with_stem=false, so the folded keys (lowercase + diacritic strip only)
+/// are language-neutral and collisions across languages are benign. Tier
+/// multipliers stay in code because they encode a semantic policy about how
+/// strongly each tier modulates the signal; the words themselves live in the
+/// lexicon and can be extended per language without recompilation.
+static INTENSIFIER_MAP: LazyLock<HashMap<String, f64>> = LazyLock::new(|| {
+    // Intensifier tiers and their multipliers (semantic policy in code).
     const TIERS: &[(&str, f64)] = &[
         ("intensifier_weakening", 0.5),
         ("intensifier_softening", 0.6),
@@ -209,7 +212,7 @@ fn build_intensifier_map() -> HashMap<String, f64> {
         }
     }
     map
-}
+});
 
 /// Valence + intensity for an emotion keyword. Used by the upstream env-var
 /// emotion extension (`EXTRA_EMOTION_KEYWORDS`); the i18n lexicon
@@ -428,19 +431,22 @@ static PERSONALITY_REGEX: LazyLock<PersonalityRegexCache> = LazyLock::new(|| {
 
 /// Clean a captured subject string: trim, remove leading articles, truncate.
 ///
-/// Leading articles sourced from the i18n lexicon
-/// (`articles` class) across every supported language so French captures
-/// like "le chien" / "une voiture" / "mes amis" get the same article
-/// stripping as English captures.
-fn clean_subject(raw: &str) -> String {
+/// Leading articles are sourced from the i18n lexicon (`articles` class) for
+/// the single detected language `lang` only -- the language is detected once
+/// at the public boundary and threaded down, so a French capture like
+/// "le chien" strips via the French article set while an English capture
+/// strips via the English one, without a cross-language union.
+fn clean_subject(raw: &str, lang: &str) -> String {
     let trimmed = raw.trim();
-    let stripped = crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "articles"))
-        .find_map(|article| trimmed.strip_prefix(&format!("{} ", article.to_lowercase())))
-        .unwrap_or(trimmed);
-    let chars: String = stripped.chars().take(200).collect();
-    chars
+    let stripped = crate::lexicon::word_class(lang, "articles")
+        .into_iter()
+        .find_map(|article| {
+            trimmed
+                .strip_prefix(&format!("{} ", article.to_lowercase()))
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| trimmed.to_string());
+    stripped.chars().take(200).collect()
 }
 
 /// Split text into sentences.
@@ -462,185 +468,202 @@ fn split_sentences(content: &str) -> Vec<&str> {
 // ============================================================================
 
 /// Extract personality signals using template-based pattern matching (Tier 3).
-pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
+///
+/// `lang` is the language detected once at the public boundary
+/// (`extract_personality_signals` / `detect_signals`) and threaded in. Each of
+/// the 5 pattern families looks up that single language's compiled regex,
+/// falling back to the "en" entry when the detected language has no pattern,
+/// instead of brute-forcing the union of every supported language.
+pub fn extract_signals_template(content: &str, lang: &str) -> Vec<PersonalitySignal> {
     let mut signals = Vec::new();
     let sentences = split_sentences(content);
 
-    // The 5 pattern families below iterate over
-    // every supported language and apply that language's compiled
-    // regex. A HashSet keyed by (signal_type discriminant, subject)
-    // dedup-guards against duplicate signals when bilingual content
-    // matches multiple languages' patterns.
+    // A HashSet keyed by (signal_type discriminant, subject) dedup-guards
+    // against a single pattern matching the same subject more than once.
     let mut seen_signals: std::collections::HashSet<(u8, String)> =
         std::collections::HashSet::new();
 
-    for lang in crate::lexicon::supported_languages() {
-        // Preferences: likes
-        if let Some(re) = PERSONALITY_REGEX.like.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let Some(m) = caps.get(1) {
-                    let subject = clean_subject(m.as_str());
-                    if subject.len() < 3 || subject.len() > 100 {
-                        continue;
-                    }
-                    if !seen_signals.insert((1, subject.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Preference,
-                        subject: subject.clone(),
-                        valence: Valence::Positive,
-                        intensity: 0.6,
-                        reasoning: format!("Expressed positive preference about {subject}"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
+    // Preferences: likes
+    if let Some(re) = PERSONALITY_REGEX
+        .like
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.like.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let Some(m) = caps.get(1) {
+                let subject = clean_subject(m.as_str(), lang);
+                if subject.len() < 3 || subject.len() > 100 {
+                    continue;
                 }
-            }
-        }
-
-        // Preferences: dislikes
-        if let Some(re) = PERSONALITY_REGEX.dislike.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let Some(m) = caps.get(1) {
-                    let subject = clean_subject(m.as_str());
-                    if subject.len() < 3 || subject.len() > 100 {
-                        continue;
-                    }
-                    if !seen_signals.insert((2, subject.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Preference,
-                        subject: subject.clone(),
-                        valence: Valence::Negative,
-                        intensity: 0.6,
-                        reasoning: format!("Expressed negative preference about {subject}"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
+                if !seen_signals.insert((1, subject.clone())) {
+                    continue;
                 }
-            }
-        }
-
-        // Preferences: favorites
-        if let Some(re) = PERSONALITY_REGEX.favorite.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let (Some(cat), Some(val)) = (caps.get(1), caps.get(2)) {
-                    let cat_clean = clean_subject(cat.as_str());
-                    let val_clean = clean_subject(val.as_str());
-                    let key = format!("{cat_clean}: {val_clean}");
-                    if !seen_signals.insert((3, key.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Preference,
-                        subject: key,
-                        valence: Valence::Positive,
-                        intensity: 0.8,
-                        reasoning: format!("Named {val_clean} as favorite {cat_clean}"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
-                }
-            }
-        }
-
-        // Decisions
-        if let Some(re) = PERSONALITY_REGEX.decision.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let Some(m) = caps.get(1) {
-                    let subject = clean_subject(m.as_str());
-                    if subject.len() < 3 || subject.len() > 100 {
-                        continue;
-                    }
-                    if !seen_signals.insert((4, subject.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Decision,
-                        subject: subject.clone(),
-                        valence: Valence::Neutral,
-                        intensity: 0.5,
-                        reasoning: format!("Made a decision about {subject}"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
-                }
-            }
-        }
-
-        // Identity
-        if let Some(re) = PERSONALITY_REGEX.identity.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let Some(m) = caps.get(1) {
-                    let subject = clean_subject(m.as_str());
-                    if subject.len() < 3 || subject.len() > 100 {
-                        continue;
-                    }
-                    if !seen_signals.insert((5, subject.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Identity,
-                        subject: subject.clone(),
-                        valence: Valence::Neutral,
-                        intensity: 0.7,
-                        reasoning: format!("Self-identified as {subject}"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
-                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Preference,
+                    subject: subject.clone(),
+                    valence: Valence::Positive,
+                    intensity: 0.6,
+                    reasoning: format!("Expressed positive preference about {subject}"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
             }
         }
     }
 
-    // Emotions (keyword scan per sentence) --  +
-    // normalize. Source and lexicon word are both passed through
-    // fold_word_for_class so French expressions like "elle est déçue"
-    // match the lexicon entry "déçu" even though the user typed without
-    // accents, in a different inflection, or both.
+    // Preferences: dislikes
+    if let Some(re) = PERSONALITY_REGEX
+        .dislike
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.dislike.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let Some(m) = caps.get(1) {
+                let subject = clean_subject(m.as_str(), lang);
+                if subject.len() < 3 || subject.len() > 100 {
+                    continue;
+                }
+                if !seen_signals.insert((2, subject.clone())) {
+                    continue;
+                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Preference,
+                    subject: subject.clone(),
+                    valence: Valence::Negative,
+                    intensity: 0.6,
+                    reasoning: format!("Expressed negative preference about {subject}"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    // Preferences: favorites
+    if let Some(re) = PERSONALITY_REGEX
+        .favorite
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.favorite.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let (Some(cat), Some(val)) = (caps.get(1), caps.get(2)) {
+                let cat_clean = clean_subject(cat.as_str(), lang);
+                let val_clean = clean_subject(val.as_str(), lang);
+                let key = format!("{cat_clean}: {val_clean}");
+                if !seen_signals.insert((3, key.clone())) {
+                    continue;
+                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Preference,
+                    subject: key,
+                    valence: Valence::Positive,
+                    intensity: 0.8,
+                    reasoning: format!("Named {val_clean} as favorite {cat_clean}"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    // Decisions
+    if let Some(re) = PERSONALITY_REGEX
+        .decision
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.decision.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let Some(m) = caps.get(1) {
+                let subject = clean_subject(m.as_str(), lang);
+                if subject.len() < 3 || subject.len() > 100 {
+                    continue;
+                }
+                if !seen_signals.insert((4, subject.clone())) {
+                    continue;
+                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Decision,
+                    subject: subject.clone(),
+                    valence: Valence::Neutral,
+                    intensity: 0.5,
+                    reasoning: format!("Made a decision about {subject}"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    // Identity
+    if let Some(re) = PERSONALITY_REGEX
+        .identity
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.identity.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let Some(m) = caps.get(1) {
+                let subject = clean_subject(m.as_str(), lang);
+                if subject.len() < 3 || subject.len() > 100 {
+                    continue;
+                }
+                if !seen_signals.insert((5, subject.clone())) {
+                    continue;
+                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Identity,
+                    subject: subject.clone(),
+                    valence: Valence::Neutral,
+                    intensity: 0.7,
+                    reasoning: format!("Self-identified as {subject}"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    // Emotions (keyword scan per sentence) -- fold + normalize. Source and
+    // lexicon word are both passed through fold_word_for_class so French
+    // expressions like "elle est déçue" match the lexicon entry "déçu" even
+    // though the user typed without accents, in a different inflection, or
+    // both. Sentences are too short to detect reliably, so every sentence
+    // reuses the single `lang` detected from the full content.
     for sentence in &sentences {
         let mut matched = false;
-        for lang in crate::lexicon::supported_languages() {
+        let folded_sentence = crate::lexicon::fold_for_matching(sentence, lang, true);
+        for class in EMOTION_CLASSES {
             if matched {
                 break;
             }
-            let folded_sentence = crate::lexicon::fold_for_matching(sentence, &lang, true);
-            for class in EMOTION_CLASSES {
-                if matched {
+            let Some((valence_signed, intensity)) =
+                crate::lexicon::class_emotion_metadata(lang, class)
+            else {
+                continue;
+            };
+            let valence = valence_from_signed(valence_signed);
+            for word in crate::lexicon::word_class(lang, class) {
+                let folded_word = crate::lexicon::fold_word_for_class(&word, lang, class);
+                if folded_sentence.contains(&folded_word) {
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Emotion,
+                        subject: word.clone(),
+                        valence,
+                        intensity,
+                        reasoning: format!("Expressed {valence} emotion: {word}"),
+                        source_text: sentence.chars().take(500).collect(),
+                    });
+                    matched = true;
                     break;
-                }
-                let Some((valence_signed, intensity)) =
-                    crate::lexicon::class_emotion_metadata(&lang, class)
-                else {
-                    continue;
-                };
-                let valence = valence_from_signed(valence_signed);
-                for word in crate::lexicon::word_class(&lang, class) {
-                    let folded_word = crate::lexicon::fold_word_for_class(&word, &lang, class);
-                    if folded_sentence.contains(&folded_word) {
-                        signals.push(PersonalitySignal {
-                            signal_type: SignalType::Emotion,
-                            subject: word.clone(),
-                            valence,
-                            intensity,
-                            reasoning: format!("Expressed {valence} emotion: {word}"),
-                            source_text: sentence.chars().take(500).collect(),
-                        });
-                        matched = true;
-                        break;
-                    }
                 }
             }
         }
@@ -677,64 +700,71 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
 /// Extract personality signals using rule-based NLP (Tier 2).
 /// Includes all Tier 3 patterns plus sentiment calibration, intensifiers,
 /// value patterns, and motivation patterns.
-pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
-    let mut signals = extract_signals_template(content);
+pub fn extract_signals_rule_based(content: &str, lang: &str) -> Vec<PersonalitySignal> {
+    let mut signals = extract_signals_template(content, lang);
 
-    // Per-language iteration for values and
-    // motivations, same dedup pattern as the upstream caller.
+    // Single-language lookups for values and motivations (fall back to the
+    // "en" entry when the detected language has no pattern), matching the
+    // template extractor's detect-once approach.
     let mut seen_signals: std::collections::HashSet<(u8, String)> =
         std::collections::HashSet::new();
 
-    for lang in crate::lexicon::supported_languages() {
-        // Values
-        if let Some(re) = PERSONALITY_REGEX.value.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let Some(m) = caps.get(1) {
-                    let subject = clean_subject(m.as_str());
-                    if subject.len() < 3 || subject.len() > 100 {
-                        continue;
-                    }
-                    if !seen_signals.insert((6, subject.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Value,
-                        subject: subject.clone(),
-                        valence: Valence::Positive,
-                        intensity: 0.7,
-                        reasoning: format!("Expressed that {subject} is important to them"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
+    // Values
+    if let Some(re) = PERSONALITY_REGEX
+        .value
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.value.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let Some(m) = caps.get(1) {
+                let subject = clean_subject(m.as_str(), lang);
+                if subject.len() < 3 || subject.len() > 100 {
+                    continue;
                 }
+                if !seen_signals.insert((6, subject.clone())) {
+                    continue;
+                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Value,
+                    subject: subject.clone(),
+                    valence: Valence::Positive,
+                    intensity: 0.7,
+                    reasoning: format!("Expressed that {subject} is important to them"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
             }
         }
+    }
 
-        // Motivations
-        if let Some(re) = PERSONALITY_REGEX.motivation.get(&lang) {
-            for caps in re.captures_iter(content) {
-                if let Some(m) = caps.get(1) {
-                    let subject = clean_subject(m.as_str());
-                    if subject.len() < 3 || subject.len() > 100 {
-                        continue;
-                    }
-                    if !seen_signals.insert((7, subject.clone())) {
-                        continue;
-                    }
-                    signals.push(PersonalitySignal {
-                        signal_type: SignalType::Motivation,
-                        subject: subject.clone(),
-                        valence: Valence::Positive,
-                        intensity: 0.6,
-                        reasoning: format!("Expressed aspiration toward {subject}"),
-                        source_text: caps
-                            .get(0)
-                            .map(|m| m.as_str().trim().to_string())
-                            .unwrap_or_default(),
-                    });
+    // Motivations
+    if let Some(re) = PERSONALITY_REGEX
+        .motivation
+        .get(lang)
+        .or_else(|| PERSONALITY_REGEX.motivation.get("en"))
+    {
+        for caps in re.captures_iter(content) {
+            if let Some(m) = caps.get(1) {
+                let subject = clean_subject(m.as_str(), lang);
+                if subject.len() < 3 || subject.len() > 100 {
+                    continue;
                 }
+                if !seen_signals.insert((7, subject.clone())) {
+                    continue;
+                }
+                signals.push(PersonalitySignal {
+                    signal_type: SignalType::Motivation,
+                    subject: subject.clone(),
+                    valence: Valence::Positive,
+                    intensity: 0.6,
+                    reasoning: format!("Expressed aspiration toward {subject}"),
+                    source_text: caps
+                        .get(0)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_default(),
+                });
             }
         }
     }
@@ -747,10 +777,11 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
             sig.intensity = (sig.intensity + avg_sentiment * 0.05).clamp(0.0, 1.0);
         }
 
-        // Intensifier detection (words
-        // via lexicon, source-text tokens folded the same way as map keys
-        // so French intensifiers like "très" match "tres" in the source).
-        let intensifiers = build_intensifier_map();
+        // Intensifier detection (words via lexicon, source-text tokens folded
+        // the same way as map keys so French intensifiers like "très" match
+        // "tres" in the source). The map is the process-lifetime static built
+        // once, not rebuilt per signal.
+        let intensifiers = &INTENSIFIER_MAP;
         // The intensifier class has stem = false, so we fold without
         // stemming -- lowercase + diacritic strip only. We pick "en" as
         // the fold language since stem is disabled; the result is
@@ -1129,7 +1160,10 @@ pub async fn extract_personality_signals(
         return Ok(Vec::new());
     }
 
-    let signals = extract_signals_rule_based(content);
+    // Detect the content language once at this public boundary and thread it
+    // through the private extractors (never re-detected on short spans).
+    let lang = crate::lang::detect_lang(content);
+    let signals = extract_signals_rule_based(content, &lang);
     if signals.is_empty() {
         return Ok(Vec::new());
     }
@@ -1375,7 +1409,9 @@ pub struct StoredProfile {
 }
 
 pub fn detect_signals(content: &str) -> Vec<(String, f64)> {
-    extract_signals_rule_based(content)
+    // Detect language once here (the public boundary), then thread it inward.
+    let lang = crate::lang::detect_lang(content);
+    extract_signals_rule_based(content, &lang)
         .into_iter()
         .map(|signal| (signal.signal_type.as_str().to_string(), signal.intensity))
         .collect()
@@ -1534,9 +1570,30 @@ mod tests {
 
     #[test]
     fn test_clean_subject() {
-        assert_eq!(clean_subject("  a dog  "), "dog");
-        assert_eq!(clean_subject("the quick fox"), "quick fox");
-        assert_eq!(clean_subject("my favorite thing"), "favorite thing");
+        assert_eq!(clean_subject("  a dog  ", "en"), "dog");
+        assert_eq!(clean_subject("the quick fox", "en"), "quick fox");
+        assert_eq!(clean_subject("my favorite thing", "en"), "favorite thing");
+    }
+
+    #[test]
+    fn clean_subject_strips_french_article() {
+        // The French article "le" is stripped via the fr lexicon's `articles`
+        // class, proving per-language (not unioned) article handling.
+        assert_eq!(clean_subject("le serveur", "fr"), "serveur");
+    }
+
+    #[test]
+    fn extract_french_signal() {
+        // Best-effort: a French preference sentence should travel the fr regex
+        // path without panicking. If the fr lexicon lacks the pattern the
+        // result is simply empty -- either way, no panic.
+        let signals = extract_signals_template("J'aime la programmation et la cuisine.", "fr");
+        if let Some(pref) = signals
+            .iter()
+            .find(|s| s.signal_type == SignalType::Preference)
+        {
+            assert_eq!(pref.valence, Valence::Positive);
+        }
     }
 
     #[test]
@@ -1547,7 +1604,7 @@ mod tests {
 
     #[test]
     fn test_extract_like() {
-        let signals = extract_signals_template("I love programming and building things.");
+        let signals = extract_signals_template("I love programming and building things.", "en");
         assert!(!signals.is_empty(), "Should extract at least one signal");
         let pref = signals
             .iter()
@@ -1558,7 +1615,7 @@ mod tests {
 
     #[test]
     fn test_extract_dislike() {
-        let signals = extract_signals_template("I hate waking up early.");
+        let signals = extract_signals_template("I hate waking up early.", "en");
         assert!(!signals.is_empty(), "Should extract at least one signal");
         let pref = signals
             .iter()
@@ -1569,7 +1626,7 @@ mod tests {
 
     #[test]
     fn test_extract_decision() {
-        let signals = extract_signals_template("I decided to quit my job.");
+        let signals = extract_signals_template("I decided to quit my job.", "en");
         let decision = signals
             .iter()
             .find(|s| s.signal_type == SignalType::Decision);
@@ -1578,7 +1635,7 @@ mod tests {
 
     #[test]
     fn test_extract_identity() {
-        let signals = extract_signals_template("I am a software developer.");
+        let signals = extract_signals_template("I am a software developer.", "en");
         let identity = signals
             .iter()
             .find(|s| s.signal_type == SignalType::Identity);
@@ -1587,7 +1644,7 @@ mod tests {
 
     #[test]
     fn test_extract_emotion() {
-        let signals = extract_signals_template("I feel really excited about this project.");
+        let signals = extract_signals_template("I feel really excited about this project.", "en");
         let emotion = signals
             .iter()
             .find(|s| s.signal_type == SignalType::Emotion);
@@ -1597,14 +1654,15 @@ mod tests {
     #[test]
     fn test_rule_based_values() {
         let signals =
-            extract_signals_rule_based("I believe in open source software and community.");
+            extract_signals_rule_based("I believe in open source software and community.", "en");
         let value = signals.iter().find(|s| s.signal_type == SignalType::Value);
         assert!(value.is_some(), "Should find a value signal");
     }
 
     #[test]
     fn test_rule_based_motivation() {
-        let signals = extract_signals_rule_based("I want to learn Rust and systems programming.");
+        let signals =
+            extract_signals_rule_based("I want to learn Rust and systems programming.", "en");
         let motivation = signals
             .iter()
             .find(|s| s.signal_type == SignalType::Motivation);
@@ -1613,8 +1671,8 @@ mod tests {
 
     #[test]
     fn test_rule_based_intensifier() {
-        let base = extract_signals_template("I love cooking.");
-        let intensified = extract_signals_rule_based("I really love cooking!");
+        let base = extract_signals_template("I love cooking.", "en");
+        let intensified = extract_signals_rule_based("I really love cooking!", "en");
         if let (Some(b), Some(i)) = (
             base.iter()
                 .find(|s| s.signal_type == SignalType::Preference),
@@ -1631,7 +1689,7 @@ mod tests {
 
     #[test]
     fn test_short_content_no_extraction() {
-        let signals = extract_signals_template("Hi.");
+        let signals = extract_signals_template("Hi.", "en");
         assert!(signals.is_empty());
     }
 
