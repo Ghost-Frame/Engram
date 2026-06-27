@@ -1,0 +1,58 @@
+name: Discord release announce
+
+# Fires only when a GitHub release is published. No effect on pushes, PRs, or builds.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT: ${{ github.event.repository.name }}
+      VERSION: ${{ github.event.release.tag_name }}
+      REL_URL: ${{ github.event.release.html_url }}
+      REL_NAME: ${{ github.event.release.name }}
+      REL_BODY: ${{ github.event.release.body }}
+      PUBLISHED: ${{ github.event.release.published_at }}
+      RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+      CHANGELOG_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+      COLOR: "5793266"
+      CHANGELOG_PATH: ${{ vars.CHANGELOG_PATH || 'CHANGELOG.md' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Build and post embeds
+        run: |
+          set -euo pipefail
+          CL="${CHANGELOG_PATH:-CHANGELOG.md}"; VER="${VERSION#v}"
+          emoji() { case "$1" in
+            Added) echo "✨";; Changed) echo "♻️";; Fixed) echo "🐛";; Security) echo "🔒";;
+            Removed) echo "🗑️";; Deprecated) echo "⚠️";; CI) echo "⚙️";; Build) echo "🔨";;
+            Performance|Perf) echo "⚡";; Docs|Documentation) echo "📝";; *) echo "•";; esac; }
+          # Extract the changelog block for this version, if a CHANGELOG exists.
+          section=""
+          if [[ -f "$CL" ]]; then
+            section=$(awk -v v="$VER" '$0 ~ ("^## \\[" v "\\]"){g=1;next} g&&/^## \[/{exit} g{print}' "$CL")
+          fi
+          [[ -z "$section" ]] && section="- ${REL_BODY:-See GitHub release.}"
+          # Build fields JSON from the section.
+          fields="[]"; heading=""; buf=""
+          flush(){ local v; if [[ -n "$heading" && -n "$buf" ]]; then
+            v="$buf"; (( ${#v} > 1024 )) && v="${v:0:1000}... (truncated)"
+            fields=$(jq -c --arg n "$(emoji "$heading") $heading" --arg v "$v" '.+[{name:$n,value:$v,inline:false}]' <<<"$fields"); fi; heading=""; buf=""; }
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" =~ ^###[[:space:]]+([A-Za-z]+) ]]; then flush; heading="${BASH_REMATCH[1]}";
+            elif [[ -n "$heading" && -n "${line// /}" ]]; then buf+="$line"$'\n'; fi
+          done <<<"$section"; flush
+          [[ "$fields" == "[]" ]] && fields=$(jq -cn --arg v "${section:0:1024}" '[{name:"📝 Notes",value:$v,inline:false}]')
+          chg=$(jq -cn --arg t "$PROJECT $VERSION" --arg u "$REL_URL" --arg ts "${PUBLISHED}" \
+            --argjson c "$COLOR" --argjson f "$fields" \
+            '{title:$t,url:$u,color:$c,timestamp:$ts,fields:($f[0:25])}')
+          rel=$(jq -cn --arg t "$PROJECT $VERSION released" --arg u "$REL_URL" \
+            --arg d "${REL_NAME:-$PROJECT $VERSION is out.}" --arg ts "$PUBLISHED" --argjson c "$COLOR" \
+            '{title:$t,url:$u,description:$d,color:$c,timestamp:$ts}')
+          curl -sS --fail-with-body -X POST "$RELEASES_WEBHOOK" -H "Content-Type: application/json" --data "$(jq -cn --argjson e "$rel" '{embeds:[$e]}')"
+          curl -sS --fail-with-body -X POST "$CHANGELOG_WEBHOOK" -H "Content-Type: application/json" --data "$(jq -cn --argjson e "$chg" '{embeds:[$e]}')"
