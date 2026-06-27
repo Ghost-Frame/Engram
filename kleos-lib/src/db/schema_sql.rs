@@ -1102,7 +1102,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
             content, category, source,
             content='memories', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
             INSERT INTO memories_fts(rowid, content, category, source)
@@ -1121,7 +1121,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
             title, summary, agent,
             content='episodes', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS episodes_fts_insert AFTER INSERT ON episodes BEGIN
             INSERT INTO episodes_fts(rowid, title, summary, agent)
@@ -1140,7 +1140,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             content, role,
             content='messages', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(rowid, content, role)
@@ -1159,7 +1159,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
             name, description, code,
             content='skill_records', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS skills_fts_insert AFTER INSERT ON skill_records BEGIN
             INSERT INTO skills_fts(rowid, name, description, code)
@@ -1178,7 +1178,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts USING fts5(
             name, content,
             content='artifacts', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS artifacts_fts_insert AFTER INSERT ON artifacts BEGIN
             INSERT INTO artifacts_fts(rowid, name, content)
@@ -1201,7 +1201,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
             subject, predicate, object, verb,
             content='structured_facts', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS facts_fts_insert AFTER INSERT ON structured_facts BEGIN
             INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
