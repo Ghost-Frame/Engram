@@ -4151,6 +4151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "ahash 0.8.12",
+ "allocator-api2",
 ]
 
 [[package]]
@@ -5176,6 +5177,7 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+ "whatlang",
  "yubikey",
  "zeroize",
  "zip",
@@ -11625,6 +11627,16 @@ dependencies = [
  "js-sys",
  "log",
  "web-sys",
+]
+
+[[package]]
+name = "whatlang"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "471d1c1645d361eb782a1650b1786a8fb58dd625e681a04c09f5ff7c8764a7b0"
+dependencies = [
+ "hashbrown 0.14.5",
+ "once_cell",
 ]
 
 [[package]]
