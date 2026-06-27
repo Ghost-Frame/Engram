@@ -41,6 +41,8 @@ regex = "1"
 # i18n core lexicon -- accent strip (NFD) + morphological stemming.
 unicode-normalization = "0.1"
 rust-stemmers = "1.2"
+# Statistical content-language detection (feeds per-language NLP routing).
+whatlang = "0.16"
 url = "2"
 ipnet = "2"
 zip = "2"

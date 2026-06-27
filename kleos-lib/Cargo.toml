@@ -52,6 +52,7 @@ sha2 = { workspace = true }
 hmac = { workspace = true }
 unicode-normalization = { workspace = true }
 rust-stemmers = { workspace = true }
+whatlang = { workspace = true }
 url = { workspace = true }
 ipnet = { workspace = true }
 ort = { workspace = true }

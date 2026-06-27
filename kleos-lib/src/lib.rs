@@ -29,6 +29,7 @@ pub mod inbox;
 pub mod ingestion;
 pub mod intelligence;
 pub mod jobs;
+pub mod lang;
 pub mod lexicon;
 pub mod llm;
 pub mod mcp_token;
@@ -66,6 +67,7 @@ pub use env::kleos_env;
 
 use thiserror::Error;
 
+/// Crate-wide error type spanning database, IO, auth, and domain failures.
 #[derive(Debug, Error)]
 pub enum EngError {
     #[error("database error: {0}")]
@@ -111,8 +113,10 @@ pub enum EngError {
     QuotaExceeded(String),
 }
 
+/// Convenience alias for results that fail with [`EngError`].
 pub type Result<T> = std::result::Result<T, EngError>;
 
+/// Tests for error construction and conversion behavior.
 #[cfg(test)]
 mod error_tests {
     use super::*;
