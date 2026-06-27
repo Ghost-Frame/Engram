@@ -62,14 +62,24 @@ fn embedded_fr() -> &'static ParsedLexicon {
     })
 }
 
+/// Embedded DE baseline. Same rules as `embedded_en`.
+fn embedded_de() -> &'static ParsedLexicon {
+    static DE: OnceLock<ParsedLexicon> = OnceLock::new();
+    DE.get_or_init(|| {
+        loader::parse(include_str!("../../lexicon/de.toml"))
+            .expect("embedded de.toml must parse (build-time guarantee)")
+    })
+}
+
 /// List of language codes that have an embedded baseline. The override repo
 /// can add others on top via files named `<lang>.toml`.
-const EMBEDDED_LANGS: &[&str] = &["en", "fr"];
+const EMBEDDED_LANGS: &[&str] = &["en", "fr", "de"];
 
 fn embedded(lang: &str) -> Option<&'static ParsedLexicon> {
     match lang {
         "en" => Some(embedded_en()),
         "fr" => Some(embedded_fr()),
+        "de" => Some(embedded_de()),
         _ => None,
     }
 }
@@ -469,6 +479,7 @@ mod tests {
         let langs = supported_languages();
         assert!(langs.contains(&"en".to_string()));
         assert!(langs.contains(&"fr".to_string()));
+        assert!(langs.contains(&"de".to_string()));
     }
 
     #[test]
@@ -652,6 +663,65 @@ mod tests {
                 "embedded fr.toml is missing class {class}",
             );
         }
+    }
+
+    #[test]
+    fn embedded_de_loads_verb_like() {
+        let words = word_class("de", "verb_like");
+        assert!(words.contains(&"lieben".to_string()));
+        assert!(words.contains(&"mögen".to_string()));
+        assert!(words.contains(&"genießen".to_string()));
+        assert!(words.contains(&"bevorzugen".to_string()));
+    }
+
+    #[test]
+    fn embedded_de_has_full_class_set() {
+        // Same coverage check for the DE baseline.
+        for class in [
+            "verb_like",
+            "verb_dislike",
+            "verb_buy",
+            "state_verbs",
+            "articles",
+            "stopwords",
+            "first_person_pronoun",
+            "emotion_happy",
+            "emotion_sad",
+            "intensifier_strong",
+            "negation_marker",
+            "causal_strong",
+            "causal_context",
+            "causal_weak",
+            "filler_prefixes",
+            "meta_stoplist",
+            "credential_keywords",
+            "prohibition_marker",
+        ] {
+            assert!(
+                !word_class("de", class).is_empty(),
+                "embedded de.toml is missing class {class}",
+            );
+        }
+    }
+
+    #[test]
+    fn fold_stems_german_noun_plurals() {
+        // German Snowball handles noun declension well: singular and plural
+        // forms of the same noun should collapse to the same stem root.
+        // "Stunde" (hour, singular) and "Stunden" (plural) both -> "stund".
+        let singular = fold_for_matching("Stunde", "de", true);
+        let plural = fold_for_matching("Stunden", "de", true);
+        assert_eq!(
+            singular, plural,
+            "Stunde and Stunden should stem to the same root"
+        );
+        // Also verify the DE stemmer is active at all: the stem must differ
+        // from the raw-folded plural (i.e., the -en suffix is actually stripped).
+        let raw = fold_for_matching("Stunden", "de", false);
+        assert_ne!(
+            plural, raw,
+            "Snowball-German stemmer must change 'Stunden' (stem != raw fold)"
+        );
     }
 
     // Helper tests.
