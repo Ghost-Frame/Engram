@@ -29,17 +29,16 @@ fn decomposition_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt("memory/decompose/system", DECOMPOSITION_PROMPT_DEFAULT)
 }
 
-/// Build the filler-prefix list from the i18n lexicon.
+/// Build the filler-prefix list from the i18n lexicon for one language.
 ///
 /// The previous hardcoded English-only
 /// FILLER_PREFIXES and META_STOPLIST constants now source their content
 /// from the lexicon (filler_prefixes and meta_stoplist classes) for
-/// every supported language. French / English transcripts are filtered
-/// symmetrically.
-fn filler_prefixes() -> Vec<String> {
-    crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "filler_prefixes"))
+/// the detected language instead of brute-forcing every supported
+/// language.
+fn filler_prefixes(lang: &str) -> Vec<String> {
+    crate::lexicon::word_class(lang, "filler_prefixes")
+        .into_iter()
         .map(|w| w.to_lowercase())
         .collect()
 }
@@ -108,8 +107,12 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
         return Ok(Vec::new());
     }
 
+    // Detect the dominant language once so private decomposition tiers can
+    // use the matching lexicon path instead of brute-forcing all languages.
+    let lang = crate::lang::detect_lang(&content);
+
     // Try tiered decomposition
-    let decomposition = decompose_content(&content).await;
+    let decomposition = decompose_content(&content, &lang).await;
 
     let decomp = match decomposition {
         Some(d) if !d.result.skip && !d.result.facts.is_empty() => d,
@@ -197,7 +200,7 @@ pub async fn decompose(db: &Database, memory_id: i64, user_id: i64) -> Result<Ve
 }
 
 /// Decompose content using the tiered approach.
-async fn decompose_content(content: &str) -> Option<DecompositionWithTier> {
+async fn decompose_content(content: &str, lang: &str) -> Option<DecompositionWithTier> {
     // Tier 1: LLM
     if is_llm_available() {
         if let Some(result) = try_llm_decomposition(content).await {
@@ -209,7 +212,7 @@ async fn decompose_content(content: &str) -> Option<DecompositionWithTier> {
     }
 
     // Tier 2: Rule-based
-    let rule_result = decompose_rule_based(content);
+    let rule_result = decompose_rule_based(content, lang);
     if !rule_result.skip && !rule_result.facts.is_empty() {
         return Some(DecompositionWithTier {
             result: rule_result,
@@ -218,7 +221,7 @@ async fn decompose_content(content: &str) -> Option<DecompositionWithTier> {
     }
 
     // Tier 3: Template
-    let template_result = decompose_template(content);
+    let template_result = decompose_template(content, lang);
     if !template_result.skip && !template_result.facts.is_empty() {
         return Some(DecompositionWithTier {
             result: template_result,
@@ -259,7 +262,7 @@ async fn try_llm_decomposition(content: &str) -> Option<DecompositionResult> {
 
 /// Tier 2: Rule-based NLP decomposition.
 /// Sentence splitting + conjunction splitting + filler stripping + meta filtering.
-fn decompose_rule_based(content: &str) -> DecompositionResult {
+fn decompose_rule_based(content: &str, lang: &str) -> DecompositionResult {
     // Split on sentence boundaries + newlines
     let raw_sentences: Vec<&str> = content
         .split(['.', '!', '?', '\n'])
@@ -275,54 +278,56 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
     let filtered: Vec<&str> = raw_sentences
         .into_iter()
         .filter(|s| {
-            !crate::lexicon::supported_languages().iter().any(|lang| {
-                let folded_s = crate::lexicon::fold_for_matching(s, lang, true);
-                crate::lexicon::word_class(lang, "meta_stoplist")
-                    .iter()
-                    .any(|meta| {
-                        folded_s.contains(&crate::lexicon::fold_word_for_class(
-                            meta,
-                            lang,
-                            "meta_stoplist",
-                        ))
-                    })
-            })
+            let folded_s = crate::lexicon::fold_for_matching(s, lang, true);
+            !crate::lexicon::word_class(lang, "meta_stoplist")
+                .iter()
+                .any(|meta| {
+                    folded_s.contains(&crate::lexicon::fold_word_for_class(
+                        meta,
+                        lang,
+                        "meta_stoplist",
+                    ))
+                })
         })
         .collect();
 
     // Strip filler prefixes
     let cleaned: Vec<String> = filtered
         .into_iter()
-        .map(strip_filler)
+        .map(|s| strip_filler(s, lang))
         .filter(|s| s.len() >= 10)
         .collect();
 
     // Conjunction splitting
     let mut expanded: Vec<String> = Vec::new();
     for sentence in &cleaned {
-        // Split on " and ", " but ", " while "
-        let conjunctions = [" and ", " but ", " while ", " however "];
         let mut split_parts: Vec<String> = vec![sentence.clone()];
 
-        for conj in &conjunctions {
-            let mut new_parts = Vec::new();
-            for part in &split_parts {
-                if part.contains(conj) {
-                    let subs: Vec<&str> = part.splitn(2, conj).collect();
-                    for sub in subs {
-                        let trimmed = sub.trim();
-                        if trimmed.split_whitespace().count() >= 3 && trimmed.len() >= 10 {
-                            new_parts.push(trimmed.to_string());
-                        } else {
-                            new_parts.push(part.clone());
-                            break;
+        if lang == "en" {
+            // Split on the current English conjunction list only.
+            let conjunctions = [" and ", " but ", " while ", " however "];
+            for conj in &conjunctions {
+                let mut new_parts = Vec::new();
+                for part in &split_parts {
+                    if part.contains(conj) {
+                        let subs: Vec<&str> = part.splitn(2, conj).collect();
+                        for sub in subs {
+                            let trimmed = sub.trim();
+                            if trimmed.split_whitespace().count() >= 3 && trimmed.len() >= 10 {
+                                new_parts.push(trimmed.to_string());
+                            } else {
+                                new_parts.push(part.clone());
+                                break;
+                            }
                         }
+                    } else {
+                        new_parts.push(part.clone());
                     }
-                } else {
-                    new_parts.push(part.clone());
                 }
+                split_parts = new_parts;
             }
-            split_parts = new_parts;
+        } else {
+            // TODO: add a `conjunctions` lexicon class for non-EN.
         }
 
         expanded.extend(split_parts);
@@ -345,12 +350,12 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
 }
 
 /// Tier 3: Template-based decomposition. Simple sentence splitting.
-fn decompose_template(content: &str) -> DecompositionResult {
+fn decompose_template(content: &str, lang: &str) -> DecompositionResult {
     let sentences: Vec<String> = content
         .split(['.', '!', '?', '\n'])
         .map(|s| s.trim())
         .filter(|s| s.len() >= 10 && s.len() <= 300)
-        .map(strip_filler)
+        .map(|s| strip_filler(s, lang))
         .filter(|s| s.len() >= 10)
         .collect();
 
@@ -368,9 +373,9 @@ fn decompose_template(content: &str) -> DecompositionResult {
 }
 
 /// Strip leading filler phrases (lexicon-driven).
-fn strip_filler(s: &str) -> String {
+fn strip_filler(s: &str, lang: &str) -> String {
     let lower = s.to_lowercase();
-    for filler in filler_prefixes() {
+    for filler in filler_prefixes(lang) {
         // Lexicon entries do not carry trailing spaces; append one so the
         // starts_with check matches the original "filler " convention.
         let prefix = format!("{filler} ");
@@ -420,15 +425,18 @@ mod tests {
     /// Verifies that filler prefixes are stripped without altering plain content.
     #[test]
     fn test_strip_filler() {
-        assert_eq!(strip_filler("so the server is down"), "the server is down");
-        assert_eq!(strip_filler("basically it works"), "it works");
-        assert_eq!(strip_filler("no filler here"), "no filler here");
+        assert_eq!(
+            strip_filler("so the server is down", "en"),
+            "the server is down"
+        );
+        assert_eq!(strip_filler("basically it works", "en"), "it works");
+        assert_eq!(strip_filler("no filler here", "en"), "no filler here");
     }
 
     /// Verifies that a single short sentence is skipped by template decomposition.
     #[test]
     fn test_decompose_template_short() {
-        let result = decompose_template("Short.");
+        let result = decompose_template("Short.", "en");
         assert!(result.skip);
         assert!(result.facts.is_empty());
     }
@@ -437,7 +445,7 @@ mod tests {
     #[test]
     fn test_decompose_template_multiple() {
         let content = "The server is running on port 8080. The database is PostgreSQL. Redis is used for caching.";
-        let result = decompose_template(content);
+        let result = decompose_template(content, "en");
         assert!(!result.skip);
         assert!(result.facts.len() >= 2);
     }
@@ -446,9 +454,23 @@ mod tests {
     #[test]
     fn test_decompose_rule_based_with_conjunction() {
         let content = "I bought a new laptop and I configured the server. The deployment was successful but the tests were slow.";
-        let result = decompose_rule_based(content);
+        let result = decompose_rule_based(content, "en");
         // Should split on conjunction and produce multiple facts
         assert!(!result.facts.is_empty());
+    }
+
+    /// Verifies that the French filler path strips a French prefix when the
+    /// lexicon provides one and otherwise leaves the sentence intact.
+    #[test]
+    fn strip_filler_french() {
+        let french = "en fait le serveur est en panne";
+        let result = strip_filler(french, "fr");
+
+        if crate::lexicon::word_class("fr", "filler_prefixes").is_empty() {
+            assert_eq!(result, french);
+        } else {
+            assert_eq!(result, "le serveur est en panne");
+        }
     }
 
     /// Verifies that near-duplicate facts collapse under the overlap threshold.
