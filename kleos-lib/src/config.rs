@@ -159,6 +159,18 @@ fn default_dream_idle_threshold_secs() -> u64 {
     60
 }
 
+/// Default switch for the associative auto-linker (restored after a regression
+/// left memories unlinked). Enabled so new memories rejoin the graph.
+fn default_auto_link_enabled() -> bool {
+    true
+}
+
+/// Default number of unlinked memories the auto-linker processes per dreamer
+/// cycle. Bounds per-tick work so a large backlog drains gradually.
+fn default_auto_link_batch() -> usize {
+    50
+}
+
 /// Default switch for autonomous skill evolution.
 fn default_skill_evolution_enabled() -> bool {
     true
@@ -577,6 +589,15 @@ pub struct Config {
     /// work. Set to 0 to disable idle gating. Default: 60.
     #[serde(default = "default_dream_idle_threshold_secs")]
     pub dream_idle_threshold_secs: u64,
+    /// Whether the dreamer's associative auto-linker runs. When true, each cycle
+    /// links a batch of unlinked memories to their nearest neighbours
+    /// (`similarity` links), reviving the dedup/consolidation passes that read
+    /// them. Default: true.
+    #[serde(default = "default_auto_link_enabled")]
+    pub auto_link_enabled: bool,
+    /// Unlinked memories the auto-linker processes per dreamer cycle. Default: 50.
+    #[serde(default = "default_auto_link_batch")]
+    pub auto_link_batch: usize,
     /// Run the hermes-style autonomous skill evolution phase inside the
     /// dreamer tick. Gates fix/capture/derive passes together.
     #[serde(default = "default_skill_evolution_enabled")]
@@ -734,6 +755,8 @@ impl Default for Config {
             dreamer_enabled: default_dreamer_enabled(),
             dream_interval_secs: default_dream_interval_secs(),
             dream_idle_threshold_secs: default_dream_idle_threshold_secs(),
+            auto_link_enabled: default_auto_link_enabled(),
+            auto_link_batch: default_auto_link_batch(),
             skill_evolution_enabled: default_skill_evolution_enabled(),
             skill_evolution_interval_secs: default_skill_evolution_interval_secs(),
             skill_evolution_max_fixes_per_tick: default_skill_evolution_max_fixes_per_tick(),
@@ -1050,6 +1073,19 @@ impl Config {
         }
         if let Ok(v) = crate::kleos_env("DREAMER_ENABLED") {
             config.dreamer_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("AUTO_LINK_ENABLED") {
+            config.auto_link_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("AUTO_LINK_BATCH") {
+            match v.parse() {
+                Ok(n) => config.auto_link_batch = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_AUTO_LINK_BATCH={}, using default {}",
+                    v,
+                    config.auto_link_batch
+                ),
+            }
         }
         if let Ok(v) = crate::kleos_env("DREAM_INTERVAL_SECS") {
             match v.parse() {

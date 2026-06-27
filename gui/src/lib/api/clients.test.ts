@@ -75,4 +75,15 @@ describe('service API clients', () => {
     const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit?]>;
     expect(calls[0][0]).toBe('/graph?max=1500');
   });
+
+  it('requests the memory graph with depth, cap, and min_component', async () => {
+    const spy = ok({ edge_count: 0, edges: [], node_count: 0, nodes: [] });
+    vi.stubGlobal('fetch', spy);
+
+    // Default min_component prunes singleton dust (2); the 3D graph relies on it.
+    await graph.getMemoryGraph(3, 50000);
+
+    const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit?]>;
+    expect(calls[0][0]).toBe('/graph?depth=3&max=50000&min_component=2');
+  });
 });

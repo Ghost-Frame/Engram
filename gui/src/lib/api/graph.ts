@@ -9,8 +9,14 @@ export const getGraph = (max = 1500) => request<GraphData>(`/graph?max=${max}`);
 // living-organism 3D graph uses. `depth` controls how far edge traversal walks
 // from seed nodes; without it the backend collapses most edges, which is why
 // the rebuilt graph rendered 0 edges. Mirrors the old GUI's getGraph(3, 1500).
-export const getMemoryGraph = (depth = 3, max = 1500) =>
-  request<GraphData>(`/graph?depth=${depth}&max=${max}`);
+//
+// `minComponent` asks the backend to drop connected components smaller than N
+// nodes. The default of 2 prunes singleton "dust" -- unlinked memories (the bulk
+// of which are `session` auto-captures) that otherwise scatter across the view
+// as disconnected points and bury the real semantic clusters. Pass 1 to keep
+// every node, including isolated ones.
+export const getMemoryGraph = (depth = 3, max = 1500, minComponent = 2) =>
+  request<GraphData>(`/graph?depth=${depth}&max=${max}&min_component=${minComponent}`);
 
 // A detected memory community (cluster). `top_memories` lists representative
 // memory ids whose nodes inherit the community color/clustering force.

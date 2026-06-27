@@ -138,6 +138,8 @@ pub fn router() -> Router<AppState> {
         .route("/admin/vector_health", get(admin_vector_health))
         // Chunk + embedding backfill (Phase 2 rollout)
         .route("/admin/backfill_chunks", post(admin_backfill_chunks))
+        // Associative-link backfill (restores 'similarity' links after regression)
+        .route("/admin/backfill_links", post(admin_backfill_links))
         // Per-chunk LanceDB vector index rebuild from existing SQLite rows
         .route("/admin/vector/chunk-sync", post(admin_vector_chunk_sync))
         // Point-in-time recovery
@@ -1463,6 +1465,118 @@ async fn admin_backfill_chunks(
         "scanned": total_scanned,
         "primary_embeddings_filled": total_primary,
         "chunk_rows_written": total_chunks,
+        "failures": total_failures,
+        "per_tenant": per_tenant,
+    })))
+}
+
+// --- Associative-link backfill ---
+
+/// Query params for `POST /admin/backfill_links`.
+#[derive(serde::Deserialize)]
+struct BackfillLinksParams {
+    /// When true, compute how many links WOULD be created without writing.
+    #[serde(default)]
+    dry_run: bool,
+    /// Maximum unlinked memories to process PER TENANT this call. Defaults high
+    /// so a single call drains the backlog; lower it to throttle.
+    #[serde(default = "default_backfill_links_limit")]
+    limit: usize,
+}
+
+/// Default per-tenant cap when `limit` is omitted: high enough to drain a
+/// tenant's backlog in one call.
+fn default_backfill_links_limit() -> usize {
+    100_000
+}
+
+/// One-shot admin handler that links historically-unlinked memories to their
+/// nearest neighbours across every active tenant. Mirrors `backfill_chunks`:
+/// iterate tenant shards, run the linker per shard, aggregate. The same code
+/// path (`linker::link_unlinked_batch`) also runs incrementally in the dreamer,
+/// so this is purely a catch-up for the existing backlog. With `dry_run` no rows
+/// are written -- it reports the counts a real run would produce.
+#[tracing::instrument(skip_all)]
+async fn admin_backfill_links(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(params): Query<BackfillLinksParams>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    let registry = require_registry(&state)?;
+    let tenants = registry.list().map_err(AppError)?;
+
+    let mut total_scanned = 0usize;
+    let mut total_memories_linked = 0usize;
+    let mut total_links_created = 0usize;
+    let mut total_skipped_no_embedding = 0usize;
+    let mut total_failures = 0usize;
+    let mut tenants_processed = 0usize;
+    let mut per_tenant = Vec::new();
+
+    for row in &tenants {
+        if row.status != kleos_lib::tenant::TenantStatus::Active {
+            continue;
+        }
+
+        let handle = match registry.get(&row.user_id).await {
+            Ok(Some(h)) => h,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(tenant = %row.tenant_id, error = %e, "backfill_links: failed to load tenant");
+                total_failures += 1;
+                continue;
+            }
+        };
+
+        // Each tenant shard belongs to exactly one user; the registry stores the
+        // owner as a string. Parse to the numeric form the linker scopes on
+        // (mirrors the dreamer). Skip non-numeric shards (e.g. handoffs).
+        let owner_id: i64 = match row.user_id.parse() {
+            Ok(uid) => uid,
+            Err(_) => continue,
+        };
+
+        let db = handle.database();
+        match kleos_lib::intelligence::linker::link_unlinked_batch(
+            &db,
+            owner_id,
+            params.limit,
+            params.dry_run,
+        )
+        .await
+        {
+            Ok(report) => {
+                if report.scanned > 0 {
+                    per_tenant.push(json!({
+                        "tenant_id": row.tenant_id,
+                        "scanned": report.scanned,
+                        "memories_linked": report.memories_linked,
+                        "links_created": report.links_created,
+                        "skipped_no_embedding": report.skipped_no_embedding,
+                    }));
+                }
+                total_scanned += report.scanned;
+                total_memories_linked += report.memories_linked;
+                total_links_created += report.links_created;
+                total_skipped_no_embedding += report.skipped_no_embedding;
+            }
+            Err(e) => {
+                tracing::warn!(tenant = %row.tenant_id, error = %e, "backfill_links: tenant backfill failed");
+                total_failures += 1;
+            }
+        }
+        tenants_processed += 1;
+    }
+
+    Ok(Json(json!({
+        "dry_run": params.dry_run,
+        "tenants_processed": tenants_processed,
+        "scanned": total_scanned,
+        "memories_linked": total_memories_linked,
+        "links_created": total_links_created,
+        "skipped_no_embedding": total_skipped_no_embedding,
         "failures": total_failures,
         "per_tenant": per_tenant,
     })))
