@@ -10,6 +10,7 @@ pub mod feedback;
 pub mod growth;
 pub mod health;
 pub mod judge;
+pub mod linker;
 pub mod llm;
 pub mod predictive;
 pub mod reconsolidation;

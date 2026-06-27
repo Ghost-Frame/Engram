@@ -471,6 +471,17 @@ enum ForgeCommands {
 enum AdminCommands {
     /// Backfill missing primary + chunk embeddings across all tenants. Long-running.
     BackfillChunks,
+    /// Backfill associative ('similarity') links for unlinked memories across all
+    /// tenants by nearest-neighbour search. Restores graph connectivity lost to a
+    /// regression. Long-running. Use --dry-run first to preview counts.
+    BackfillLinks {
+        /// Compute how many links WOULD be created without writing any.
+        #[arg(long)]
+        dry_run: bool,
+        /// Max unlinked memories to process per tenant (throttle). Default: 100000.
+        #[arg(long, default_value_t = 100_000)]
+        limit: usize,
+    },
     /// Rebuild the FTS5 index on every tenant DB. Cheap.
     RebuildFts,
     /// Rebuild the Lance ANN index (IVF_HNSW_PQ) over current vectors.
@@ -1937,6 +1948,16 @@ async fn handle_admin_command(client: &Client, cmd: &AdminCommands) {
             {
                 Ok(v) => pretty(v),
                 Err(e) => err("backfill_chunks", e),
+            }
+        }
+        AdminCommands::BackfillLinks { dry_run, limit } => {
+            let path = format!("/admin/backfill_links?dry_run={dry_run}&limit={limit}");
+            match client
+                .post_with_timeout(&path, json!({}), long_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("backfill_links", e),
             }
         }
         AdminCommands::RebuildFts => {

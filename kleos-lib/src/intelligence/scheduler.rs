@@ -8,14 +8,15 @@
 //! [`TaskReport`] and causes dependents to be marked [`TaskStatus::Skipped`]
 //! so independent branches of the DAG still get a chance to execute.
 //!
-//! `default_pipeline(consolidation_enabled)` wires up the canonical nightly pipeline: deduplicate
-//! -> consolidate_sweep -> {contradictions, temporal, reconsolidation} ->
-//! reflections. The HTTP handler at `POST /intelligence/run` invokes this.
+//! `default_pipeline(consolidation_enabled, auto_link_batch)` wires up the
+//! canonical pipeline: auto_link -> deduplicate -> consolidate_sweep ->
+//! {contradictions, temporal, reconsolidation} -> reflections. The HTTP handler
+//! at `POST /intelligence/run` invokes this.
 
 use super::types::{PipelineReport, TaskReport, TaskStatus};
 use crate::db::Database;
 use crate::intelligence::{
-    consolidation, contradiction, duplicates, reconsolidation, reflections, temporal,
+    consolidation, contradiction, duplicates, linker, reconsolidation, reflections, temporal,
 };
 use crate::{EngError, Result};
 use async_trait::async_trait;
@@ -199,11 +200,48 @@ impl Scheduler {
 // Canonical pipeline
 // ---------------------------------------------------------------------------
 
+/// Associative auto-linker: reconnect unlinked memories to their nearest
+/// neighbours with `similarity` links. Runs FIRST so the links it creates feed
+/// the dedup/consolidation passes (which read `type = 'similarity'`) in the same
+/// cycle. `batch` bounds how many unlinked memories are processed per cycle so a
+/// large historical backlog drains gradually instead of stalling a tick.
+struct AutoLinkTask {
+    batch: usize,
+}
+#[async_trait]
+impl IntelligenceTask for AutoLinkTask {
+    fn name(&self) -> &'static str {
+        "auto_link"
+    }
+    async fn run(&self, db: &Database, user_id: i64) -> Result<Value> {
+        let report = linker::link_unlinked_batch(db, user_id, self.batch, false).await?;
+        Ok(json!(report))
+    }
+}
+
+/// Placeholder for the auto_link slot when the linker is disabled. Resolves the
+/// `deduplicate` dependency without writing links.
+struct NoopAutoLinkTask;
+#[async_trait]
+impl IntelligenceTask for NoopAutoLinkTask {
+    fn name(&self) -> &'static str {
+        "auto_link"
+    }
+    async fn run(&self, _db: &Database, _user_id: i64) -> Result<Value> {
+        Ok(json!({ "skipped": true, "reason": "auto_link_disabled" }))
+    }
+}
+
 struct DeduplicateTask;
 #[async_trait]
 impl IntelligenceTask for DeduplicateTask {
     fn name(&self) -> &'static str {
         "deduplicate"
+    }
+    fn dependencies(&self) -> &'static [&'static str] {
+        // Run after auto_link so freshly created similarity links are visible to
+        // the duplicate scan (which filters on `type = 'similarity'`).
+        &["auto_link"]
     }
     async fn run(&self, db: &Database, user_id: i64) -> Result<Value> {
         let result = duplicates::deduplicate(db, user_id, 0.9, false).await?;
@@ -304,16 +342,25 @@ impl IntelligenceTask for NoopConsolidateSweepTask {
 
 /// Build the canonical intelligence pipeline used by `POST /intelligence/run`.
 ///
+/// `auto_link_batch` controls the associative linker that runs first:
+/// `Some(n)` links up to `n` unlinked memories per cycle, `None` installs a
+/// no-op (linker disabled) so the `deduplicate` dependency still resolves.
+///
 /// When `consolidation_enabled` is false the consolidate_sweep slot is filled
 /// by a no-op task so downstream tasks (contradiction scan, temporal detect,
 /// reconsolidation, reflections) still run normally.
-pub fn default_pipeline(consolidation_enabled: bool) -> Scheduler {
+pub fn default_pipeline(consolidation_enabled: bool, auto_link_batch: Option<usize>) -> Scheduler {
+    let auto_link: Arc<dyn IntelligenceTask> = match auto_link_batch {
+        Some(batch) if batch > 0 => Arc::new(AutoLinkTask { batch }),
+        _ => Arc::new(NoopAutoLinkTask),
+    };
     let consolidate: Arc<dyn IntelligenceTask> = if consolidation_enabled {
         Arc::new(ConsolidateSweepTask)
     } else {
         Arc::new(NoopConsolidateSweepTask)
     };
     Scheduler::new()
+        .add_task(auto_link)
         .add_task(Arc::new(DeduplicateTask))
         .add_task(consolidate)
         .add_task(Arc::new(ContradictionScanTask))
@@ -479,20 +526,66 @@ mod tests {
     #[tokio::test]
     async fn default_pipeline_runs_on_empty_db() {
         let db = setup_db().await;
-        let report = default_pipeline(true).run(&db, 1).await.expect("run");
-        assert_eq!(report.reports.len(), 6);
+        let report = default_pipeline(true, Some(50))
+            .run(&db, 1)
+            .await
+            .expect("run");
+        assert_eq!(report.reports.len(), 7);
         let names: Vec<&str> = report.reports.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"auto_link"));
         assert!(names.contains(&"deduplicate"));
         assert!(names.contains(&"consolidate_sweep"));
         assert!(names.contains(&"reflections_generate"));
     }
 
-    /// Verify that disabling consolidation still runs all six pipeline slots.
+    /// auto_link must precede deduplicate so its similarity links feed the scan.
+    #[tokio::test]
+    async fn auto_link_precedes_deduplicate() {
+        let scheduler = default_pipeline(true, Some(10));
+        let ordered: Vec<&'static str> = scheduler
+            .topological_order()
+            .expect("topo")
+            .iter()
+            .map(|t| t.name())
+            .collect();
+        let pos_link = ordered.iter().position(|n| *n == "auto_link").unwrap();
+        let pos_dedup = ordered.iter().position(|n| *n == "deduplicate").unwrap();
+        assert!(
+            pos_link < pos_dedup,
+            "auto_link must precede deduplicate (ordered={ordered:?})"
+        );
+    }
+
+    /// A None batch installs the no-op linker but the slot is still present.
+    #[tokio::test]
+    async fn default_pipeline_disabled_auto_link_still_runs_all_tasks() {
+        let db = setup_db().await;
+        let report = default_pipeline(true, None).run(&db, 1).await.expect("run");
+        assert_eq!(report.reports.len(), 7, "all seven slots must be present");
+        let by_name: HashMap<_, _> = report
+            .reports
+            .iter()
+            .map(|r| (r.name.as_str(), r))
+            .collect();
+        let auto_link = by_name["auto_link"];
+        assert_eq!(auto_link.status, TaskStatus::Ok);
+        assert_eq!(
+            auto_link.output.as_ref().expect("noop auto_link output")["reason"],
+            "auto_link_disabled"
+        );
+        // Dependent must still run since the no-op resolved Ok.
+        assert_eq!(by_name["deduplicate"].status, TaskStatus::Ok);
+    }
+
+    /// Verify that disabling consolidation still runs all pipeline slots.
     #[tokio::test]
     async fn default_pipeline_disabled_consolidation_still_runs_all_tasks() {
         let db = setup_db().await;
-        let report = default_pipeline(false).run(&db, 1).await.expect("run");
-        assert_eq!(report.reports.len(), 6, "all six slots must be present");
+        let report = default_pipeline(false, Some(50))
+            .run(&db, 1)
+            .await
+            .expect("run");
+        assert_eq!(report.reports.len(), 7, "all seven slots must be present");
 
         let by_name: HashMap<_, _> = report
             .reports
