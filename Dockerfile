@@ -36,9 +36,10 @@ ENV CARGO_PROFILE_RELEASE_LTO=thin \
 # from other stages.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p kleos-server -p kleos-cli \
-    && cp target/release/kleos-server /tmp/kleos-server \
-    && cp target/release/kleos-cli    /tmp/kleos-cli
+    cargo build --release -p kleos-server -p kleos-cli -p kleos-sidecar \
+    && cp target/release/kleos-server  /tmp/kleos-server \
+    && cp target/release/kleos-cli     /tmp/kleos-cli \
+    && cp target/release/kleos-sidecar /tmp/kleos-sidecar
 
 # =============================================================================
 # Stage 2 -- runtime
@@ -88,3 +89,38 @@ VOLUME ["/data"]
 EXPOSE 4200
 
 CMD ["/usr/local/bin/kleos-server"]
+
+# =============================================================================
+# Stage 3 -- sidecar runtime
+# Separate, smaller image containing only kleos-sidecar. It holds no DB --
+# it's a stateless batching/recall proxy in front of the main server, so it
+# gets its own minimal runtime instead of riding along with kleos-server.
+# =============================================================================
+FROM debian:bookworm-slim AS sidecar
+
+LABEL org.opencontainers.image.source="https://github.com/Ghost-Frame/Kleos" \
+      org.opencontainers.image.description="Kleos sidecar -- local batching proxy for observations, session recall, and Claude session-file watching" \
+      org.opencontainers.image.licenses="Elastic-2.0"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ca-certificates \
+    libpcsclite1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 1000 kleos \
+    && useradd --system --uid 1000 --gid kleos --no-create-home --shell /sbin/nologin kleos
+
+COPY --from=builder /tmp/kleos-sidecar /usr/local/bin/kleos-sidecar
+RUN chmod 755 /usr/local/bin/kleos-sidecar
+
+USER kleos
+
+# Bind-all is required for Docker's port mapping to reach the process; the
+# sidecar's own auth middleware enforces KLEOS_SIDECAR_TOKEN whenever the
+# bind host isn't loopback, so this is safe as long as the token is set.
+ENV KLEOS_SIDECAR_HOST=0.0.0.0
+
+EXPOSE 7711
+
+CMD ["/usr/local/bin/kleos-sidecar"]
