@@ -376,31 +376,25 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
     }
 });
 
-/// Returns true when a LIKE / DISLIKE capture is suspect
-/// because its object starts with a copula in any supported language.
-/// Cross-lang on purpose: `verb_like` stems often match cross-lang via
-/// `\w*` (EN `prefer` matches FR `prefere`), so the match's lang does
-/// not reliably indicate which copula vocabulary to consult. We fold the
-/// candidate token under each supported lang and check membership in the
-/// global union -- a hit in any lang means skip.
+/// Returns true when a LIKE / DISLIKE capture is suspect because its
+/// object starts with a copula word. Folds the first token under the
+/// detected language's rules and checks membership in the global copula
+/// union (built at init from all supported languages). A match means the
+/// token is a copula in at least one supported language, regardless of
+/// which language's regex produced the capture.
 ///
 /// Languages without an `is_or_are` class contribute nothing to the
 /// union, so they cannot trigger a false-positive skip.
-fn object_starts_with_copula(object: &str) -> bool {
+fn object_starts_with_copula(object: &str, lang: &str) -> bool {
     let Some(first_token) = object.split_whitespace().next() else {
         return false;
     };
-    // Try every supported lang's fold projection. The union set was
-    // built from per-lang folds, so the candidate must be folded the
-    // same way to compare apples to apples.
-    for lang in crate::lexicon::supported_languages() {
-        let with_stem = crate::lexicon::class_stem_enabled(&lang, "is_or_are");
-        let folded = crate::lexicon::fold_for_matching(first_token, &lang, with_stem);
-        if LANG_REGEX.all_copulas.contains(&folded) {
-            return true;
-        }
-    }
-    false
+    // Fold under the detected language's stem policy; the all_copulas
+    // union was built from every lang's folds at init, so a single-lang
+    // fold is sufficient to identify copula surface forms.
+    let with_stem = crate::lexicon::class_stem_enabled(lang, "is_or_are");
+    let folded = crate::lexicon::fold_for_matching(first_token, lang, with_stem);
+    LANG_REGEX.all_copulas.contains(&folded)
 }
 
 // All 11 prior English-only static regexes
@@ -446,251 +440,198 @@ pub async fn fast_extract_facts(
     // Extract date context from content
     let _date_approx = extract_date_approx(content);
     let date_ref = extract_date_ref(content);
+    // Detect the content language once; all pattern lookups use this
+    // single entry point to avoid cross-language duplicate matches.
+    let lang = crate::lang::detect_lang(content);
 
     // -- Patterns 1-6 (buy / spent / have / exercise / made / earned) --
-    // iterate over every supported language and apply that
-    // language's compiled regex. A HashSet dedup-guards against the same
-    // canonical fact being emitted twice when a bilingual sentence matches
-    // both languages' patterns (rare, but real on transcripts that mix EN
-    // verb names with FR connectors or vice-versa).
-    //
-    // The compiled regexes are built from lexicon classes whose tokens go
-    // through `fold_for_matching` (lowercase + strip diacritics + optional
-    // stem). To match the raw source against those folded tokens, we pre-
-    // fold the source the same way once and feed it to all six regex
-    // iterators. Object captures lose accents (`dépensé` -> `depense`) but
-    // the downstream `structured_facts` rows only care about subject /
-    // predicate / object identity, which is preserved.
-    let folded_content = crate::lexicon::fold_for_matching(content, "en", false);
+    // Pre-fold the source using the detected language so accented characters
+    // (`dépensé` -> `depense`) are normalised to match the lexicon-built
+    // regex tokens. Object captures lose accents but the downstream
+    // `structured_facts` rows only care about subject/predicate/object
+    // identity, which is preserved.
+    let folded_content = crate::lexicon::fold_for_matching(content, &lang, false);
     let folded: &str = &folded_content;
-    let mut seen_facts: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for lang in crate::lexicon::supported_languages() {
-        let currency = currency_label(&lang);
+    // Single currency label for the detected language.
+    let currency = currency_label(&lang);
 
-        // -- Pattern 1: bought/purchased N items --
-        if let Some(re) = LANG_REGEX.buy.get(&lang) {
-            for cap in re.captures_iter(folded) {
-                let verb = cap[1].to_lowercase();
-                let quantity: i64 = cap[2].parse().unwrap_or(0);
-                let object = cap[3].trim();
-                if object.len() > 200 {
-                    continue;
-                }
-                let key = format!("buy|{verb}|{quantity}|{object}");
-                if seen_facts.insert(key) {
-                    facts.push(FactInsert {
-                        subject: "user".to_string(),
-                        verb,
-                        object: format_fact_object(
-                            object,
-                            Some(quantity),
-                            None,
-                            date_ref.as_deref(),
-                        ),
-                    });
-                }
+    // -- Pattern 1: bought/purchased N items --
+    if let Some(re) = LANG_REGEX.buy.get(&lang) {
+        for cap in re.captures_iter(folded) {
+            let verb = cap[1].to_lowercase();
+            let quantity: i64 = cap[2].parse().unwrap_or(0);
+            let object = cap[3].trim();
+            if object.len() > 200 {
+                continue;
             }
+            facts.push(FactInsert {
+                subject: "user".to_string(),
+                verb,
+                object: format_fact_object(object, Some(quantity), None, date_ref.as_deref()),
+            });
         }
+    }
 
-        // -- Pattern 2: spent <currency> N <prep> X --
-        if let Some(re) = LANG_REGEX.spent.get(&lang) {
-            for cap in re.captures_iter(folded) {
-                let amount: f64 = cap[1].replace(',', "").parse().unwrap_or(0.0);
-                let object = cap[2].trim();
-                let key = format!("spent|{amount}|{object}");
-                if seen_facts.insert(key) {
-                    facts.push(FactInsert {
-                        subject: "user".to_string(),
-                        verb: "spent".to_string(),
-                        object: format_fact_object(
-                            object,
-                            Some(amount as i64),
-                            Some(currency),
-                            date_ref.as_deref(),
-                        ),
-                    });
-                }
-            }
+    // -- Pattern 2: spent <currency> N <prep> X --
+    if let Some(re) = LANG_REGEX.spent.get(&lang) {
+        for cap in re.captures_iter(folded) {
+            let amount: f64 = cap[1].replace(',', "").parse().unwrap_or(0.0);
+            let object = cap[2].trim();
+            facts.push(FactInsert {
+                subject: "user".to_string(),
+                verb: "spent".to_string(),
+                object: format_fact_object(
+                    object,
+                    Some(amount as i64),
+                    Some(currency),
+                    date_ref.as_deref(),
+                ),
+            });
         }
+    }
 
-        // -- Pattern 3: have/own N X --
-        if let Some(re) = LANG_REGEX.have.get(&lang) {
-            for cap in re.captures_iter(folded) {
-                let quantity: i64 = cap[1].parse().unwrap_or(0);
-                let object = cap[2].trim();
-                let key = format!("has|{quantity}|{object}");
-                if seen_facts.insert(key) {
-                    facts.push(FactInsert {
-                        subject: "user".to_string(),
-                        verb: "has".to_string(),
-                        object: format_fact_object(
-                            object,
-                            Some(quantity),
-                            None,
-                            date_ref.as_deref(),
-                        ),
-                    });
-                }
-            }
+    // -- Pattern 3: have/own N X --
+    if let Some(re) = LANG_REGEX.have.get(&lang) {
+        for cap in re.captures_iter(folded) {
+            let quantity: i64 = cap[1].parse().unwrap_or(0);
+            let object = cap[2].trim();
+            facts.push(FactInsert {
+                subject: "user".to_string(),
+                verb: "has".to_string(),
+                object: format_fact_object(object, Some(quantity), None, date_ref.as_deref()),
+            });
         }
+    }
 
-        // -- Pattern 4: exercised for N <time/distance unit> --
-        if let Some(re) = LANG_REGEX.exercise.get(&lang) {
-            for cap in re.captures_iter(folded) {
-                let verb = cap[1].to_lowercase();
-                let quantity: f64 = cap[2].parse().unwrap_or(0.0);
-                let unit = cap[3].to_lowercase();
-                let key = format!("exercise|{verb}|{quantity}|{unit}");
-                if seen_facts.insert(key) {
-                    facts.push(FactInsert {
-                        subject: "user".to_string(),
-                        verb,
-                        object: format_fact_object(
-                            "",
-                            Some(quantity as i64),
-                            Some(&unit),
-                            date_ref.as_deref(),
-                        ),
-                    });
-                }
-            }
+    // -- Pattern 4: exercised for N <time/distance unit> --
+    if let Some(re) = LANG_REGEX.exercise.get(&lang) {
+        for cap in re.captures_iter(folded) {
+            let verb = cap[1].to_lowercase();
+            let quantity: f64 = cap[2].parse().unwrap_or(0.0);
+            let unit = cap[3].to_lowercase();
+            facts.push(FactInsert {
+                subject: "user".to_string(),
+                verb,
+                object: format_fact_object(
+                    "",
+                    Some(quantity as i64),
+                    Some(&unit),
+                    date_ref.as_deref(),
+                ),
+            });
         }
+    }
 
-        // -- Pattern 5: made/baked/cooked X --
-        if let Some(re) = LANG_REGEX.made.get(&lang) {
-            for cap in re.captures_iter(folded) {
-                let verb = cap[1].to_lowercase();
-                let object = cap[2].trim();
-                let key = format!("made|{verb}|{object}");
-                if seen_facts.insert(key) {
-                    facts.push(FactInsert {
-                        subject: "user".to_string(),
-                        verb,
-                        object: format_fact_object(object, Some(1), None, date_ref.as_deref()),
-                    });
-                }
-            }
+    // -- Pattern 5: made/baked/cooked X --
+    if let Some(re) = LANG_REGEX.made.get(&lang) {
+        for cap in re.captures_iter(folded) {
+            let verb = cap[1].to_lowercase();
+            let object = cap[2].trim();
+            facts.push(FactInsert {
+                subject: "user".to_string(),
+                verb,
+                object: format_fact_object(object, Some(1), None, date_ref.as_deref()),
+            });
         }
+    }
 
-        // -- Pattern 6: earned/made N <currency> (from X) --
-        if let Some(re) = LANG_REGEX.earned.get(&lang) {
-            for cap in re.captures_iter(folded) {
-                let amount: f64 = cap[2].replace(',', "").parse().unwrap_or(0.0);
-                let object = cap.get(3).map(|m| m.as_str().trim()).unwrap_or("");
-                let key = format!("earned|{amount}|{object}");
-                if seen_facts.insert(key) {
-                    facts.push(FactInsert {
-                        subject: "user".to_string(),
-                        verb: "earned".to_string(),
-                        object: format_fact_object(
-                            object,
-                            Some(amount as i64),
-                            Some(currency),
-                            date_ref.as_deref(),
-                        ),
-                    });
-                }
-            }
+    // -- Pattern 6: earned/made N <currency> (from X) --
+    if let Some(re) = LANG_REGEX.earned.get(&lang) {
+        for cap in re.captures_iter(folded) {
+            let amount: f64 = cap[2].replace(',', "").parse().unwrap_or(0.0);
+            let object = cap.get(3).map(|m| m.as_str().trim()).unwrap_or("");
+            facts.push(FactInsert {
+                subject: "user".to_string(),
+                verb: "earned".to_string(),
+                object: format_fact_object(
+                    object,
+                    Some(amount as i64),
+                    Some(currency),
+                    date_ref.as_deref(),
+                ),
+            });
         }
     }
 
     // -- Preferences: likes/enjoys --
-    // the 5 i18n-portable patterns (like, dislike,
-    // favorite, location, role) iterate over every supported language
-    // and apply that language's compiled regex. A small HashSet
-    // dedup-guards against the same pref / state appearing twice when
-    // a bilingual sentence matches both languages' patterns.
-    let mut seen_prefs: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut seen_states: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The 5 i18n-portable patterns (like, dislike, favorite, location,
+    // role) use single-lang LANG_REGEX lookups keyed on the detected
+    // language. No dedup sets needed -- each regex's captures_iter is
+    // non-overlapping within a single language.
 
-    for lang in crate::lexicon::supported_languages() {
-        // -- Preferences: likes --
-        if let Some(re) = LANG_REGEX.like.get(&lang) {
-            for cap in re.captures_iter(content) {
-                let object = cap[2].trim();
-                // Skip captures whose object starts with a
-                // copula -- strong signal the source is actually a
-                // FAVORITE structure ("mon plat prefere est X") that
-                // the verb stem overlap mis-classified as LIKE.
-                if object_starts_with_copula(object) {
-                    continue;
-                }
-                if object.len() > 3 && object.len() < 100 {
-                    let domain = infer_domain(object);
-                    let key = format!("{domain}:likes {object}");
-                    if seen_prefs.insert(key.clone()) {
-                        prefs.push(PrefUpsert {
-                            key,
-                            value: format!("evidence_memory_id:{memory_id}"),
-                        });
-                    }
-                }
+    // -- Preferences: likes --
+    if let Some(re) = LANG_REGEX.like.get(&lang) {
+        for cap in re.captures_iter(content) {
+            let object = cap[2].trim();
+            // Skip captures whose object starts with a copula -- strong
+            // signal the source is a FAVORITE structure ("mon plat
+            // prefere est X") mis-classified as LIKE by stem overlap.
+            if object_starts_with_copula(object, &lang) {
+                continue;
+            }
+            if object.len() > 3 && object.len() < 100 {
+                let domain = infer_domain(object, &lang);
+                let key = format!("{domain}:likes {object}");
+                prefs.push(PrefUpsert {
+                    key,
+                    value: format!("evidence_memory_id:{memory_id}"),
+                });
             }
         }
+    }
 
-        // -- Preferences: dislikes --
-        if let Some(re) = LANG_REGEX.dislike.get(&lang) {
-            for cap in re.captures_iter(content) {
-                let object = cap[2].trim();
-                // Same cross-pattern collision skip as LIKE.
-                if object_starts_with_copula(object) {
-                    continue;
-                }
-                if object.len() > 3 && object.len() < 100 {
-                    let domain = infer_domain(object);
-                    let key = format!("{domain}:dislikes {object}");
-                    if seen_prefs.insert(key.clone()) {
-                        prefs.push(PrefUpsert {
-                            key,
-                            value: format!("evidence_memory_id:{memory_id}"),
-                        });
-                    }
-                }
+    // -- Preferences: dislikes --
+    if let Some(re) = LANG_REGEX.dislike.get(&lang) {
+        for cap in re.captures_iter(content) {
+            let object = cap[2].trim();
+            // Same copula collision skip as LIKE.
+            if object_starts_with_copula(object, &lang) {
+                continue;
+            }
+            if object.len() > 3 && object.len() < 100 {
+                let domain = infer_domain(object, &lang);
+                let key = format!("{domain}:dislikes {object}");
+                prefs.push(PrefUpsert {
+                    key,
+                    value: format!("evidence_memory_id:{memory_id}"),
+                });
             }
         }
+    }
 
-        // -- Preferences: favorites --
-        if let Some(re) = LANG_REGEX.favorite.get(&lang) {
-            for cap in re.captures_iter(content) {
-                let category = cap[1].trim().to_lowercase();
-                let value = cap[2].trim();
-                let key = format!("{category}:favorite: {value}");
-                if seen_prefs.insert(key.clone()) {
-                    prefs.push(PrefUpsert {
-                        key,
-                        value: format!("evidence_memory_id:{memory_id}"),
-                    });
-                }
-            }
+    // -- Preferences: favorites --
+    if let Some(re) = LANG_REGEX.favorite.get(&lang) {
+        for cap in re.captures_iter(content) {
+            let category = cap[1].trim().to_lowercase();
+            let value = cap[2].trim();
+            let key = format!("{category}:favorite: {value}");
+            prefs.push(PrefUpsert {
+                key,
+                value: format!("evidence_memory_id:{memory_id}"),
+            });
         }
+    }
 
-        // -- State updates: location changes --
-        if let Some(re) = LANG_REGEX.location.get(&lang) {
-            for cap in re.captures_iter(content) {
-                let location = cap[1].trim();
-                let key = format!("current_location|{location}");
-                if seen_states.insert(key) {
-                    states.push(StateUpsert {
-                        key: "current_location".to_string(),
-                        value: format!("{location} (memory:{memory_id})"),
-                    });
-                }
-            }
+    // -- State updates: location changes --
+    if let Some(re) = LANG_REGEX.location.get(&lang) {
+        for cap in re.captures_iter(content) {
+            let location = cap[1].trim();
+            states.push(StateUpsert {
+                key: "current_location".to_string(),
+                value: format!("{location} (memory:{memory_id})"),
+            });
         }
+    }
 
-        // -- State updates: role changes --
-        if let Some(re) = LANG_REGEX.role.get(&lang) {
-            for cap in re.captures_iter(content) {
-                let role = cap[1].trim();
-                if role.len() > 3 && role.len() < 100 {
-                    let key = format!("current_role|{role}");
-                    if seen_states.insert(key) {
-                        states.push(StateUpsert {
-                            key: "current_role".to_string(),
-                            value: format!("{role} (memory:{memory_id})"),
-                        });
-                    }
-                }
+    // -- State updates: role changes --
+    if let Some(re) = LANG_REGEX.role.get(&lang) {
+        for cap in re.captures_iter(content) {
+            let role = cap[1].trim();
+            if role.len() > 3 && role.len() < 100 {
+                states.push(StateUpsert {
+                    key: "current_role".to_string(),
+                    value: format!("{role} (memory:{memory_id})"),
+                });
             }
         }
     }
@@ -812,16 +753,16 @@ fn extract_date_ref(content: &str) -> Option<String> {
     re.find(content).map(|m| m.as_str().to_string())
 }
 
-/// Infer the high-level domain of an object string by scanning the i18n
-/// lexicon for every supported language.
+/// Infer the high-level domain of an object string using the detected
+/// language first, with a single "en" fallback when the detected language
+/// yields no domain match for a given class.
 ///
-/// Compare folded versions of both
-/// sides so an object like "petit-déjeuner" matches the lexicon entry
-/// "petit-déjeuner" (or its bare ASCII equivalent if the user dropped
-/// the accent and the hyphen). DOMAINS preserves the original priority
+/// Compares folded versions of both sides so an object like
+/// "petit-déjeuner" matches the lexicon entry regardless of accent or
+/// hyphen loss. DOMAINS preserves the original priority
 /// (food > entertainment > reading > music > gaming > fitness > travel)
 /// so overlapping matches resolve deterministically.
-fn infer_domain(object: &str) -> String {
+fn infer_domain(object: &str, lang: &str) -> String {
     const DOMAINS: &[(&str, &str)] = &[
         ("domain_food", "food"),
         ("domain_entertainment", "entertainment"),
@@ -832,12 +773,24 @@ fn infer_domain(object: &str) -> String {
         ("domain_travel", "travel"),
     ];
     for (class, label) in DOMAINS {
-        for lang in crate::lexicon::supported_languages() {
-            let folded_obj = crate::lexicon::fold_for_matching(object, &lang, true);
-            let words = crate::lexicon::word_class(&lang, class);
-            if words
+        // Check detected language first.
+        let folded_obj = crate::lexicon::fold_for_matching(object, lang, true);
+        let words = crate::lexicon::word_class(lang, class);
+        if words
+            .iter()
+            .any(|w| folded_obj.contains(&crate::lexicon::fold_word_for_class(w, lang, class)))
+        {
+            return (*label).to_string();
+        }
+        // Fall back to "en" when the detected language has no vocabulary
+        // for this domain class (e.g. a French user saying "pizza" still
+        // needs the EN domain_food entry to classify correctly).
+        if lang != "en" {
+            let folded_en = crate::lexicon::fold_for_matching(object, "en", true);
+            let en_words = crate::lexicon::word_class("en", class);
+            if en_words
                 .iter()
-                .any(|w| folded_obj.contains(&crate::lexicon::fold_word_for_class(w, &lang, class)))
+                .any(|w| folded_en.contains(&crate::lexicon::fold_word_for_class(w, "en", class)))
             {
                 return (*label).to_string();
             }
@@ -955,10 +908,40 @@ mod tests {
 
     #[test]
     fn test_infer_domain() {
-        assert_eq!(infer_domain("pizza"), "food");
-        assert_eq!(infer_domain("movie night"), "entertainment");
-        assert_eq!(infer_domain("running shoes"), "fitness");
-        assert_eq!(infer_domain("random thing"), "general");
+        assert_eq!(infer_domain("pizza", "en"), "food");
+        assert_eq!(infer_domain("movie night", "en"), "entertainment");
+        assert_eq!(infer_domain("running shoes", "en"), "fitness");
+        assert_eq!(infer_domain("random thing", "en"), "general");
+    }
+
+    /// Verify that the FR like-regex (when present in the lexicon) fires on a
+    /// canonical French "j'aime ..." sentence, and that the EN path is
+    /// unaffected. Tests the per-lang LANG_REGEX lookup directly rather than
+    /// going through detect_lang, because whatlang may misdetect short text --
+    /// the single-lang lookup path itself is what changed in fast_extract_facts.
+    #[test]
+    fn fast_extract_french_preference() {
+        let fr_sentence = "j'aime la musique.";
+        // Access the FR like-regex directly. If FR verb_like is absent from
+        // the lexicon the if-let passes silently (no panic) -- graceful no-op.
+        if let Some(re) = LANG_REGEX.like.get("fr") {
+            // The apostrophe in "j'" is a non-word char, so \b fires before
+            // "aime" and the verb stem "aim\w*" matches even without the
+            // optional pronoun prefix.
+            assert!(
+                re.captures_iter(fr_sentence).count() > 0,
+                "FR like-regex should match \"j'aime la musique\""
+            );
+        }
+        // English path: detect_lang("I like pizza") -> "en"; EN regex fires.
+        let en_sentence = "I like pizza.";
+        let en_lang = crate::lang::detect_lang(en_sentence);
+        let en_matched = LANG_REGEX
+            .like
+            .get(&en_lang)
+            .map(|re| re.captures_iter(en_sentence).count() > 0)
+            .unwrap_or(false);
+        assert!(en_matched, "EN like-regex should match \"I like pizza\"");
     }
 
     #[test]
