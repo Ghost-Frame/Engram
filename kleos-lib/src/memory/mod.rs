@@ -6,6 +6,7 @@
 //! - [`vector`]       vector-search helpers over the LanceDB embeddings index.
 //! - [`vector_sync`]  backfill + replay of the `vector_sync_pending` ledger.
 //! - [`scoring`]      decay, pagerank, and per-channel scoring utilities.
+//! - [`abstain`]      L2 ABSTAIN gate -- "insufficient evidence" on low-confidence hits.
 //! - [`simhash`]      near-duplicate detection via SimHash / Hamming buckets.
 //! - [`types`]        request/response DTOs, `Memory`, `SearchResult`.
 //!
@@ -15,6 +16,7 @@
 //! SELECT shape and row-to-struct mapping in sync -- see the guard tests at
 //! the bottom of this file.
 
+pub mod abstain;
 pub mod auto_tag;
 pub mod fts;
 pub mod scoring;

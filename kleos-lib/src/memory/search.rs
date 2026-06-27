@@ -1192,6 +1192,9 @@ pub async fn hybrid_search(
             matching_chunk: chunk_text_map.get(&c.id).cloned(),
             linked: None,
             version_chain: None,
+            // Populated later by the reranker (hybrid_search_reranked) before the
+            // CE/fusion blend; None here on the base fusion path.
+            ce_confidence: None,
         });
     }
 
@@ -1756,6 +1759,8 @@ async fn faceted_db_scan(
                 matching_chunk: None,
                 linked: None,
                 version_chain: None,
+                // Filter path is never reranked; no cross-encoder signal.
+                ce_confidence: None,
             })
             .collect())
     })

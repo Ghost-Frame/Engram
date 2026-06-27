@@ -10,8 +10,11 @@ use kleos_lib::graph::entities::extract_and_link_entities;
 use kleos_lib::intelligence::extraction::fast_extract_facts;
 use kleos_lib::memory::{
     self,
+    abstain::{abstain_gate, AbstainConfig},
     search::{faceted_search, hybrid_search, hybrid_search_reranked},
-    types::{FacetedSearchRequest, ListOptions, SearchRequest, StoreRequest, UpdateRequest},
+    types::{
+        FacetedSearchRequest, ListOptions, QuestionType, SearchRequest, StoreRequest, UpdateRequest,
+    },
 };
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -412,7 +415,18 @@ async fn search_memories(
     let results = (*arc_results).clone();
 
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
-    let abstained = results.is_empty();
+
+    // L2 ABSTAIN gate. Default-off (KLEOS_ABSTAIN_ENABLED=false) -> decision.abstain is
+    // always false and the response below stays byte-identical to before this gate
+    // existed (the `|| is_empty()` preserves the historical "empty set abstains" rule).
+    // The gate reasons over the best semantic_score across the pool, with cross-encoder
+    // ce_confidence as a supplementary rescue -- never the compound `score`.
+    let abstain_qt = results
+        .iter()
+        .find_map(|r| r.question_type)
+        .unwrap_or(QuestionType::FactRecall);
+    let abstain = abstain_gate(&results, abstain_qt, &AbstainConfig::from_env());
+    let abstained = abstain.abstain || results.is_empty();
 
     // Batch-load artifact summaries for all returned memories.
     let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
@@ -450,6 +464,12 @@ async fn search_memories(
             if let Some(s) = r.fts_score {
                 item["fts_score"] = json!(s);
             }
+            // Raw cross-encoder confidence (uncontaminated by decay/pagerank/recency),
+            // surfaced for the abstain gate and operator debugging. Omitted when the
+            // reranker did not run for this row.
+            if let Some(s) = r.ce_confidence {
+                item["ce_confidence"] = json!(s);
+            }
             if let Some(s) = r.graph_score {
                 item["graph_score"] = json!(s);
             }
@@ -473,9 +493,25 @@ async fn search_memories(
         })
         .collect();
 
-    Ok(Json(json!({
+    // Envelope: `abstained`/`top_score` always present (unchanged). The abstain detail
+    // fields are added only when the gate produced a signal -- so a disabled gate leaves
+    // the response byte-identical, while an enabled gate surfaces why it decided.
+    let mut resp = json!({
         "results": result_items, "abstained": abstained, "top_score": top_score,
-    })))
+    });
+    if let Some(reason) = &abstain.reason {
+        resp["abstain_reason"] = json!(reason);
+    }
+    if let Some(s) = abstain.sem_top {
+        resp["sem_top_score"] = json!(s);
+    }
+    if let Some(s) = abstain.ce_top {
+        resp["ce_top_score"] = json!(s);
+    }
+    if let Some(m) = abstain.margin {
+        resp["sem_margin"] = json!(m);
+    }
+    Ok(Json(resp))
 }
 
 /// Part 5.13: POST /search/explain -- runs the full hybrid search pipeline and

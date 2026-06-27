@@ -462,6 +462,17 @@ pub struct SearchResult {
     pub linked: Option<Vec<LinkedMemory>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_chain: Option<Vec<VersionChainEntry>>,
+    /// Raw cross-encoder relevance score in [0, 1], captured immediately after
+    /// reranker inference and BEFORE it is blended into `score`. Present on each
+    /// row the reranker actually cross-encoded; `None` on the no-reranker path
+    /// (FTS-only, filter path, vector-only without a reranker). This is the
+    /// uncontaminated confidence signal the ABSTAIN gate prefers over `score`,
+    /// which is entangled with decay, pagerank, and recency boosts. Normalized
+    /// to [0, 1] across backends (ONNX/Cohere are already in range; raw TEI
+    /// logits are passed through a sigmoid before storage) so a single threshold
+    /// is comparable regardless of reranker backend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ce_confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

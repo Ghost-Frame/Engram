@@ -672,6 +672,32 @@ async fn assemble_context_inner(
         }
     }
 
+    // L2 ABSTAIN -- observability only in context assembly. The per-memory `min_relev`
+    // filter below already drops weak entries, so we deliberately do NOT empty the pool
+    // here: that would starve context of legitimately-useful-but-below-top memories.
+    // Instead, when the gate is enabled and would abstain on this query, log it so
+    // operators can see the semantic layer feeding the model was low-confidence. Default
+    // off -> this block is a no-op.
+    {
+        let cfg = crate::memory::abstain::AbstainConfig::from_env();
+        if cfg.enabled {
+            let qt = semantic_results
+                .iter()
+                .find_map(|r| r.question_type)
+                .unwrap_or(crate::memory::types::QuestionType::FactRecall);
+            let decision = crate::memory::abstain::abstain_gate(&semantic_results, qt, &cfg);
+            if decision.abstain {
+                tracing::info!(
+                    reason = decision.reason.as_deref().unwrap_or(""),
+                    signal = decision.signal,
+                    sem_top = ?decision.sem_top,
+                    ce_top = ?decision.ce_top,
+                    "context assembly: abstain gate would fire; semantic layer is low-confidence"
+                );
+            }
+        }
+    }
+
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     for r in semantic_results.iter() {
