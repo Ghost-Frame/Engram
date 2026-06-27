@@ -18,6 +18,14 @@ const GRANITE_TOKENIZER_URL: &str =
 const GRANITE_MODEL_URL: &str =
     "https://huggingface.co/keisuke-miyako/granite-embedding-reranker-english-r2-onnx-int8/resolve/main/model_quantized.onnx";
 
+// Multilingual cross-encoder reranker (bge-reranker-v2-m3). Same ONNX I/O
+// signature as the Granite model (input_ids + attention_mask -> first logit),
+// so reranker::score_pair is reused unchanged.
+const BGE_RERANKER_V2_M3_TOKENIZER_URL: &str =
+    "https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX/resolve/main/tokenizer.json";
+const BGE_RERANKER_V2_M3_MODEL_URL: &str =
+    "https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX/resolve/main/onnx/model_quantized.onnx";
+
 /// Default cap on a single model download. Operators can raise this via the
 /// `ENGRAM_EMBEDDING_MODEL_MAX_BYTES` env var; sane production values stay
 /// well under 4 GiB because the largest BGE FP32 model is ~2.3 GiB.
@@ -34,6 +42,8 @@ static DOWNLOAD_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("safe_client_builder failed at embeddings download startup")
 });
 
+/// Resolved per-file download cap: `ENGRAM_EMBEDDING_MODEL_MAX_BYTES` if set to
+/// a positive integer, otherwise `DEFAULT_MAX_BYTES`.
 fn max_download_bytes() -> u64 {
     crate::kleos_env("EMBEDDING_MODEL_MAX_BYTES")
         .ok()
@@ -167,17 +177,30 @@ pub async fn ensure_embedding_model(
     Ok((tokenizer_path, model_path))
 }
 
-/// Ensure all granite reranker model files are present in `model_dir`.
-#[tracing::instrument(skip(model_dir), fields(model_dir = %model_dir.display(), offline_only))]
+/// Ensure the reranker tokenizer + model files exist in `model_dir`, downloading
+/// the set that matches `model_name`. "bge-reranker" selects the multilingual
+/// cross-encoder; any other name falls back to the English Granite model.
+#[tracing::instrument(skip(model_dir), fields(model_dir = %model_dir.display(), model_name, offline_only))]
 pub async fn ensure_reranker_model(
     model_dir: &Path,
+    model_name: &str,
     offline_only: bool,
 ) -> Result<(PathBuf, PathBuf)> {
     let tokenizer_path = model_dir.join("tokenizer.json");
     let model_path = model_dir.join("model_quantized.onnx");
 
-    ensure_file(&tokenizer_path, GRANITE_TOKENIZER_URL, offline_only).await?;
-    ensure_file(&model_path, GRANITE_MODEL_URL, offline_only).await?;
+    // Pick the download URL set from the configured model name.
+    let (tok_url, model_url) = if model_name.contains("bge-reranker") {
+        (
+            BGE_RERANKER_V2_M3_TOKENIZER_URL,
+            BGE_RERANKER_V2_M3_MODEL_URL,
+        )
+    } else {
+        (GRANITE_TOKENIZER_URL, GRANITE_MODEL_URL)
+    };
+
+    ensure_file(&tokenizer_path, tok_url, offline_only).await?;
+    ensure_file(&model_path, model_url, offline_only).await?;
 
     Ok((tokenizer_path, model_path))
 }

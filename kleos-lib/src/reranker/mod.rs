@@ -82,9 +82,11 @@ struct RerankerInner {
 impl OnnxReranker {
     /// Load the Granite cross-encoder model and tokenizer and build the reranker.
     pub async fn new(config: &Config) -> Result<Self> {
-        let model_dir = config.model_dir("granite-reranker");
+        // Model name drives the on-disk dir and the download URL set.
+        let model_name = config.reranker_model.clone();
+        let model_dir = config.model_dir(&model_name);
         let (tokenizer_path, model_path) =
-            ensure_reranker_model(&model_dir, config.embedding_offline_only).await?;
+            ensure_reranker_model(&model_dir, &model_name, config.embedding_offline_only).await?;
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             EngError::Internal(format!(
@@ -109,6 +111,7 @@ impl OnnxReranker {
 
         info!(
             model = %model_path.display(),
+            name = %model_name,
             top_k = config.reranker_top_k,
             "ONNX cross-encoder reranker initialized"
         );
@@ -246,7 +249,8 @@ impl Reranker for OnnxReranker {
 
     /// Backend identifier for logs.
     fn backend_name(&self) -> &str {
-        "onnx-granite"
+        // Not Granite-specific anymore; the model is configurable.
+        "onnx-cross-encoder"
     }
 
     /// Number of candidates this backend cross-encodes.

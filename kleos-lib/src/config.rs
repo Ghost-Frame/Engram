@@ -533,6 +533,10 @@ pub struct Config {
     pub reranker_enabled: bool,
     pub reranker_top_k: usize,
     pub reranker_model_dir: Option<String>,
+    /// Reranker model identifier. Selects the download URL set and the on-disk
+    /// model subdir. "granite-embedding-reranker-english-r2" (English) or
+    /// "bge-reranker-v2-m3" (multilingual). Override: KLEOS_RERANKER_MODEL_NAME.
+    pub reranker_model: String,
     pub data_dir: String,
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
@@ -712,6 +716,8 @@ impl Default for Config {
             // RERANKER_TOP_K env.
             reranker_top_k: 24,
             reranker_model_dir: None,
+            // Multilingual cross-encoder by default so retrieval is not English-only.
+            reranker_model: "bge-reranker-v2-m3".to_string(),
             data_dir: dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("kleos")
@@ -944,6 +950,13 @@ impl Config {
         }
         if let Ok(v) = crate::kleos_env("RERANKER_MODEL_DIR") {
             config.reranker_model_dir = Some(v);
+        }
+        // Local-ONNX reranker model selection. Distinct from KLEOS_RERANKER_MODEL,
+        // which the HTTP reranker backend uses for a remote endpoint.
+        if let Ok(v) = crate::kleos_env("RERANKER_MODEL_NAME") {
+            if !v.trim().is_empty() {
+                config.reranker_model = v;
+            }
         }
         if let Ok(v) = crate::kleos_env("RERANKER_TOP_K") {
             match v.parse() {
