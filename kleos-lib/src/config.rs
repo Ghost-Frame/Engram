@@ -533,6 +533,10 @@ pub struct Config {
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
     pub use_chunk_vector_search: bool,
+    /// L5: enable `structured_facts` as an RRF retrieval channel in `hybrid_search`.
+    /// Default false -- this changes ranked output, so per the rollout gate it is opt-in via
+    /// `KLEOS_FACTS_CHANNEL_ENABLED` and only after the per-tenant mis-scoped-row guard passes.
+    pub facts_channel_enabled: bool,
     /// Whether the GUI is enabled. Set via KLEOS_GUI_PASSWORD or the legacy
     /// ENGRAM_GUI_PASSWORD (any non-empty value enables the GUI).
     /// A separate gui_password field can be added later
@@ -704,6 +708,7 @@ impl Default for Config {
             vector_dimensions: 1024,
             use_lance_index: true,
             use_chunk_vector_search: false,
+            facts_channel_enabled: false,
             gui_enabled: false,
             gui_build_dir: None,
             pagerank_refresh_interval_secs: 300,
@@ -969,6 +974,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("KLEOS_USE_CHUNK_VECTOR_SEARCH") {
             config.use_chunk_vector_search = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = std::env::var("KLEOS_FACTS_CHANNEL_ENABLED") {
+            config.facts_channel_enabled = v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Ok(v) = crate::kleos_env("GUI_PASSWORD") {
             config.gui_enabled = !v.is_empty();

@@ -253,24 +253,78 @@ fn apply_personality_boost(
     }
 }
 
+/// L4a: gate hop-2 graph traversal. Default off (it changes ranked output); enable per
+/// deployment with KLEOS_HOP2_ENABLED=1 once hop-1 quality is confirmed.
+static HOP2_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("KLEOS_HOP2_ENABLED")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+});
+/// Whether hop-2 graph traversal is enabled (KLEOS_HOP2_ENABLED, default false).
+fn hop2_enabled() -> bool {
+    *HOP2_ENABLED
+}
+
 /// Apply a graph RRF increment without discarding earlier additive boosts.
 fn apply_graph_rrf_increment(candidate: &mut Candidate, rrf_delta: f64) {
     candidate.score += rrf_delta;
     candidate.combined_score = candidate.score;
 }
 
-/// Insert graph-hop candidates while enforcing a global hop1 cap.
-fn inject_graph_hop1_neighbors(
+/// Build a placeholder candidate for a memory surfaced only by the facts channel (L5).
+/// Content and scoring fields are left empty/zero: facts inject after the main score-composition
+/// pass (like the graph channel), and the final `SearchResult` hydrates the `Memory` from the
+/// user-scoped `memory_map`, so only `id` and the RRF-derived score are read past this point.
+fn minimal_facts_candidate(id: i64) -> Candidate {
+    Candidate {
+        id,
+        content: String::new(),
+        category: String::new(),
+        source: None,
+        model: None,
+        importance: 0,
+        created_at: String::new(),
+        version: None,
+        is_latest: Some(true),
+        is_static: false,
+        source_count: 1,
+        root_memory_id: None,
+        access_count: 0,
+        pagerank_score: 0.0,
+        fsrs_stability: None,
+        semantic_score: None,
+        personality_signal_score: None,
+        score: 0.0,
+        combined_score: 0.0,
+        decay_score: None,
+        temporal_boost: None,
+        rrf_pre_boost: None,
+        verbose_decay_factor: None,
+        verbose_pr_boost: None,
+        verbose_src_boost: None,
+        verbose_stat_boost: None,
+        verbose_contradiction: None,
+        is_archived: false,
+        is_consolidated: false,
+    }
+}
+
+/// Insert graph-hop candidates while enforcing a global `cap`, scaling each neighbor's graph
+/// relevance by `multiplier` (1.0 for hop-1, 0.5 for hop-2 to damp cascade amplification).
+/// New ids get a placeholder Candidate; existing ids only have their graph relevance bumped
+/// (the final Memory is hydrated later from the user-scoped `memory_map`).
+fn inject_graph_neighbors(
     results: &mut HashMap<i64, Candidate>,
     graph_score_map: &mut HashMap<i64, f64>,
     neighbor_results: Vec<Vec<GraphExpansionRow>>,
-    strategy: &crate::memory::types::SearchStrategy,
+    cap: usize,
+    multiplier: f64,
 ) {
     let mut added = 0usize;
 
     for rows in neighbor_results.into_iter() {
         for row in rows {
-            if added >= strategy.hop1_limit {
+            if added >= cap {
                 break;
             }
             if row.is_forgotten {
@@ -278,7 +332,7 @@ fn inject_graph_hop1_neighbors(
             }
 
             let tw = scoring::link_type_weight(&row.link_type);
-            let gs = row.similarity * tw * strategy.relationship_multiplier;
+            let gs = row.similarity * tw * multiplier;
             let prev = graph_score_map.get(&row.link_id).copied().unwrap_or(0.0);
             graph_score_map.insert(row.link_id, prev.max(gs));
 
@@ -317,10 +371,26 @@ fn inject_graph_hop1_neighbors(
                 added += 1;
             }
         }
-        if added >= strategy.hop1_limit {
+        if added >= cap {
             break;
         }
     }
+}
+
+/// Hop-1 graph injection: full relationship weight, capped at `strategy.hop1_limit`.
+fn inject_graph_hop1_neighbors(
+    results: &mut HashMap<i64, Candidate>,
+    graph_score_map: &mut HashMap<i64, f64>,
+    neighbor_results: Vec<Vec<GraphExpansionRow>>,
+    strategy: &crate::memory::types::SearchStrategy,
+) {
+    inject_graph_neighbors(
+        results,
+        graph_score_map,
+        neighbor_results,
+        strategy.hop1_limit,
+        strategy.relationship_multiplier,
+    );
 }
 
 /// Hydrate candidate rows by ID so the scorer can finish assembling results.
@@ -1041,6 +1111,41 @@ pub async fn hybrid_search(
 
         inject_graph_hop1_neighbors(&mut results, &mut graph_score_map, neighbor_rows, &strategy);
 
+        // L4a hop-2: re-expand from the strongest hop-1 neighbors at half weight so
+        // connected-but-indirect memories surface. Gated by strategy.hop2_limit (0 for
+        // FactRecall) AND KLEOS_HOP2_ENABLED (default off), so this is a no-op on the default
+        // path. The half multiplier damps cascade amplification; injected ids join the same
+        // graph RRF ranking below, so a hop-2 neighbor ranks beneath its hop-1 parents.
+        if strategy.hop2_limit > 0 && hop2_enabled() {
+            let mut hop1_ranked: Vec<(i64, f64)> =
+                graph_score_map.iter().map(|(&id, &s)| (id, s)).collect();
+            hop1_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let hop2_seeds: Vec<i64> = hop1_ranked
+                .iter()
+                .take(strategy.hop2_limit)
+                .map(|(id, _)| *id)
+                .collect();
+            let hop2_futures: Vec<_> = hop2_seeds
+                .iter()
+                .map(|seed| fetch_graph_neighbors(db, *seed, user_id))
+                .collect();
+            let hop2_rows: Vec<Vec<GraphExpansionRow>> = futures::future::join_all(hop2_futures)
+                .await
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect();
+            // `hop2_limit` (the `.take` above) bounds how many hop-1 seeds we re-expand; the
+            // injection itself shares the `hop1_limit` cap, so hop-2 adds at most `hop1_limit`
+            // further candidates -- bounded amplification, not a second unbounded fan-out.
+            inject_graph_neighbors(
+                &mut results,
+                &mut graph_score_map,
+                hop2_rows,
+                strategy.hop1_limit,
+                strategy.relationship_multiplier * 0.5,
+            );
+        }
+
         // Apply graph RRF scores
         let mut graph_ranked: Vec<(i64, f64)> =
             graph_score_map.iter().map(|(&id, &s)| (id, s)).collect();
@@ -1052,6 +1157,45 @@ pub async fn hybrid_search(
         }
     }
     let graph_set: HashSet<i64> = graph_score_map.keys().copied().collect();
+
+    // L5: facts retrieval channel. Match the query against current structured_facts
+    // (via the facts_fts index) and fuse the parent memories through RRF, mirroring the graph
+    // channel. Gated by db.facts_channel_enabled (default off): when disabled facts_set stays
+    // empty and every line below is a no-op, so ranked output is byte-identical to before.
+    // Requires at least a Mid budget (it adds one FTS + join read), matching the FTS channel.
+    let mut facts_set: HashSet<i64> = HashSet::new();
+    if db.facts_channel_enabled
+        && budget >= SearchBudget::Mid
+        && !req.query.is_empty()
+        && req.query.len() <= crate::validation::MAX_FTS_QUERY_LEN
+    {
+        let facts_match = crate::memory::fts::fts_or_match_query(&req.query);
+        if !facts_match.is_empty() {
+            let facts_limit = limit.saturating_mul(2).clamp(limit, 100);
+            match crate::memory::facts_channel::search_facts_fts(
+                db,
+                &facts_match,
+                user_id,
+                facts_limit,
+            )
+            .await
+            {
+                Ok(hits) => {
+                    for (rank, hit) in hits.iter().enumerate() {
+                        // Reuse the entry's &mut Candidate (no second lookup). RRF by the fact's
+                        // BM25 rank, scaled by its stored confidence so a low-confidence fact
+                        // contributes proportionally less.
+                        let c = results
+                            .entry(hit.memory_id)
+                            .or_insert_with(|| minimal_facts_candidate(hit.memory_id));
+                        apply_graph_rrf_increment(c, rrf_score(rank) * hit.confidence);
+                        facts_set.insert(hit.memory_id);
+                    }
+                }
+                Err(e) => tracing::warn!("facts channel search failed: {e}"),
+            }
+        }
+    }
 
     // SEC-recall-1.2: enforce strategy.vector_floor as a real filter. Drop
     // candidates whose vector channel score is below the floor AND that did
@@ -1067,9 +1211,9 @@ pub async fn hybrid_search(
     let effective_floor = env_floor.unwrap_or(strategy.vector_floor);
     if effective_floor > 0.0 {
         results.retain(|id, c| {
-            // Always keep candidates that surfaced from FTS or graph -- they
+            // Always keep candidates that surfaced from FTS, graph, or facts -- they
             // carry signal beyond cosine similarity.
-            if fts_set.contains(id) || graph_set.contains(id) {
+            if fts_set.contains(id) || graph_set.contains(id) || facts_set.contains(id) {
                 return true;
             }
             // Vector-only candidate: enforce the floor when we have a real
@@ -1152,6 +1296,9 @@ pub async fn hybrid_search(
         }
         if graph_set.contains(&c.id) {
             channels.push(String::from("graph"));
+        }
+        if facts_set.contains(&c.id) {
+            channels.push(String::from("facts"));
         }
 
         // Look up from pre-fetched batch
@@ -1876,8 +2023,8 @@ fn parse_iso_date(s: &str) -> Option<String> {
 mod tests {
     use super::{
         apply_graph_rrf_increment, apply_personality_boost, hash_search_params,
-        inject_graph_hop1_neighbors, parse_iso_date, semantic_score_from_distance, Candidate,
-        GraphExpansionRow,
+        inject_graph_hop1_neighbors, inject_graph_neighbors, parse_iso_date,
+        semantic_score_from_distance, Candidate, GraphExpansionRow,
     };
     use crate::memory::types::{SearchBudget, SearchRequest, SearchStrategy};
 
@@ -1934,6 +2081,61 @@ mod tests {
     #[test]
     fn semantic_distance_above_one_clamps_to_zero() {
         assert_eq!(semantic_score_from_distance(1.25), 0.0);
+    }
+
+    /// L4a: the generic injector scales graph relevance by the multiplier (0.5 for hop-2) and
+    /// honors the cap, so a hop-2 neighbor always ranks beneath its full-weight hop-1 parents.
+    #[test]
+    fn inject_graph_neighbors_applies_multiplier_and_cap() {
+        fn row(id: i64) -> GraphExpansionRow {
+            GraphExpansionRow {
+                link_id: id,
+                similarity: 0.8,
+                link_type: "related".into(), // link_type_weight("related") == 1.0
+                content: "n".into(),
+                category: "general".into(),
+                importance: 5,
+                created_at: "2026-05-31T00:00:00Z".into(),
+                is_latest: true,
+                is_forgotten: false,
+                version: Some(1),
+                source_count: 1,
+                model: None,
+                source: None,
+            }
+        }
+
+        // Half weight (hop-2): relevance = similarity * link_weight(1.0) * 0.5 = 0.4.
+        let mut results = std::collections::HashMap::new();
+        let mut gsm = std::collections::HashMap::new();
+        inject_graph_neighbors(&mut results, &mut gsm, vec![vec![row(2), row(3)]], 5, 0.5);
+        assert_eq!(
+            results.len(),
+            2,
+            "both fresh neighbors injected under the cap"
+        );
+        assert!(
+            (gsm[&2] - 0.4).abs() < 1e-9,
+            "hop-2 half weight = 0.4, got {}",
+            gsm[&2]
+        );
+
+        // Full weight (hop-1) scores higher (0.8) -> hop-2 always ranks beneath hop-1.
+        let mut r1 = std::collections::HashMap::new();
+        let mut g1 = std::collections::HashMap::new();
+        inject_graph_neighbors(&mut r1, &mut g1, vec![vec![row(2)]], 5, 1.0);
+        assert!(
+            g1[&2] > gsm[&2],
+            "full-weight hop-1 ({}) must exceed half-weight hop-2 ({})",
+            g1[&2],
+            gsm[&2]
+        );
+
+        // The cap is global across seed groups, not per group.
+        let mut r2 = std::collections::HashMap::new();
+        let mut g2 = std::collections::HashMap::new();
+        inject_graph_neighbors(&mut r2, &mut g2, vec![vec![row(2)], vec![row(3)]], 1, 0.5);
+        assert_eq!(r2.len(), 1, "cap=1 limits total injections across groups");
     }
 
     /// Enforces the hop1 cap across all graph seeds instead of per seed.

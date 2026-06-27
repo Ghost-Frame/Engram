@@ -1194,6 +1194,29 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
             INSERT INTO artifacts_fts(rowid, name, content)
             VALUES (new.id, new.name, new.content);
         END"#,
+    // facts_fts: FTS5 index over structured_facts SPO + verb, for the L5 facts
+    // retrieval channel. External-content (content='structured_facts'); the triggers below
+    // keep it in sync. Fresh installs start empty so no 'rebuild' is needed here -- existing
+    // installs are backfilled by the facts_fts upgrade migration.
+    r#"CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+            subject, predicate, object, verb,
+            content='structured_facts', content_rowid='id',
+            tokenize='porter unicode61'
+        )"#,
+    r#"CREATE TRIGGER IF NOT EXISTS facts_fts_insert AFTER INSERT ON structured_facts BEGIN
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END"#,
+    r#"CREATE TRIGGER IF NOT EXISTS facts_fts_delete AFTER DELETE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+        END"#,
+    r#"CREATE TRIGGER IF NOT EXISTS facts_fts_update AFTER UPDATE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END"#,
     r#"INSERT OR IGNORE INTO users (id, username, role, is_admin) VALUES (1, 'owner', 'admin', 1)"#,
     r#"INSERT OR IGNORE INTO spaces (user_id, name) VALUES (1, 'default')"#,
 ];

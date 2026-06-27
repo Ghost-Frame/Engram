@@ -430,6 +430,12 @@ pub static MIGRATIONS: &[Migration] = &[
         "readd_user_id_scratchpad",
         run_migration_readd_user_id_scratchpad
     ),
+    // facts_fts FTS5 index over structured_facts for the L5 facts retrieval channel.
+    // Additive: create the virtual table + sync triggers and rebuild from existing rows so
+    // upgraded installs get a populated index. Fresh installs already create facts_fts via
+    // AUXILIARY_SCHEMA_STATEMENTS; both paths are IF NOT EXISTS / idempotent. No PRAGMA toggle,
+    // so it runs transactionally.
+    migration!(93, "facts_fts", run_migration_facts_fts, tx),
 ];
 
 // --- Version constants ---
@@ -3935,6 +3941,44 @@ fn run_migration_forge_tables(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_forge_specs_gate ON forge_specs(user_id, session_id, status);
         CREATE INDEX IF NOT EXISTS idx_forge_specs_user ON forge_specs(user_id, created_at DESC);",
     )?;
+    Ok(())
+}
+
+/// Migration 93: facts_fts FTS5 index over structured_facts for the L5 facts channel.
+///
+/// External-content FTS5 over `structured_facts` (subject/predicate/object/verb). Creates the
+/// virtual table and its INSERT/DELETE/UPDATE sync triggers, then rebuilds the index from the
+/// existing rows so upgraded installs get a populated index immediately. Idempotent: the
+/// `IF NOT EXISTS` statements no-op on fresh installs (which already created facts_fts via
+/// `AUXILIARY_SCHEMA_STATEMENTS`), and the FTS5 'rebuild' command fully replaces the shadow
+/// tables. No `PRAGMA foreign_keys` toggle, so it runs inside the migration SAVEPOINT.
+fn run_migration_facts_fts(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        // Index user_id so the facts channel's `sf.user_id = ?` filter has B-tree support on
+        // multi-user monolith DBs (tenant shards already carry idx_facts_user from v14).
+        "CREATE INDEX IF NOT EXISTS idx_facts_user ON structured_facts(user_id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+            subject, predicate, object, verb,
+            content='structured_facts', content_rowid='id',
+            tokenize='porter unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS facts_fts_insert AFTER INSERT ON structured_facts BEGIN
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END;
+        CREATE TRIGGER IF NOT EXISTS facts_fts_delete AFTER DELETE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+        END;
+        CREATE TRIGGER IF NOT EXISTS facts_fts_update AFTER UPDATE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END;
+        INSERT INTO facts_fts(facts_fts) VALUES('rebuild');",
+    )?;
+    info!("Migration 93 complete: facts_fts virtual table + triggers created and rebuilt");
     Ok(())
 }
 
