@@ -247,6 +247,27 @@ pub async fn fts_search(
 mod tests {
     use super::*;
 
+    /// Characterizes the FTS query sanitizer on non-ASCII input: Unicode
+    /// alphanumerics (German umlauts/ess-zett, French accents/cedilla) are kept
+    /// intact, while FTS5 special chars (parens) are stripped to spaces and the
+    /// literal token "AND" survives as a word.
+    #[test]
+    fn sanitizer_preserves_non_ascii_letters() {
+        // German: umlauts and ess-zett survive intact.
+        assert_eq!(sanitize_fts_query("Straße Fußball"), "Straße Fußball");
+        assert_eq!(
+            sanitize_fts_query("Bücher über Württemberg"),
+            "Bücher über Württemberg"
+        );
+        // French: accents and cedilla survive intact.
+        assert_eq!(
+            sanitize_fts_query("éducation française"),
+            "éducation française"
+        );
+        // FTS operators/parens stripped; "AND" kept as a literal token.
+        assert_eq!(sanitize_fts_query("Haus AND (Straße)"), "Haus AND Straße");
+    }
+
     // Expansion must link preference verbs within a class. The lookup folds the query token the
     // same way the map keys are built, so inflected tokens (e.g. "preferred") still resolve.
     #[test]
