@@ -52,6 +52,14 @@ kleos/
 1. Check existing issues - someone might already be working on it
 2. Open an issue first for significant changes - lets us discuss the approach before you invest time
 
+### Setup (once per clone)
+
+```bash
+# Install the tracked git hooks: rustfmt-on-commit, and a pre-push gate that
+# runs the CI checks locally so a 25-minute CI cycle never fails on a lint.
+scripts/install-git-hooks.sh
+```
+
 ### While Coding
 
 ```bash
@@ -63,6 +71,28 @@ cargo test --workspace
 
 # Lint before committing - warnings are errors
 cargo clippy --workspace -- -D warnings
+```
+
+### Before Pushing
+
+Run the exact CI gate locally -- this is what `ci.yml` runs, and what the
+pre-push hook runs for you:
+
+```bash
+# Fast gate (fmt + clippy + cargo-deny + MSRV) -- a couple of minutes:
+scripts/preflight.sh
+
+# Full gate (also cargo check + the workspace test suite):
+scripts/preflight.sh --full
+```
+
+The individual CI commands, if you prefer to run them by hand:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
+cargo test --workspace --exclude kleos-migrate
+cargo deny check        # licenses, sources, advisories, bans -- fails independently of your code
 ```
 
 ### Code Style
@@ -86,15 +116,15 @@ cargo clippy --workspace -- -D warnings
 1. Fork the repo
 2. Create a feature branch: `git checkout -b feature/your-feature`
 3. Make your changes
-4. Run `cargo clippy --workspace -- -D warnings`
-5. Run `cargo test --workspace`
-6. Push and open a PR
+4. Run `scripts/preflight.sh` (or `--full` to include tests)
+5. Push and open a PR
 
 ### PR Checklist
 
-- [ ] `cargo check --workspace` passes
-- [ ] `cargo clippy --workspace` passes with no warnings
-- [ ] `cargo test --workspace` passes
+- [ ] `cargo fmt --all -- --check` is clean
+- [ ] `cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings` passes
+- [ ] `cargo test --workspace --exclude kleos-migrate` passes
+- [ ] `cargo deny check` passes (licenses, sources, advisories, bans)
 - [ ] New code has tests where applicable
 - [ ] Documentation updated if behavior changes
 - [ ] No unrelated changes in the PR

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Pre-push gate: run the fast CI checks (rustfmt + clippy + cargo-deny + MSRV)
+# before a push completes, so trivial failures come back in a couple of minutes
+# locally instead of after a ~25-minute CI cycle. The slow test suite is left to
+# CI; run it locally on demand with `scripts/preflight.sh --full`.
+#
+# Install: scripts/install-git-hooks.sh   (points core.hooksPath at .githooks)
+# Bypass:  PREFLIGHT_SKIP=1 git push      (use sparingly; record why)
+
+set -euo pipefail
+
+# git streams the refs being pushed on stdin; drain it so the hook never blocks.
+cat >/dev/null || true
+
+if [[ "${PREFLIGHT_SKIP:-0}" == "1" ]]; then
+    echo "pre-push: PREFLIGHT_SKIP=1 set -- skipping local CI gate."
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+if [[ ! -x "$ROOT/scripts/preflight.sh" ]]; then
+    echo "pre-push: scripts/preflight.sh missing or not executable -- skipping." >&2
+    exit 0
+fi
+
+echo "pre-push: running scripts/preflight.sh (fmt + clippy + deny). PREFLIGHT_SKIP=1 to bypass."
+exec "$ROOT/scripts/preflight.sh"
