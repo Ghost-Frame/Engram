@@ -13,6 +13,7 @@ use crate::{EngError, Result};
 use async_trait::async_trait;
 use ort::session::Session;
 use ort::value::Tensor;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokenizers::Tokenizer;
@@ -78,15 +79,91 @@ struct RerankerInner {
     max_seq: usize,
 }
 
+/// A staged reranker model discovered on disk: its directory and short name.
+struct StagedReranker {
+    /// Directory holding `tokenizer.json` + `model_quantized.onnx`.
+    dir: PathBuf,
+    /// Short model name (the directory's file name), used for logging.
+    name: String,
+}
+
+/// Look beside `configured_dir` for another already-staged cross-encoder model.
+///
+/// Guards against the silent-disable regression where changing the DEFAULT reranker
+/// (e.g. granite-reranker -> bge-reranker-v2-m3) breaks reranking on an offline box that
+/// only pre-staged the previous model: instead of disabling reranking, fall back to a
+/// sibling reranker that is actually present. Only directories whose name marks them a
+/// reranker (`reranker`/`granite`) and that hold BOTH model files qualify, so the embedder
+/// dir (bge-m3) is never mistaken for a cross-encoder. Returns the lowest-named match for
+/// determinism, or `None` when nothing usable is staged.
+fn find_staged_reranker_fallback(
+    configured_dir: &Path,
+    configured_name: &str,
+) -> Option<StagedReranker> {
+    let root = configured_dir.parent()?;
+    let mut candidates: Vec<StagedReranker> = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let name = dir.file_name()?.to_str()?.to_string();
+            let looks_like_reranker = name.contains("reranker") || name.contains("granite");
+            let staged =
+                dir.join("tokenizer.json").is_file() && dir.join("model_quantized.onnx").is_file();
+            if dir.is_dir() && name != configured_name && looks_like_reranker && staged {
+                Some(StagedReranker { dir, name })
+            } else {
+                None
+            }
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.name.cmp(&b.name));
+    candidates.into_iter().next()
+}
+
 /// Constructor for the local ONNX cross-encoder reranker.
 impl OnnxReranker {
     /// Load the Granite cross-encoder model and tokenizer and build the reranker.
     pub async fn new(config: &Config) -> Result<Self> {
         // Model name drives the on-disk dir and the download URL set.
-        let model_name = config.reranker_model.clone();
+        let mut model_name = config.reranker_model.clone();
         let model_dir = config.model_dir(&model_name);
-        let (tokenizer_path, model_path) =
-            ensure_reranker_model(&model_dir, &model_name, config.embedding_offline_only).await?;
+        let (tokenizer_path, model_path) = match ensure_reranker_model(
+            &model_dir,
+            &model_name,
+            config.embedding_offline_only,
+        )
+        .await
+        {
+            Ok(paths) => paths,
+            // Offline boxes cannot download a newly-defaulted model. Rather than silently
+            // disable reranking, substitute any other staged reranker so recall stays reranked.
+            Err(e) if config.embedding_offline_only => {
+                match find_staged_reranker_fallback(&model_dir, &model_name) {
+                    Some(fallback) => {
+                        warn!(
+                            configured = %model_name,
+                            fallback = %fallback.name,
+                            "configured reranker '{}' is not staged for offline use; falling back \
+                             to staged reranker '{}'. Recall stays reranked, but the abstain gate's \
+                             thresholds were calibrated for '{}' -- recalibrate (or stage the \
+                             configured model) if this fallback persists.",
+                            model_name, fallback.name, model_name
+                        );
+                        let paths = ensure_reranker_model(
+                            &fallback.dir,
+                            &fallback.name,
+                            config.embedding_offline_only,
+                        )
+                        .await?;
+                        model_name = fallback.name;
+                        paths
+                    }
+                    None => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             EngError::Internal(format!(
@@ -638,5 +715,59 @@ pub async fn create_reranker(
             "unknown reranker backend '{}'; expected onnx, http, tei, or none",
             other
         ))),
+    }
+}
+
+#[cfg(test)]
+/// Tests for the offline staged-reranker fallback resolution.
+mod tests {
+    use super::*;
+
+    /// Create `root/<name>/` containing both reranker model files (content irrelevant).
+    fn stage_model(root: &Path, name: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(dir.join("model_quantized.onnx"), b"onnx").unwrap();
+    }
+
+    /// A missing configured model falls back to a staged sibling reranker, never the embedder.
+    #[test]
+    fn fallback_picks_staged_sibling_reranker_not_embedder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        stage_model(root, "bge-m3"); // embedder -- must be ignored
+        stage_model(root, "granite-reranker"); // staged previous reranker
+                                               // Configured model dir is absent on disk.
+        let configured = root.join("bge-reranker-v2-m3");
+
+        let fb = find_staged_reranker_fallback(&configured, "bge-reranker-v2-m3")
+            .expect("a staged reranker sibling should be found");
+        assert_eq!(fb.name, "granite-reranker");
+    }
+
+    /// With no other reranker staged, the resolver returns None (caller keeps the hard error).
+    #[test]
+    fn fallback_none_when_only_embedder_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        stage_model(root, "bge-m3"); // only the embedder is present
+        let configured = root.join("bge-reranker-v2-m3");
+
+        assert!(find_staged_reranker_fallback(&configured, "bge-reranker-v2-m3").is_none());
+    }
+
+    /// A reranker dir missing one of the two model files does not qualify as staged.
+    #[test]
+    fn fallback_skips_incomplete_reranker_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // tokenizer present but the onnx file is absent.
+        let partial = root.join("granite-reranker");
+        std::fs::create_dir_all(&partial).unwrap();
+        std::fs::write(partial.join("tokenizer.json"), b"{}").unwrap();
+        let configured = root.join("bge-reranker-v2-m3");
+
+        assert!(find_staged_reranker_fallback(&configured, "bge-reranker-v2-m3").is_none());
     }
 }

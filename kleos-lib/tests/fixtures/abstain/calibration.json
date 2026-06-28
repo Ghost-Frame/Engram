@@ -1,38 +1,247 @@
 {
-  "_doc": "Calibration set for the L2 ABSTAIN gate (kleos-lib/tests/abstain_calibration.rs). Each query is labelled `answerable` (a relevant memory exists in the store) or `unanswerable` (none does). `sem_top`/`ce_top` are the best semantic_score (raw cosine) and best ce_confidence (normalized cross-encoder) a real retrieval produced for that query. The harness sweeps the semantic threshold through the production `evaluate_signals` logic and reports false-abstain rate (FAR, answerable wrongly abstained) and true-abstain rate (TAR, unanswerable correctly abstained), asserting FAR<5% / TAR>80% at the shipped default (0.65). PROVENANCE: the scores below are seeded from the agent-in-the-loop evaluation distribution (answerable top cosine ~0.71-0.78, unanswerable ~0.45-0.62, with deliberately hard boundary cases). They are a regression baseline and a template -- before freezing a production threshold for a NEW embedder/reranker, RE-CAPTURE per-query sem_top/ce_top from an isolated kleos-server (real bge-m3 + reranker, scratch DB) running each `q` against the `corpus`, then update these numbers and re-run the sweep. `corpus` exists for that live re-capture; the offline evaluator uses only class/question_type/sem_top/ce_top.",
+  "_doc": "Calibration set for the L2 ABSTAIN gate (kleos-lib/tests/abstain_calibration.rs). Each query is labelled `answerable` (a relevant memory exists in the store) or `unanswerable` (none does). `sem_top`/`ce_top` are the best semantic_score (raw cosine) and best ce_confidence (normalized cross-encoder) a real retrieval produced for that query. The harness sweeps the semantic threshold through the production `evaluate_signals` logic and reports false-abstain rate (FAR) and true-abstain rate (TAR), asserting FAR<5%% / TAR>80%% at the shipped default (0.65). PROVENANCE: RE-CAPTURED 2026-06-28 from an isolated kleos-server (real bge-m3 embedder + bge-reranker-v2-m3 ONNX reranker, scratch DB) running each `q` against the `corpus` -- these are live signals, not seeds. bge-reranker-v2-m3 produces a sharply bimodal cross-encoder distribution (relevant pairs ~0.98-1.0, irrelevant ~0.00) vs granites compressed 0.5-0.9, so the CE rescue floor was recalibrated 0.80 -> 0.70 (the old floor wrongly dropped ans-dahlia-rescued at ce=0.752). A query that returns ZERO results (sem_top=null AND ce_top=null, e.g. un-atlantis) abstains in production via results.is_empty(); the harness mirrors that. Before freezing for a NEW embedder/reranker, re-capture and re-run the sweep. `corpus` exists for that live re-capture.",
   "corpus": [
-    { "key": "calyx_db", "content": "Calyx stores all primary state in PostgreSQL with a Redis cache layer", "category": "fact" },
-    { "key": "borealis_lead", "content": "The Borealis project is led by engineering lead Marin Okafor", "category": "fact" },
-    { "key": "cobalt_migrate", "content": "The Cobalt service migrated to its v2 storage backend on 2026-02-14", "category": "fact" },
-    { "key": "rust_choice", "content": "We chose Rust for the engine because of memory safety and predictable latency under load", "category": "decision" },
-    { "key": "vexel_db", "content": "Vexel uses SQLite with the sqlite-vec extension for its embedded vector store", "category": "fact" },
-    { "key": "editor_pref", "content": "My preferred editor is Helix with the catppuccin theme", "category": "preference" },
-    { "key": "kleos_port", "content": "Kleos listens on port 4200 by default", "category": "fact" },
-    { "key": "embed_model", "content": "We run the BAAI/bge-m3 embedding model at 1024 dimensions", "category": "fact" },
-    { "key": "german_rerank", "content": "For German retrieval the HTTP reranker with bge-reranker-v2-m3 outperforms the English Granite cross-encoder", "category": "decision" },
-    { "key": "dahlia_status", "content": "Dahlia is paused pending a security review of its ingest path", "category": "fact" }
+    {
+      "key": "calyx_db",
+      "content": "Calyx stores all primary state in PostgreSQL with a Redis cache layer",
+      "category": "fact"
+    },
+    {
+      "key": "borealis_lead",
+      "content": "The Borealis project is led by engineering lead Marin Okafor",
+      "category": "fact"
+    },
+    {
+      "key": "cobalt_migrate",
+      "content": "The Cobalt service migrated to its v2 storage backend on 2026-02-14",
+      "category": "fact"
+    },
+    {
+      "key": "rust_choice",
+      "content": "We chose Rust for the engine because of memory safety and predictable latency under load",
+      "category": "decision"
+    },
+    {
+      "key": "vexel_db",
+      "content": "Vexel uses SQLite with the sqlite-vec extension for its embedded vector store",
+      "category": "fact"
+    },
+    {
+      "key": "editor_pref",
+      "content": "My preferred editor is Helix with the catppuccin theme",
+      "category": "preference"
+    },
+    {
+      "key": "kleos_port",
+      "content": "Kleos listens on port 4200 by default",
+      "category": "fact"
+    },
+    {
+      "key": "embed_model",
+      "content": "We run the BAAI/bge-m3 embedding model at 1024 dimensions",
+      "category": "fact"
+    },
+    {
+      "key": "german_rerank",
+      "content": "For German retrieval the HTTP reranker with bge-reranker-v2-m3 outperforms the English Granite cross-encoder",
+      "category": "decision"
+    },
+    {
+      "key": "dahlia_status",
+      "content": "Dahlia is paused pending a security review of its ingest path",
+      "category": "fact"
+    }
   ],
   "queries": [
-    { "id": "ans-calyx-store", "class": "answerable", "question_type": "fact_recall", "q": "what is calyx's primary datastore", "relevant": ["calyx_db"], "sem_top": 0.78, "ce_top": 0.81 },
-    { "id": "ans-borealis-lead", "class": "answerable", "question_type": "fact_recall", "q": "who leads the borealis project", "relevant": ["borealis_lead"], "sem_top": 0.74, "ce_top": 0.70 },
-    { "id": "ans-cobalt-when", "class": "answerable", "question_type": "temporal", "q": "when did cobalt migrate to v2 storage", "relevant": ["cobalt_migrate"], "sem_top": 0.71, "ce_top": 0.65 },
-    { "id": "ans-rust-why", "class": "answerable", "question_type": "reasoning", "q": "why did we pick rust for the engine", "relevant": ["rust_choice"], "sem_top": 0.72, "ce_top": 0.68 },
-    { "id": "ans-vexel-db", "class": "answerable", "question_type": "fact_recall", "q": "what database does vexel use", "relevant": ["vexel_db"], "sem_top": 0.76, "ce_top": 0.79 },
-    { "id": "ans-editor", "class": "answerable", "question_type": "preference", "q": "what is my preferred editor", "relevant": ["editor_pref"], "sem_top": 0.69, "ce_top": 0.60 },
-    { "id": "ans-port", "class": "answerable", "question_type": "fact_recall", "q": "what port does kleos listen on", "relevant": ["kleos_port"], "sem_top": 0.80, "ce_top": 0.85 },
-    { "id": "ans-embed-model", "class": "answerable", "question_type": "fact_recall", "q": "what embedding model do we run", "relevant": ["embed_model"], "sem_top": 0.73, "ce_top": 0.72 },
-    { "id": "ans-german-rerank", "class": "answerable", "question_type": "generalization", "q": "should i use the http reranker for german", "relevant": ["german_rerank"], "sem_top": 0.66, "ce_top": 0.55 },
-    { "id": "ans-dahlia-rescued", "class": "answerable", "question_type": "fact_recall", "q": "what is dahlia's status", "relevant": ["dahlia_status"], "sem_top": 0.63, "ce_top": 0.88 },
-
-    { "id": "un-calyx-lang", "class": "unanswerable", "question_type": "fact_recall", "q": "what language is calyx written in", "sem_top": 0.58, "ce_top": 0.42 },
-    { "id": "un-borealis-ceo", "class": "unanswerable", "question_type": "fact_recall", "q": "who is the ceo of borealis", "sem_top": 0.55, "ce_top": 0.38 },
-    { "id": "un-meaning-life", "class": "unanswerable", "question_type": "reasoning", "q": "what is the meaning of life", "sem_top": 0.46, "ce_top": 0.20 },
-    { "id": "un-fav-fruit", "class": "unanswerable", "question_type": "preference", "q": "what is my favorite tropical fruit", "sem_top": 0.52, "ce_top": 0.30 },
-    { "id": "un-eclipse", "class": "unanswerable", "question_type": "temporal", "q": "when is the next solar eclipse", "sem_top": 0.49, "ce_top": 0.25 },
-    { "id": "un-vexel-stock", "class": "unanswerable", "question_type": "fact_recall", "q": "what is vexel's stock price", "sem_top": 0.60, "ce_top": 0.45 },
-    { "id": "un-kleos-headcount", "class": "unanswerable", "question_type": "fact_recall", "q": "how many employees does kleos have", "sem_top": 0.62, "ce_top": 0.50 },
-    { "id": "un-dahlia-logo", "class": "unanswerable", "question_type": "fact_recall", "q": "what color is the dahlia logo", "sem_top": 0.57, "ce_top": 0.40 },
-    { "id": "un-invest-borealis", "class": "unanswerable", "question_type": "generalization", "q": "should i invest in borealis", "sem_top": 0.64, "ce_top": 0.52 },
-    { "id": "un-atlantis", "class": "unanswerable", "question_type": "fact_recall", "q": "what is the capital of atlantis", "sem_top": 0.66, "ce_top": 0.48 }
+    {
+      "id": "ans-calyx-store",
+      "class": "answerable",
+      "question_type": "fact_recall",
+      "q": "what is calyx's primary datastore",
+      "relevant": [
+        "calyx_db"
+      ],
+      "sem_top": 0.6851,
+      "ce_top": 0.9039
+    },
+    {
+      "id": "ans-borealis-lead",
+      "class": "answerable",
+      "question_type": "fact_recall",
+      "q": "who leads the borealis project",
+      "relevant": [
+        "borealis_lead"
+      ],
+      "sem_top": 0.6538,
+      "ce_top": 0.9988
+    },
+    {
+      "id": "ans-cobalt-when",
+      "class": "answerable",
+      "question_type": "temporal",
+      "q": "when did cobalt migrate to v2 storage",
+      "relevant": [
+        "cobalt_migrate"
+      ],
+      "sem_top": 0.7351,
+      "ce_top": 0.9985
+    },
+    {
+      "id": "ans-rust-why",
+      "class": "answerable",
+      "question_type": "reasoning",
+      "q": "why did we pick rust for the engine",
+      "relevant": [
+        "rust_choice"
+      ],
+      "sem_top": 0.7829,
+      "ce_top": 0.9994
+    },
+    {
+      "id": "ans-vexel-db",
+      "class": "answerable",
+      "question_type": "fact_recall",
+      "q": "what database does vexel use",
+      "relevant": [
+        "vexel_db"
+      ],
+      "sem_top": 0.6509,
+      "ce_top": 0.9915
+    },
+    {
+      "id": "ans-editor",
+      "class": "answerable",
+      "question_type": "preference",
+      "q": "what is my preferred editor",
+      "relevant": [
+        "editor_pref"
+      ],
+      "sem_top": 0.7048,
+      "ce_top": 0.9972
+    },
+    {
+      "id": "ans-port",
+      "class": "answerable",
+      "question_type": "fact_recall",
+      "q": "what port does kleos listen on",
+      "relevant": [
+        "kleos_port"
+      ],
+      "sem_top": 0.8153,
+      "ce_top": 0.9996
+    },
+    {
+      "id": "ans-embed-model",
+      "class": "answerable",
+      "question_type": "fact_recall",
+      "q": "what embedding model do we run",
+      "relevant": [
+        "embed_model"
+      ],
+      "sem_top": 0.5585,
+      "ce_top": 0.9941
+    },
+    {
+      "id": "ans-german-rerank",
+      "class": "answerable",
+      "question_type": "generalization",
+      "q": "should i use the http reranker for german",
+      "relevant": [
+        "german_rerank"
+      ],
+      "sem_top": 0.6631,
+      "ce_top": 0.9825
+    },
+    {
+      "id": "ans-dahlia-rescued",
+      "class": "answerable",
+      "question_type": "fact_recall",
+      "q": "what is dahlia's status",
+      "relevant": [
+        "dahlia_status"
+      ],
+      "sem_top": 0.5067,
+      "ce_top": 0.7518
+    },
+    {
+      "id": "un-calyx-lang",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "what language is calyx written in",
+      "sem_top": 0.4868,
+      "ce_top": 0.1329
+    },
+    {
+      "id": "un-borealis-ceo",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "who is the ceo of borealis",
+      "sem_top": 0.4728,
+      "ce_top": 0.7624
+    },
+    {
+      "id": "un-meaning-life",
+      "class": "unanswerable",
+      "question_type": "reasoning",
+      "q": "what is the meaning of life",
+      "sem_top": 0.1952,
+      "ce_top": 0.0
+    },
+    {
+      "id": "un-fav-fruit",
+      "class": "unanswerable",
+      "question_type": "preference",
+      "q": "what is my favorite tropical fruit",
+      "sem_top": 0.3727,
+      "ce_top": 0.0002
+    },
+    {
+      "id": "un-eclipse",
+      "class": "unanswerable",
+      "question_type": "temporal",
+      "q": "when is the next solar eclipse",
+      "sem_top": 0.2364,
+      "ce_top": 0.0001
+    },
+    {
+      "id": "un-vexel-stock",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "what is vexel's stock price",
+      "sem_top": 0.5274,
+      "ce_top": 0.0003
+    },
+    {
+      "id": "un-kleos-headcount",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "how many employees does kleos have",
+      "sem_top": 0.5404,
+      "ce_top": 0.002
+    },
+    {
+      "id": "un-dahlia-logo",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "what color is the dahlia logo",
+      "sem_top": 0.3536,
+      "ce_top": 0.0003
+    },
+    {
+      "id": "un-invest-borealis",
+      "class": "unanswerable",
+      "question_type": "generalization",
+      "q": "should i invest in borealis",
+      "sem_top": 0.4465,
+      "ce_top": 0.0115
+    },
+    {
+      "id": "un-atlantis",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "what is the capital of atlantis",
+      "sem_top": null,
+      "ce_top": null
+    }
   ]
 }

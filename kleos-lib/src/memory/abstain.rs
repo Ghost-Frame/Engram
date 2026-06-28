@@ -64,8 +64,12 @@ static FACT_RELAX: LazyLock<f64> =
     LazyLock::new(|| env_f64("KLEOS_ABSTAIN_FACT_RELAX", DEFAULT_FACT_RELAX, 0.0, 0.5));
 
 /// Cross-encoder rescue floor. A best `ce_confidence >= ce_rescue` vetoes any abstain:
-/// a strong query x document relevance overrides a middling cosine. Default 0.80.
-const DEFAULT_CE_RESCUE: f64 = 0.80;
+/// a strong query x document relevance overrides a middling cosine. Default 0.70,
+/// recalibrated 2026-06-28 for the bge-reranker-v2-m3 reranker (was 0.80, frozen against
+/// granite). That model's CE distribution is sharply bimodal -- relevant pairs ~0.98-1.0,
+/// irrelevant ~0.00 -- so a legitimately-rescuable boundary case captured at ce=0.752 fell
+/// below the old 0.80 floor and was false-abstained; 0.70 sits in the valley below it.
+const DEFAULT_CE_RESCUE: f64 = 0.70;
 static CE_RESCUE: LazyLock<f64> =
     LazyLock::new(|| env_f64("KLEOS_ABSTAIN_CE_RESCUE", DEFAULT_CE_RESCUE, 0.0, 1.0));
 
@@ -86,7 +90,7 @@ static MARGIN: LazyLock<f64> =
 /// Model baseline the default thresholds were frozen against. A different embedder or
 /// reranker shifts the score distribution and silently invalidates the thresholds, so the
 /// gate warns once when it is enabled against a non-baseline reranker.
-const CALIBRATION_BASELINE: &str = "bge-m3 (embed) + granite (rerank, onnx)";
+const CALIBRATION_BASELINE: &str = "bge-m3 (embed) + bge-reranker-v2-m3 (rerank, onnx)";
 
 /// One-shot provenance guard. When the gate is enabled and a non-baseline reranker is
 /// configured (any HTTP/TEI/Cohere backend, or a non-default `KLEOS_RERANKER_MODEL`), warn
@@ -140,6 +144,7 @@ pub struct AbstainConfig {
     pub margin: f64,
 }
 
+/// Env-resolution and construction for the abstain gate's tuned thresholds.
 impl AbstainConfig {
     /// Resolve the configuration from `KLEOS_ABSTAIN_*` env vars (read once via LazyLock).
     pub fn from_env() -> Self {
@@ -319,6 +324,7 @@ pub fn abstain_gate(
 }
 
 #[cfg(test)]
+/// Unit tests for the abstain decision core and the gate envelope.
 mod tests {
     use super::*;
 
@@ -334,6 +340,7 @@ mod tests {
         }
     }
 
+    /// True when two floats are within a tight epsilon -- for threshold assertions.
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
     }
@@ -352,6 +359,7 @@ mod tests {
         assert_eq!(max_opt([0.2, 0.9, 0.5].into_iter()), Some(0.9));
     }
 
+    /// `top_two_margin` needs two scores: a single score yields None, three give the top gap.
     #[test]
     fn margin_needs_two_scores() {
         assert_eq!(top_two_margin(vec![0.8]), None);
@@ -372,6 +380,7 @@ mod tests {
         assert_eq!(d.signal, "disabled");
     }
 
+    /// An empty result pool always abstains -- the historical empty-set rule.
     #[test]
     fn empty_results_abstain() {
         let d = abstain_gate(&[], QuestionType::FactRecall, &cfg(0.65, 0.8, 0.0));
@@ -394,6 +403,7 @@ mod tests {
         assert_eq!(d.signal, "no_signal");
     }
 
+    /// A sub-threshold semantic score with no CE rescue abstains on `semantic`.
     #[test]
     fn semantic_below_threshold_abstains() {
         let d = evaluate_signals(
@@ -408,6 +418,7 @@ mod tests {
         assert_eq!(d.reason.as_deref(), Some("semantic_below_threshold"));
     }
 
+    /// An above-threshold semantic score answers -- no abstain.
     #[test]
     fn semantic_above_threshold_answers() {
         let d = evaluate_signals(

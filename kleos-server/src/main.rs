@@ -154,8 +154,12 @@ async fn main() {
                     tracing::info!("reranker disabled by backend config");
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "reranker failed to initialize: {}. Results will not be reranked.",
+                    // Reranking is enabled but no model could be loaded -- not even a staged
+                    // fallback (see OnnxReranker::new). Search silently loses cross-encoder
+                    // precision, so this is an ERROR, not a benign warning.
+                    tracing::error!(
+                        "reranker failed to initialize: {}. Results will NOT be reranked -- \
+                         stage the configured reranker model or set KLEOS_RERANKER_ENABLED=false.",
                         e
                     );
                 }

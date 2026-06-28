@@ -71,10 +71,27 @@ fn sweep_config(semantic: f64) -> AbstainConfig {
         enabled: true,
         semantic,
         fact_relax: 0.0,
-        ce_rescue: 0.80,
+        // Recalibrated 2026-06-28 for bge-reranker-v2-m3 (was 0.80, tuned for granite). The new
+        // reranker's CE distribution is sharply bimodal (relevant ~0.98-1.0, irrelevant ~0.00),
+        // so a legitimately-rescuable answerable boundary case (ans-dahlia-rescued) lands at
+        // ce=0.752 -- below the old 0.80 floor, which false-abstained it. 0.70 sits in the wide
+        // valley below that case and well above the irrelevant cluster.
+        ce_rescue: 0.70,
         ce_floor: 0.0,
         margin: 0.0,
     }
+}
+
+/// Production-faithful abstain decision for one calibration query. Mirrors the search route's
+/// `abstained = abstain.abstain || results.is_empty()`: a query that retrieved NOTHING (no
+/// semantic AND no cross-encoder signal, e.g. un-atlantis) abstains in production via the
+/// empty-result path, which `evaluate_signals` alone -- reasoning over a non-empty pool -- never
+/// sees. Counting it here keeps the offline rates honest rather than penalizing a correct abstain.
+fn decides_abstain(q: &CalQuery, cfg: &AbstainConfig) -> bool {
+    if q.sem_top.is_none() && q.ce_top.is_none() {
+        return true;
+    }
+    evaluate_signals(q.sem_top, q.ce_top, None, q.qt, cfg).abstain
 }
 
 /// Returns (false_abstain_rate, true_abstain_rate) for the queries at one threshold.
@@ -83,15 +100,15 @@ fn rates(queries: &[CalQuery], threshold: f64) -> (f64, f64) {
     let (mut answerable, mut unanswerable) = (0u32, 0u32);
     let (mut false_abstain, mut true_abstain) = (0u32, 0u32);
     for q in queries {
-        let d = evaluate_signals(q.sem_top, q.ce_top, None, q.qt, &cfg);
+        let abstain = decides_abstain(q, &cfg);
         if q.answerable {
             answerable += 1;
-            if d.abstain {
+            if abstain {
                 false_abstain += 1;
             }
         } else {
             unanswerable += 1;
-            if d.abstain {
+            if abstain {
                 true_abstain += 1;
             }
         }
@@ -107,7 +124,9 @@ fn rates(queries: &[CalQuery], threshold: f64) -> (f64, f64) {
 }
 
 /// Sweep the production gate logic across thresholds over the labelled fixture and assert the
-/// FAR/TAR targets hold at the shipped default (against the synthetic seeded distribution).
+/// FAR/TAR targets hold at the shipped default. Signals are LIVE captures (2026-06-28) from a
+/// bge-m3 + bge-reranker-v2-m3 scratch server, with `ce_rescue` recalibrated to 0.70 for that
+/// reranker (see `sweep_config`).
 #[test]
 fn abstain_threshold_meets_far_tar_targets() {
     let queries = load_queries();
@@ -127,8 +146,8 @@ fn abstain_threshold_meets_far_tar_targets() {
     let (far, tar) = rates(&queries, DEFAULT_THRESHOLD);
     println!("CAL_SUMMARY {{\"threshold\":{DEFAULT_THRESHOLD},\"far\":{far:.4},\"tar\":{tar:.4}}}");
     println!(
-        "NOTE: FAR/TAR are measured against the SYNTHETIC seeded distribution -- re-capture \
-         per-query sem_top/ce_top from a live server before any production threshold freeze."
+        "NOTE: FAR/TAR are measured against LIVE bge-m3 + bge-reranker-v2-m3 captures -- \
+         re-capture per-query sem_top/ce_top before freezing for a different embedder/reranker."
     );
 
     // Per-query diagnostics at the default threshold: name the offenders so a failed freeze
@@ -137,10 +156,10 @@ fn abstain_threshold_meets_far_tar_targets() {
     let mut false_abstains: Vec<&str> = Vec::new();
     let mut missed_abstains: Vec<&str> = Vec::new();
     for q in &queries {
-        let d = evaluate_signals(q.sem_top, q.ce_top, None, q.qt, &cfg);
-        if q.answerable && d.abstain {
+        let abstain = decides_abstain(q, &cfg);
+        if q.answerable && abstain {
             false_abstains.push(q.id.as_str());
-        } else if !q.answerable && !d.abstain {
+        } else if !q.answerable && !abstain {
             missed_abstains.push(q.id.as_str());
         }
     }
