@@ -586,6 +586,169 @@
   padding: 6px 8px;
 }
 
+/* ---- Timeline day-level memory cards + CRUD ---- */
+
+/* New-memory toolbar, right-aligned above the day card grid. */
+.kl-timeline-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--sp-3); }
+.kl-new-memory {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 4px 14px;
+}
+.kl-new-memory:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Day-level grid: memory cards share the cards3d visual language (accent bar,
+   glass gradient, hover lift + holo sheen) but use a one-shot staggered
+   entrance instead of the perpetual breathe so long content stays readable. */
+.kl-memcard-field {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-4);
+  perspective: 1200px;
+}
+
+.kl-memcard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(160deg, var(--surface-2), var(--surface));
+  padding: var(--sp-4);
+  overflow: hidden;
+  transform-style: preserve-3d;
+  transition: transform var(--dur-normal) var(--ease-out-expo),
+    box-shadow var(--dur-normal) var(--ease-default),
+    border-color var(--dur-normal) var(--ease-default);
+  animation: kl-memcard-in var(--dur-slow) var(--ease-out-expo) both;
+  animation-delay: var(--kl-delay, 0s);
+}
+.kl-memcard::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+.kl-memcard::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    transparent 20%,
+    rgb(var(--accent-r) var(--accent-g) var(--accent-b) / 10%) 50%,
+    transparent 80%
+  );
+  opacity: 0;
+  transition: opacity var(--dur-slow);
+  pointer-events: none;
+}
+.kl-memcard:hover {
+  transform: translateZ(20px) translateY(-4px);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%),
+    0 0 26px rgb(var(--accent-r) var(--accent-g) var(--accent-b) / 22%);
+  border-color: var(--accent);
+}
+.kl-memcard:hover::after { opacity: 1; }
+/* While editing, keep the card flat and lifted out of the hover dance. */
+.kl-memcard--editing { animation: none; }
+.kl-memcard--editing:hover { transform: none; box-shadow: none; border-color: var(--accent); }
+
+@keyframes kl-memcard-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.kl-memcard__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.kl-memcard__cat {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+.kl-memcard__imp { font-family: var(--font-mono); }
+.kl-memcard__content {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.kl-memcard__tags { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.kl-memcard__tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.kl-memcard__hint { font-size: 10px; color: var(--text-faint); }
+.kl-memcard__confirm { font-size: 12px; color: var(--text-dim); align-self: center; }
+.kl-memcard__err { font-size: 11px; color: var(--err); }
+
+/* Card action row -- mirrors the inbox button treatment, plus a danger accent. */
+.kl-memcard__actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: auto; }
+.kl-memcard__actions button {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 4px 12px;
+}
+.kl-memcard__actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.kl-memcard__actions button:disabled { opacity: 0.5; cursor: default; }
+.kl-memcard__actions button.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+
+/* Shared create/edit form fields. */
+.kl-memform { display: flex; flex-direction: column; gap: var(--sp-2); }
+.kl-memform__content,
+.kl-memform__tags {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+.kl-memform__row { display: flex; gap: var(--sp-3); flex-wrap: wrap; align-items: flex-end; }
+.kl-memform__field { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--text-dim); }
+.kl-memform__field input {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  padding: 4px 8px;
+}
+.kl-memform__field--imp input { width: 64px; }
+.kl-memform__field--static { flex-direction: row; align-items: center; gap: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kl-memcard { animation: none; }
+  .kl-memcard:hover { transform: none; }
+}
+
 /* Projects toolbar -- show/hide empty projects toggle. */
 .kl-projects-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--sp-3); }
 .kl-projects-toolbar button {

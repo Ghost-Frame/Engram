@@ -64,6 +64,38 @@ export async function listMemoriesByDay(
   return (await request<{ results: SearchResult[] }>(`/list?${qs}`)).results ?? [];
 }
 
+// Editable fields accepted when creating a memory from the timeline GUI.
+export interface NewMemoryInput {
+  content: string;
+  category?: string;
+  importance?: number;
+  tags?: string[];
+  is_static?: boolean;
+}
+
+// Fields that may be patched on an existing memory via the update endpoint.
+export type MemoryPatch = Partial<NewMemoryInput>;
+
+// Create a new memory. Returns the stored (or, on server-side dedupe, existing)
+// id plus whether the server treated the write as a duplicate.
+export async function storeMemory(input: NewMemoryInput): Promise<{ id: number; duplicate: boolean }> {
+  const res = await request<{ id?: number; existing_id?: number; duplicate?: boolean }>('/store', {
+    body: input,
+    method: 'POST'
+  });
+  return { id: res.id ?? res.existing_id ?? 0, duplicate: Boolean(res.duplicate) };
+}
+
+// Update fields (content/category/importance/tags/pin) on an existing memory.
+export async function updateMemory(id: number, patch: MemoryPatch): Promise<void> {
+  await request(`/memory/${id}/update`, { body: patch, method: 'POST' });
+}
+
+// Soft-delete a memory; it remains recoverable from the server-side trash.
+export async function deleteMemory(id: number): Promise<void> {
+  await request(`/memory/${id}`, { method: 'DELETE' });
+}
+
 // Approve a pending inbox memory.
 export async function approveInbox(id: number): Promise<void> {
   await request(`/inbox/${id}/approve`, { method: 'POST' });

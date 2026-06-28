@@ -1,9 +1,18 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { getCalendar, listMemoriesByDay } from '$lib/api/memory';
+import {
+  deleteMemory,
+  getCalendar,
+  listMemoriesByDay,
+  storeMemory,
+  updateMemory,
+  // Payload type shared by the create and edit mutations.
+  type NewMemoryInput
+} from '$lib/api/memory';
 import { FloatingCard, FloatingCardField } from '../../ui/cards3d';
 import { EmptyState } from '../../ui/EmptyState';
 import { Spinner } from '../../ui/Spinner';
+import { CreateMemoryForm, MemoryCard } from './MemoryCard';
 
 // Month-number (1-12) to short label for the month cards.
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -16,6 +25,43 @@ export function Timeline() {
   const [month, setMonth] = useState<number | null>(null);
   // Currently selected day (null = day overview).
   const [day, setDay] = useState<number | null>(null);
+  // Whether the inline create-memory panel is open.
+  const [creating, setCreating] = useState(false);
+  // React Query client used to refresh calendar buckets after a mutation.
+  const queryClient = useQueryClient();
+
+  // Refresh every timeline calendar/day-list query after a write. Counts and the
+  // visible day list both depend on the corpus, so invalidate the shared prefix.
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['mem', 'cal'] });
+
+  // Jump the drill-down to today so a freshly created memory is visible (the
+  // server stamps new memories now(), regardless of the day being viewed).
+  const jumpToToday = () => {
+    const now = new Date();
+    setYear(now.getFullYear());
+    setMonth(now.getMonth() + 1);
+    setDay(now.getDate());
+  };
+
+  // Create a memory, then close the panel and reveal it under today.
+  const create = useMutation({
+    mutationFn: (input: NewMemoryInput) => storeMemory(input),
+    onSuccess: () => {
+      invalidate();
+      setCreating(false);
+      jumpToToday();
+    }
+  });
+  // Update a memory's editable fields in place.
+  const save = useMutation({
+    mutationFn: (vars: { id: number; input: NewMemoryInput }) => updateMemory(vars.id, vars.input),
+    onSuccess: invalidate
+  });
+  // Soft-delete a memory (recoverable from the server-side trash).
+  const remove = useMutation({
+    mutationFn: (id: number) => deleteMemory(id),
+    onSuccess: invalidate
+  });
 
   // Fetch the list of years that contain memories.
   const years = useQuery({
@@ -76,6 +122,25 @@ export function Timeline() {
           </>
         )}
       </nav>
+
+      <div className="kl-timeline-toolbar">
+        <button
+          className="kl-new-memory"
+          onClick={() => setCreating((open) => !open)}
+          aria-expanded={creating}
+        >
+          {creating ? 'Close' : '+ New memory'}
+        </button>
+      </div>
+
+      {creating && (
+        <CreateMemoryForm
+          onSubmit={(input) => create.mutate(input)}
+          onCancel={() => setCreating(false)}
+          busy={create.isPending}
+          error={create.isError ? 'Could not create memory. Try again.' : undefined}
+        />
+      )}
 
       {/* Year level */}
       {year === null &&
@@ -153,19 +218,27 @@ export function Timeline() {
         ) : memories.isError ? (
           <EmptyState message="Failed to load. Try refreshing." />
         ) : memories.data && memories.data.length > 0 ? (
-          <div className="memory-list">
-            {memories.data.map((m) => (
-              <article className="glass memory-card" key={m.id}>
-                <div className="memory-card__meta">
-                  <span>{m.category}</span>
-                  <span>{m.created_at.slice(0, 16)}</span>
-                </div>
-                <p>{m.content}</p>
-              </article>
+          <div className="kl-memcard-field">
+            {memories.data.map((m, i) => (
+              <MemoryCard
+                key={m.id}
+                memory={m}
+                index={i}
+                onSave={(input) => save.mutate({ id: m.id, input })}
+                onDelete={() => remove.mutate(m.id)}
+                // Global lock -- one write at a time across the whole day view.
+                busy={save.isPending || remove.isPending}
+                error={
+                  (save.isError && save.variables?.id === m.id) ||
+                  (remove.isError && remove.variables === m.id)
+                    ? 'Action failed. Try again.'
+                    : undefined
+                }
+              />
             ))}
           </div>
         ) : (
-          <EmptyState message="No memories on this day." />
+          <EmptyState message="No memories on this day." hint="Use + New memory to add one." />
         ))}
     </div>
   );
