@@ -348,6 +348,7 @@ pub(crate) fn row_to_memory(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Resu
         updated_at: row.get(44)?,
         is_superseded: row.get::<_, i32>(45)? != 0,
         is_consolidated: row.get::<_, i32>(46)? != 0,
+        lang: row.get(47)?,
     })
 }
 
@@ -362,14 +363,14 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
     episode_id, decay_score, confidence, sync_id, status, space_id, \
     fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
+    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated, lang";
 
 /// Number of columns in `MEMORY_COLUMNS`. Must match the highest index
 /// `row_to_memory` reads from (indices 0..MEMORY_COLUMN_COUNT-1). Consumed
 /// only by the test guard below; a non-test reference would be redundant
 /// with the SELECT list itself.
 #[cfg(test)]
-pub(crate) const MEMORY_COLUMN_COUNT: usize = 47;
+pub(crate) const MEMORY_COLUMN_COUNT: usize = 48;
 
 // -- Public CRUD functions ---
 
@@ -668,13 +669,13 @@ fn store_transactional_rusqlite(
             version, is_latest, parent_memory_id, root_memory_id,
             is_static, tags, status, space_id,
             fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state,
-            fsrs_reps, fsrs_lapses, model, sync_id, user_id
+            fsrs_reps, fsrs_lapses, model, sync_id, user_id, lang
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
             ?9, ?10, 'approved', ?11,
             1.0, 1.0, 0,
-            0, 0, ?12, ?13, ?14
+            0, 0, ?12, ?13, ?14, ?15
         )",
         rusqlite::params![
             content,
@@ -690,7 +691,9 @@ fn store_transactional_rusqlite(
             req.space_id,
             Option::<String>::None,
             req.sync_id.clone(),
-            user_id
+            user_id,
+            // Best-effort content-language detection at ingest; never fails a write.
+            crate::lang::detect_lang(content)
         ],
     )?;
 
@@ -1403,7 +1406,7 @@ fn update_transactional_rusqlite(
             confidence, model,
             is_archived, is_fact, is_decomposed, source_count,
             episode_id, forget_after, forget_reason, decay_score,
-            sync_id, valence, arousal, dominant_emotion, user_id
+            sync_id, valence, arousal, dominant_emotion, user_id, lang
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
@@ -1413,7 +1416,7 @@ fn update_transactional_rusqlite(
             ?21, ?22,
             ?23, ?24, ?25, ?26,
             ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33, ?34, ?35
+            ?31, ?32, ?33, ?34, ?35, ?36
         )",
         rusqlite::params![
             new_content,
@@ -1450,7 +1453,10 @@ fn update_transactional_rusqlite(
             old.valence,
             old.arousal,
             old.dominant_emotion.clone(),
-            user_id
+            user_id,
+            // Recompute language from the new content; do not carry the old value
+            // since an edit can change the language.
+            crate::lang::detect_lang(new_content)
         ],
     )?;
 
@@ -2158,6 +2164,50 @@ mod tests {
         })
         .await
         .expect("read valence")
+    }
+
+    /// Read the persisted content-language for a memory.
+    async fn read_lang(db: &Database, id: i64) -> Option<String> {
+        db.read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT lang FROM memories WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .expect("read lang")
+    }
+
+    /// The store path detects and persists the content language (de/fr).
+    #[tokio::test]
+    async fn store_persists_detected_language() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let de = store(
+            &db,
+            valence_store_request(
+                "Die Geschwindigkeitsbegrenzung auf dieser Straße beträgt fünfzig Stundenkilometer.",
+                1,
+            ),
+            None,
+            false,
+        )
+        .await
+        .expect("store de");
+        assert_eq!(read_lang(&db, de.id).await.as_deref(), Some("de"));
+
+        let fr = store(
+            &db,
+            valence_store_request(
+                "La vitesse autorisée sur cette route nationale est de cinquante kilomètres heure.",
+                1,
+            ),
+            None,
+            false,
+        )
+        .await
+        .expect("store fr");
+        assert_eq!(read_lang(&db, fr.id).await.as_deref(), Some("fr"));
     }
 
     /// Positive affective content should persist positive valence metadata.

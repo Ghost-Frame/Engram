@@ -427,6 +427,8 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> crate::Result<Memory> {
         updated_at: row.get(45)?,
         is_superseded: row.get::<_, i32>(46)? != 0,
         is_consolidated: row.get::<_, i32>(47)? != 0,
+        // This custom SELECT does not fetch lang; not used by consolidation logic.
+        lang: None,
     })
 }
 

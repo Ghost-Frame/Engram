@@ -445,6 +445,8 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_fts_unicode61,
         tx
     ),
+    // v95: nullable memories.lang column, populated by detect_lang on write.
+    migration!(95, "add_memory_lang", run_migration_add_memory_lang, tx),
 ];
 
 // --- Version constants ---
@@ -4057,6 +4059,15 @@ fn run_migration_fts_unicode61(conn: &rusqlite::Connection) -> Result<()> {
         conn.execute(&format!("INSERT INTO {name}({name}) VALUES('rebuild')"), [])?;
     }
     info!("Migration 94 complete: 6 global FTS tables rebuilt with unicode61+diacritics tokenizer");
+    Ok(())
+}
+
+/// Migration 95: add a nullable `lang` column to the global `memories` table for
+/// the detected ISO 639-1 content language. Nullable with no backfill -- NULL
+/// means "unknown / treat as en". Populated by detect_lang on subsequent writes.
+fn run_migration_add_memory_lang(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute("ALTER TABLE memories ADD COLUMN lang TEXT", [])?;
+    info!("Migration 95 complete: memories.lang column added");
     Ok(())
 }
 

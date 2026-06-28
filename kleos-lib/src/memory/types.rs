@@ -167,6 +167,9 @@ pub struct Memory {
     pub updated_at: String,
     pub is_superseded: bool,
     pub is_consolidated: bool,
+    /// Detected ISO 639-1 content language ("en"/"fr"/"de"), or None for rows
+    /// stored before language detection landed (treated as "en" downstream).
+    pub lang: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -404,6 +404,8 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         "fts_unicode61_diacritics",
         apply_schema_v77_fts_unicode61
     ),
+    // v78: nullable memories.lang column (mirror of global migration 95).
+    tenant_migration!(78, "add_memory_lang", apply_schema_v78_memory_lang),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -729,6 +731,12 @@ tenant_migration_sql!(
     apply_schema_v77_fts_unicode61,
     "v77",
     "../tenant/schema_v77_fts_unicode61.sql"
+);
+// Tenant v78: add the nullable memories.lang column.
+tenant_migration_sql!(
+    apply_schema_v78_memory_lang,
+    "v78",
+    "../tenant/schema_v78_memory_lang.sql"
 );
 tenant_migration_sql!(
     apply_schema_v55_memories_readd,
