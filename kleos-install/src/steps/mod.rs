@@ -4,6 +4,8 @@
 //! wizard step. The wizard orchestrator in `wizard.rs` delegates to these
 //! modules by calling their `draw_*` and `handle_*_input` functions.
 
+/// Advanced (expert) toggle configuration step.
+pub mod advanced;
 /// Component and profile selection step.
 pub mod components;
 /// Embedding and reranker provider configuration step.

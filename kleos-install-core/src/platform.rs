@@ -19,12 +19,13 @@ pub struct PlatformInfo {
     pub has_launchd: bool,
     /// Default directory for installed Kleos binaries.
     pub default_install_dir: PathBuf,
-    /// Default directory for Kleos configuration files (engram.toml, .env).
+    /// Default directory for Kleos configuration files (kleos.toml, .env).
     pub default_config_dir: PathBuf,
     /// Default directory for Kleos runtime data files.
     pub default_data_dir: PathBuf,
 }
 
+/// Platform detection and default-path resolution for the installer.
 impl PlatformInfo {
     /// Detect all platform information for the current machine.
     ///
@@ -51,7 +52,7 @@ impl PlatformInfo {
         let default_config_dir = if cfg!(windows) {
             home.join("AppData").join("Roaming").join("kleos")
         } else {
-            xdg_config_dir().join("engram")
+            xdg_config_dir().join("kleos")
         };
 
         // Derive from XDG_DATA_HOME (or ~/.local/share on Unix, ~/AppData/Local on
@@ -62,7 +63,7 @@ impl PlatformInfo {
                 .join("kleos")
                 .join("data")
         } else {
-            xdg_data_dir().join("engram").join("data")
+            xdg_data_dir().join("kleos").join("data")
         };
 
         PlatformInfo {

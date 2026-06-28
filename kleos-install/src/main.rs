@@ -41,6 +41,35 @@ struct Args {
     /// Installation profile for non-interactive mode: server, agent-host, full.
     #[arg(long, default_value = "server")]
     profile: String,
+
+    /// Override any config field (non-interactive): --set field=value. Repeatable;
+    /// use dotted keys for nested fields, e.g. --set backup_enabled=true
+    /// --set eidolon.enabled=true.
+    #[arg(long = "set", value_name = "FIELD=VALUE")]
+    set: Vec<String>,
+
+    /// Append a raw KEY=VALUE line to the generated .env (non-interactive).
+    /// Repeatable; for env-only settings like KLEOS_GUI_PASSWORD.
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
+
+    /// Seed configuration from an existing kleos.toml before applying overrides
+    /// (non-interactive). The imported file is authoritative for config fields.
+    #[arg(long, value_name = "PATH")]
+    config_file: Option<std::path::PathBuf>,
+
+    /// Enable anonymous read-only access (writes the three env vars the server
+    /// requires together). Non-interactive.
+    #[arg(long)]
+    open_access: bool,
+
+    /// Comma-separated allowed CORS origins (non-interactive).
+    #[arg(long, value_name = "ORIGINS")]
+    cors: Option<String>,
+
+    /// Set the GUI password, which enables the web GUI (non-interactive).
+    #[arg(long, value_name = "PASSWORD")]
+    gui_password: Option<String>,
 }
 
 /// Initialize the tracing subscriber for diagnostic output.
@@ -74,13 +103,22 @@ fn install_panic_hook() {
     }));
 }
 
+/// Parse CLI args and dispatch to the non-interactive runner or the TUI wizard.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     if args.non_interactive {
         init_tracing(false);
-        noninteractive::run(args.version, args.install_dir, &args.profile).await
+        let cli = noninteractive::CliConfig {
+            set: args.set,
+            env: args.env,
+            config_file: args.config_file,
+            open_access: args.open_access,
+            cors: args.cors,
+            gui_password: args.gui_password,
+        };
+        noninteractive::run(args.version, args.install_dir, &args.profile, cli).await
     } else {
         init_tracing(true);
         install_panic_hook();

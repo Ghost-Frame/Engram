@@ -16,7 +16,7 @@ pub mod platform;
 /// Binary download, checksum verification, and GitHub release API.
 pub mod download;
 
-/// Configuration types and file generation (engram.toml + .env).
+/// Configuration types and file generation (kleos.toml + .env).
 pub mod config;
 
 /// Cryptographic key generation for secrets and API keys.

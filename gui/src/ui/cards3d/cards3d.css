@@ -1,0 +1,137 @@
+/* Adapted from an internal effects library. */
+
+/* Bridge: vendored components read --sa-* with fallbacks; map them to tokens. */
+.kl-cards3d {
+  --sa-accent: var(--accent);
+  --sa-accent-r: var(--accent-r);
+  --sa-accent-g: var(--accent-g);
+  --sa-accent-b: var(--accent-b);
+  --sa-text-dim: var(--text-dim);
+  --sa-glitch-1: var(--err);
+  --sa-glitch-2: var(--info);
+}
+
+/* Perspective grid: cards sit in a shared 3D space and breathe out of phase. */
+.kl-card-field {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-4);
+  perspective: 1200px;
+  perspective-origin: 50% 30%;
+}
+
+/* One floating card. --kl-delay staggers the breathe; --kl-tilt sets the lean. */
+.kl-card {
+  position: relative;
+  min-height: 116px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(160deg, var(--surface-2), var(--surface));
+  cursor: pointer;
+  transform-style: preserve-3d;
+  transform: rotateY(var(--kl-tilt, 0deg)) translateZ(0);
+  transition: transform var(--dur-normal) var(--ease-out-expo),
+    box-shadow var(--dur-normal) var(--ease-default);
+  animation: kl-float 6s ease-in-out infinite;
+  animation-delay: var(--kl-delay, 0s);
+  overflow: hidden;
+}
+
+.kl-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.kl-card:hover {
+  transform: rotateY(0deg) translateZ(28px) scale(1.03);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%),
+    0 0 26px rgb(var(--accent-r) var(--accent-g) var(--accent-b) / 22%);
+  border-color: var(--accent);
+}
+
+/* Holo sheen sweep on hover. */
+.kl-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    transparent 20%,
+    rgb(var(--accent-r) var(--accent-g) var(--accent-b) / 10%) 50%,
+    transparent 80%
+  );
+  opacity: 0;
+  transition: opacity var(--dur-slow);
+  pointer-events: none;
+}
+.kl-card:hover::after { opacity: 1; }
+
+.kl-card.is-empty {
+  opacity: 0.4;
+  cursor: default;
+  animation: none;
+}
+.kl-card.is-empty::before { background: var(--text-faint); }
+.kl-card.is-empty:hover { transform: none; box-shadow: none; border-color: var(--border); }
+
+.kl-card__body { padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-1); height: 100%; }
+.kl-card__title { font-family: var(--font-display); font-size: var(--step-2); color: var(--text-bright); }
+.kl-card__subtitle { font-size: 11px; color: var(--text-dim); }
+.kl-card__count { margin-top: auto; font-family: var(--font-mono); font-size: var(--step-1); color: var(--accent); }
+.kl-card__badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-top: var(--sp-1); }
+
+@keyframes kl-float {
+  0%, 100% { transform: rotateY(var(--kl-tilt, 0deg)) translateY(0); }
+  50% { transform: rotateY(var(--kl-tilt, 0deg)) translateY(-8px); }
+}
+
+/* Glitch title (used by the Memory hub). Vendored from the internal anim lib. */
+.kl-glitch { position: relative; display: inline-block; }
+.kl-glitch.is-glitching::before,
+.kl-glitch.is-glitching::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+.kl-glitch.is-glitching::before {
+  color: var(--err); text-shadow: -2px 0 var(--err);
+  animation: kl-glitch1 0.3s cubic-bezier(0.25,0.46,0.45,0.94) both;
+  clip-path: polygon(0 0, 100% 0, 100% 35%, 0 35%);
+}
+.kl-glitch.is-glitching::after {
+  color: var(--info); text-shadow: 2px 0 var(--info);
+  animation: kl-glitch2 0.3s cubic-bezier(0.25,0.46,0.45,0.94) both;
+  clip-path: polygon(0 65%, 100% 65%, 100% 100%, 0 100%);
+}
+@keyframes kl-glitch1 {
+  0% { transform: translate(0); } 20% { transform: translate(-3px,1px); }
+  40% { transform: translate(3px,-1px); } 60% { transform: translate(-2px,2px); }
+  80% { transform: translate(2px,-1px); } 100% { transform: translate(0); }
+}
+@keyframes kl-glitch2 {
+  0% { transform: translate(0); } 20% { transform: translate(3px,-2px); }
+  40% { transform: translate(-3px,1px); } 60% { transform: translate(1px,-2px); }
+  80% { transform: translate(-2px,2px); } 100% { transform: translate(0); }
+}
+
+/* Scanlines overlay for the Memory hub. */
+.kl-scanlines {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgb(0 0 0 / 9%) 3px, rgb(0 0 0 / 9%) 4px);
+  z-index: 0;
+}
+
+/* Respect reduced motion: stop all card/title motion. */
+@media (prefers-reduced-motion: reduce) {
+  .kl-card { animation: none; transition: none; }
+  .kl-card:hover { transform: none; }
+  .kl-glitch.is-glitching::before,
+  .kl-glitch.is-glitching::after { animation: none; }
+}

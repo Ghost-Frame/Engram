@@ -9,7 +9,10 @@ pub mod audit;
 pub mod auth;
 pub mod auth_piv;
 pub mod commerce;
-pub mod config;
+// Re-exported from the shared `kleos-config` crate so existing call sites keep
+// using `kleos_lib::config::*` (and `crate::config::*` within this crate) while
+// the schema lives in one place that the installer also depends on.
+pub use kleos_config::config;
 pub mod context;
 pub mod conversations;
 pub mod cred;
@@ -61,10 +64,11 @@ pub mod webhooks;
 #[cfg(feature = "brain_hopfield")]
 pub mod brain;
 
-pub mod env;
-// Re-exported so call sites use `kleos_lib::kleos_env(..)` (or `crate::kleos_env`
-// within this crate) without an explicit import at every site.
-pub use env::kleos_env;
+// Environment resolution now lives in the shared `kleos-config` crate; re-export
+// it at the historical paths so call sites use `kleos_lib::kleos_env(..)` (or
+// `crate::kleos_env` within this crate) without an explicit import at every site.
+pub use kleos_config::env;
+pub use kleos_config::kleos_env;
 
 use thiserror::Error;
 

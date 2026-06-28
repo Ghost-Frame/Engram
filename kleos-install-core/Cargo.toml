@@ -7,6 +7,7 @@ description = "Shared core logic for the Kleos interactive installer"
 license = "Elastic-2.0"
 
 [dependencies]
+kleos-config = { path = "../kleos-config", version = "1.8.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

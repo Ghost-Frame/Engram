@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 kleos-install-core = { path = "../kleos-install-core", version = "1.2.1" }
+kleos-config = { path = "../kleos-config", version = "1.8.0" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

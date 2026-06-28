@@ -6,6 +6,7 @@ import { isAuthenticated, loginWithApiKey, onUnauthorized } from '$lib/http';
 import { SERVICES } from '$lib/services';
 import { AuthModal } from './AuthModal';
 import { ConnectionDot } from '../ui/ConnectionDot';
+import { KleosMusic } from '../ui/music/KleosMusic';
 import './app.css';
 
 const EXTRA_NAV = [
@@ -74,6 +75,7 @@ export function AppShell() {
       <main className="app-shell__main">
         <Outlet />
       </main>
+      <KleosMusic />
       <AuthModal onClose={() => setAuthOpen(false)} onSave={saveApiKey} open={authOpen} />
     </div>
   );

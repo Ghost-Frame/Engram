@@ -17,7 +17,7 @@ const memoryData = vi.hoisted(() => ({
       occurrence_count: 7
     }
   ],
-  inbox: [{ content: 'pending memory candidate' }],
+  inbox: [{ category: 'fact', content: 'pending memory candidate', created_at: '2026-05-30 12:00:00', id: 42, source: 'test' }],
   projects: [
     { created_at: '', description: '', id: 1, memory_count: 12, name: 'gui rebuild', status: 'active', updated_at: '' }
   ],
@@ -41,12 +41,15 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   return {
     ...actual,
     useMutation: () => ({ data: memoryData.results, isPending: false, mutate: vi.fn() }),
+    useQueryClient: () => ({ invalidateQueries: vi.fn() }),
     useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) => {
       const joined = queryKey.join(':');
       if (joined === 'mem:list') return { data: memoryData.results, isLoading: false };
       if (joined === 'mem:inbox') return { data: memoryData.inbox, isLoading: false };
       if (joined === 'mem:entities') return { data: memoryData.entities, isLoading: false };
       if (joined === 'mem:projects') return { data: memoryData.projects, isLoading: false };
+      // Calendar drill-down queries used by the Timeline tab.
+      if (joined === 'mem:cal:year') return { data: [{ bucket: '2026', count: 5 }], isLoading: false };
       return { data: undefined, isLoading: false };
     }
   };
@@ -82,7 +85,9 @@ describe('Memory routes', () => {
   it('navigates across timeline, inbox, entities, projects, and graph tabs', () => {
     renderMemory('/memory/timeline');
 
-    expect(screen.getByText('stored fact about the GUI')).toBeInTheDocument();
+    // Timeline now shows year buckets first (drill-down); the year card is the
+    // first visible element rather than raw memory content.
+    expect(screen.getByRole('button', { name: '2026' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: 'Inbox' }));
     expect(screen.getByText(/pending memory candidate/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: 'Entities' }));

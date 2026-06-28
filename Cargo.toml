@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-client", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest", "forge", "kleos-install-core", "kleos-install", "kleos-install-gui", "kleos-phylax", "kleos-phylaxd", "kleos-token-client", "kleos-phylax-ssh-agent", "kleos-phylax-ssh-agentd"]
+members = ["kleos-config", "kleos-lib", "kleos-server", "kleos-cli", "kleos-client", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest", "forge", "kleos-install-core", "kleos-install", "kleos-install-gui", "kleos-phylax", "kleos-phylaxd", "kleos-token-client", "kleos-phylax-ssh-agent", "kleos-phylax-ssh-agentd"]
 exclude = []
 
 [workspace.package]

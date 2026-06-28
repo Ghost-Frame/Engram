@@ -158,7 +158,8 @@ fn generate_service_preview(app: &InstallerApp, radio_val: u8) -> String {
              \n\
              [Service]\n\
              Type=simple\n\
-             ExecStart={install_dir}/kleos-server --config {config_dir}/engram.toml\n\
+             WorkingDirectory={config_dir}\n\
+             ExecStart={install_dir}/kleos-server --config {config_dir}/kleos.toml\n\
              EnvironmentFile={config_dir}/.env\n\
              Restart=on-failure\n\
              RestartSec=5s\n\
@@ -178,7 +179,7 @@ fn generate_service_preview(app: &InstallerApp, radio_val: u8) -> String {
              \t<array>\n\
              \t\t<string>{install_dir}/kleos-server</string>\n\
              \t\t<string>--config</string>\n\
-             \t\t<string>{config_dir}/engram.toml</string>\n\
+             \t\t<string>{config_dir}/kleos.toml</string>\n\
              \t</array>\n\
              \t<key>KeepAlive</key>\n\
              \t<true/>\n\

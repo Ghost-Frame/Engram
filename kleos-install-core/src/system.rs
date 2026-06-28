@@ -35,7 +35,7 @@ pub fn generate_systemd_unit(
 ) -> String {
     let binary = install_dir.join("kleos-server");
     let env_file = config_dir.join(".env");
-    let toml_file = config_dir.join("engram.toml");
+    let toml_file = config_dir.join("kleos.toml");
 
     format!(
         r#"[Unit]
@@ -44,6 +44,7 @@ After=network.target
 
 [Service]
 Type=simple
+WorkingDirectory={config_dir}
 ExecStart={binary} --config {toml_file}
 EnvironmentFile={env_file}
 Restart=on-failure
@@ -55,22 +56,49 @@ WantedBy=default.target
         binary = binary.display(),
         toml_file = toml_file.display(),
         env_file = env_file.display(),
+        config_dir = config_dir.display(),
     )
 }
 
 /// Generate the content of a launchd plist for the Kleos server.
 ///
-/// Places a `KeepAlive=true` plist that runs `kleos-server` with the config
-/// directory passed as `--config`. Logs go to `/tmp/kleos-server.log`.
+/// Places a `KeepAlive=true` plist that runs `kleos-server`. Unlike systemd,
+/// launchd does not read an `EnvironmentFile`, so the secrets and env-only
+/// settings the server needs (including `KLEOS_CONFIG_FILE`, which is what makes
+/// the server load the TOML) are injected as an `EnvironmentVariables` dict
+/// built from [`InstallerConfig::generate_env`]. Because that dict contains
+/// secrets, the plist must be written with owner-only permissions (see
+/// [`install_launchd_plist`]). Logs go to `/tmp/kleos-server.log`. Returns
+/// `InstallError::Config` if env generation fails.
 pub fn generate_launchd_plist(
-    _config: &InstallerConfig,
+    config: &InstallerConfig,
     install_dir: &Path,
     config_dir: &Path,
-) -> String {
+) -> Result<String, InstallError> {
     let binary = install_dir.join("kleos-server");
-    let toml_file = config_dir.join("engram.toml");
+    let toml_file = config_dir.join("kleos.toml");
+    // Prefer the absolute path so KLEOS_CONFIG_FILE resolves regardless of the
+    // launchd process working directory; fall back if canonicalize fails.
+    let abs_toml = std::fs::canonicalize(&toml_file).unwrap_or_else(|_| toml_file.clone());
 
-    format!(
+    // Render each `KEY=VALUE` env line as a launchd <key>/<string> pair.
+    let env_content = config.generate_env(&abs_toml)?;
+    let mut env_xml = String::new();
+    for line in env_content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, val)) = line.split_once('=') {
+            env_xml.push_str(&format!(
+                "        <key>{}</key>\n        <string>{}</string>\n",
+                xml_escape(key),
+                xml_escape(val),
+            ));
+        }
+    }
+
+    Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -84,6 +112,9 @@ pub fn generate_launchd_plist(
         <string>--config</string>
         <string>{toml_file}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+{env_xml}    </dict>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
@@ -98,8 +129,33 @@ pub fn generate_launchd_plist(
         // XML-escape the paths: an install/config path containing &, <, or >
         // would otherwise produce an invalid or injected plist.
         binary = xml_escape(&binary.display().to_string()),
-        toml_file = xml_escape(&toml_file.display().to_string()),
-    )
+        toml_file = xml_escape(&abs_toml.display().to_string()),
+    ))
+}
+
+/// Write a launchd plist with owner-only permissions (0600 on Unix), since it
+/// now embeds secrets in its `EnvironmentVariables` dict. macOS is always Unix;
+/// the non-Unix arm exists only so the crate keeps compiling on other targets.
+fn write_plist_private(path: &Path, contents: &str) -> Result<(), InstallError> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(contents.as_bytes())?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
 }
 
 /// Escape a string for inclusion in XML element content (launchd plists).
@@ -148,7 +204,8 @@ pub fn install_launchd_plist(plist_content: &str, auto_start: bool) -> Result<()
     std::fs::create_dir_all(&agents_dir)?;
 
     let plist_path = agents_dir.join("dev.syntheos.kleos-server.plist");
-    std::fs::write(&plist_path, plist_content)?;
+    // The plist embeds secrets in EnvironmentVariables, so write it owner-only.
+    write_plist_private(&plist_path, plist_content)?;
 
     if auto_start {
         let status = std::process::Command::new("launchctl")

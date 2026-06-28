@@ -32,6 +32,7 @@ bundled-sqlite = ["rusqlite/bundled"]
 vendored-openssl = ["openssl/vendored"]
 
 [dependencies]
+kleos-config = { path = "../kleos-config", version = "1.8.0" }
 rusqlite = { workspace = true }
 tokio-rusqlite = { workspace = true }
 deadpool-sqlite = { workspace = true, features = ["tracing"] }

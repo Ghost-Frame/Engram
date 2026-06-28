@@ -4971,6 +4971,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kleos-config"
+version = "1.8.0"
+dependencies = [
+ "dirs 6.0.0",
+ "ipnet",
+ "secrecy",
+ "serde",
+ "serial_test",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "kleos-cred"
 version = "1.8.0"
 dependencies = [
@@ -5078,6 +5091,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm 0.28.1",
+ "kleos-config",
  "kleos-install-core",
  "rand 0.9.4",
  "ratatui 0.30.0",
@@ -5094,6 +5108,7 @@ version = "1.8.0"
 dependencies = [
  "dirs 6.0.0",
  "hex",
+ "kleos-config",
  "rand 0.9.4",
  "reqwest 0.12.28",
  "semver",
@@ -5139,6 +5154,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "ipnet",
+ "kleos-config",
  "lancedb",
  "lru 0.16.4",
  "metrics",

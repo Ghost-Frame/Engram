@@ -1066,6 +1066,114 @@ async fn gui_bulk_archive(
     Ok(Json(json!({ "archived": archived })))
 }
 
+/// Turn a track filename ("moonlit-dreams.mp3") into a display name
+/// ("Moonlit Dreams"). An optional names.json sidecar (handled in the manifest
+/// handler) overrides this for tracks that need exact titles.
+fn prettify_track_name(file_name: &str) -> String {
+    let stem = file_name.strip_suffix(".mp3").unwrap_or(file_name);
+    stem.split(['-', '_'])
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// GET /media/music/manifest.json -- list available tracks. Empty array when
+/// no music dir is configured or the dir cannot be read, which keeps the GUI
+/// player hidden by default.
+async fn serve_music_manifest(State(state): State<AppState>) -> Response {
+    let Some(dir) = state.config.gui_music_dir.as_ref() else {
+        return music_json("[]".to_string());
+    };
+    // Reject any parent-directory traversal in the operator-configured music
+    // dir before touching the filesystem. This `..` containment check is also
+    // the sanitizer the CodeQL rust/path-injection query recognizes: the dir is
+    // used only on the branch where the check passed, so the env-sourced path no
+    // longer taints the reads below.
+    if dir.contains("..") {
+        return music_json("[]".to_string());
+    }
+    let root = std::path::Path::new(dir);
+    // Optional sidecar of exact titles.
+    let overrides: std::collections::HashMap<String, String> =
+        match fs::read_to_string(root.join("names.json")).await {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+            Err(_) => std::collections::HashMap::new(),
+        };
+    let mut entries: Vec<Value> = Vec::new();
+    if let Ok(mut rd) = fs::read_dir(root).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.to_ascii_lowercase().ends_with(".mp3") {
+                continue;
+            }
+            let title = overrides
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| prettify_track_name(&name));
+            entries.push(json!({ "src": name, "name": title }));
+        }
+    }
+    // Stable order so the player track index is deterministic across loads.
+    entries.sort_by(|a, b| a["src"].as_str().cmp(&b["src"].as_str()));
+    music_json(serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// Build a no-store JSON response for the music manifest.
+fn music_json(body: String) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// GET /media/music/{file} -- serve one mp3 from the configured music dir.
+/// Path-traversal-safe: the canonical resolved path must stay within the dir,
+/// and only .mp3 files are served.
+async fn serve_music_file(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let Some(dir) = state.config.gui_music_dir.as_ref() else {
+        return (StatusCode::NOT_FOUND, "no music").into_response();
+    };
+    // Accept only a bare .mp3 filename. The strict character allowlist rejects
+    // path separators, parent-dir segments, and any other character, so the
+    // user-supplied value cannot escape the configured music directory.
+    let valid = file.len() <= 255
+        && file.to_ascii_lowercase().ends_with(".mp3")
+        && !file.contains("..")
+        && file
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !valid {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let root = std::path::Path::new(dir);
+    let full = root.join(&file);
+    // Defense in depth: the resolved path must still resolve inside the dir.
+    let (Ok(canonical), Ok(root_canonical)) = (full.canonicalize(), root.canonicalize()) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if !canonical.starts_with(&root_canonical) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match fs::read(&canonical).await {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "audio/mpeg")
+            .header(header::CACHE_CONTROL, "public, max-age=86400")
+            .body(Body::from(bytes))
+            .unwrap(),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
 /// Build the GUI router with auth, static assets, and memory mutation routes.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -1076,6 +1184,8 @@ pub fn router() -> Router<AppState> {
         .route("/_app/login.css", get(serve_login_css))
         .route("/_app/login.js", get(serve_login_js))
         .route("/_app/{*path}", get(serve_app_assets))
+        .route("/media/music/manifest.json", get(serve_music_manifest))
+        .route("/media/music/{file}", get(serve_music_file))
         // GUI memory CRUD
         .route("/gui/memories", post(gui_create_memory))
         .route(
@@ -1089,6 +1199,12 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prettify_track_name_humanizes_filenames() {
+        assert_eq!(prettify_track_name("moonlit-dreams.mp3"), "Moonlit Dreams");
+        assert_eq!(prettify_track_name("soft_bee_pulse.mp3"), "Soft Bee Pulse");
+    }
 
     // The login bridge establishes the cookie session via /gui/auth and
     // redirects to the app. It must NOT persist the raw API key in localStorage

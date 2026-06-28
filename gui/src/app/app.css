@@ -540,3 +540,62 @@
     animation: none;
   }
 }
+
+/* Timeline drill-down breadcrumb navigation. */
+.kl-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.kl-breadcrumb button {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.kl-breadcrumb span.sep { color: var(--text-faint); }
+
+/* Inbox pending-memory action button row. */
+.kl-inbox-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
+.kl-inbox-actions button {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 4px 12px;
+}
+.kl-inbox-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.kl-inbox-actions button:disabled { opacity: 0.5; cursor: default; }
+.kl-inbox-edit {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+/* Projects toolbar -- show/hide empty projects toggle. */
+.kl-projects-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--sp-3); }
+.kl-projects-toolbar button {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 4px 12px;
+}
+.kl-projects-toolbar button:hover { border-color: var(--accent); color: var(--accent); }

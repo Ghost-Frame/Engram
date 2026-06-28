@@ -38,6 +38,21 @@ pub(super) struct ListQuery {
     pub space_id: Option<i64>,
     pub include_forgotten: Option<bool>,
     pub include_archived: Option<bool>,
+    /// Inclusive lower bound on created_at (YYYY-MM-DD), or None.
+    pub from: Option<String>,
+    /// Exclusive upper bound on created_at (YYYY-MM-DD), or None.
+    pub to: Option<String>,
+}
+
+/// Query params for GET /memories/calendar.
+#[derive(Debug, Deserialize)]
+pub(super) struct CalendarQuery {
+    /// Bucket granularity: "year", "month", or "day".
+    pub granularity: String,
+    /// Required for "month" and "day" granularity; ignored for "year".
+    pub year: Option<i32>,
+    /// Required for "day" granularity; ignored otherwise.
+    pub month: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

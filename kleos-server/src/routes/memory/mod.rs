@@ -31,7 +31,8 @@ use crate::{
 
 mod types;
 use types::{
-    ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions, UpdateTagsBody,
+    CalendarQuery, ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions,
+    UpdateTagsBody,
 };
 
 /// Mount the memory router with the full set of CRUD, search, recall, tag, profile, and version-chain routes.
@@ -45,6 +46,7 @@ pub fn router() -> Router<AppState> {
         .route("/search/explain", post(explain_search))
         .route("/recall", post(recall))
         .route("/list", get(list_memories))
+        .route("/memories/calendar", get(calendar))
         .route("/tags", get(list_tags))
         .route("/tags/search", post(search_tags))
         .route("/search/faceted", post(faceted_search_handler))
@@ -762,6 +764,8 @@ async fn recall(
         space_id: body.space_id,
         include_forgotten: false,
         include_archived: false,
+        from: None,
+        to: None,
     };
     let recent_extra = memory::list(&db, recent_extra_opts).await?;
     let recent_items: Vec<Value> = recent_extra
@@ -864,10 +868,36 @@ async fn list_memories(
         space_id: params.space_id,
         include_forgotten: params.include_forgotten.unwrap_or(false),
         include_archived: params.include_archived.unwrap_or(false),
+        from: params.from,
+        to: params.to,
     };
     let memories = memory::list(&db, opts).await?;
     let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
     Ok(Json(json!({ "results": results })))
+}
+
+/// GET /memories/calendar -- bucketed memory counts for the timeline drill-down.
+#[tracing::instrument(skip_all)]
+async fn calendar(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Query(q): Query<CalendarQuery>,
+) -> Result<Json<Value>, AppError> {
+    let buckets = memory::calendar_counts(
+        &db,
+        auth.effective_user_id(),
+        &q.granularity,
+        q.year,
+        q.month,
+    )
+    .await?;
+    let out: Vec<Value> = buckets
+        .into_iter()
+        .map(|(bucket, count)| json!({ "bucket": bucket, "count": count }))
+        .collect();
+    Ok(Json(
+        json!({ "buckets": out, "granularity": q.granularity }),
+    ))
 }
 
 /// GET /memory/{id} -- fetch a single memory by id.
@@ -1035,6 +1065,8 @@ async fn synthesize_profile(
             space_id: None,
             include_forgotten: false,
             include_archived: true,
+            from: None,
+            to: None,
         },
     )
     .await?;

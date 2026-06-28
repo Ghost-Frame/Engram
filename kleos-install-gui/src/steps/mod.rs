@@ -5,6 +5,7 @@
 //! state. Steps are stateless renderers -- they read and write app state but
 //! do not own it.
 
+pub mod advanced;
 pub mod components;
 pub mod embeddings;
 pub mod security;

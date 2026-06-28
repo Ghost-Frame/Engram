@@ -10,7 +10,7 @@ use crate::error::InstallError;
 pub struct ExistingInstall {
     /// Directory where the Kleos binaries are installed.
     pub install_dir: PathBuf,
-    /// Path to the existing `engram.toml` config file, if found.
+    /// Path to the existing config file (`kleos.toml` or legacy `engram.toml`), if found.
     pub config_path: Option<PathBuf>,
     /// List of component binaries detected in `install_dir`.
     pub components: Vec<InstalledComponent>,
@@ -100,52 +100,42 @@ pub fn detect_existing_install() -> Option<ExistingInstall> {
     None
 }
 
-/// Parse an existing `engram.toml` into an `InstallerConfig`.
+/// Parse an existing `kleos.toml` (or legacy `engram.toml`) into an
+/// `InstallerConfig`.
 ///
-/// Reads the TOML file and maps known fields back to the installer's in-memory
-/// representation. Returns `InstallError::Upgrade` if the file cannot be parsed.
+/// Reads the file through the canonical [`kleos_config::Config`] loader -- the
+/// same flat schema the server uses -- and maps the known fields back to the
+/// installer's representation. Returns `InstallError::Upgrade` on a parse error.
 ///
-/// Note: security secrets are not stored in engram.toml, so `SecurityConfig`
-/// fields will be empty strings; callers should regenerate secrets for upgrades.
+/// Note: secrets and env-only settings (open access, CORS) are never stored in
+/// the TOML, so `SecurityConfig` fields are empty and `cors_origins` is `None`;
+/// callers regenerate secrets for upgrades.
 pub fn read_existing_config(config_path: &Path) -> Result<InstallerConfig, InstallError> {
-    let content = std::fs::read_to_string(config_path)?;
-    let table: toml::Value = content
-        .parse()
-        .map_err(|e| InstallError::Upgrade(format!("failed to parse engram.toml: {e}")))?;
+    let cfg = kleos_config::Config::from_file(config_path).map_err(|e| {
+        InstallError::Upgrade(format!("failed to parse {}: {e}", config_path.display()))
+    })?;
 
-    let server = table.get("server").map(|s| ServerConfig {
-        host: string_field(s, "host").unwrap_or_else(|| "127.0.0.1".to_string()),
-        port: s
-            .get("port")
-            .and_then(|v| v.as_integer())
-            .map(|v| v as u16)
-            .unwrap_or(4200),
-        data_dir: string_field(s, "data_dir")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("./data")),
-        db_path: string_field(s, "db_path").unwrap_or_else(|| "kleos.db".to_string()),
-        cors_origins: string_field(s, "cors_origins"),
+    let server = Some(ServerConfig {
+        host: cfg.host,
+        port: cfg.port,
+        data_dir: PathBuf::from(cfg.data_dir),
+        db_path: cfg.db_path,
+        cors_origins: None,
     });
 
-    let reranker = table
-        .get("reranker")
-        .map(|r| match string_field(r, "provider").as_deref() {
-            Some("disabled") | None => RerankerConfig::Disabled,
-            Some("local_onnx") => RerankerConfig::LocalOnnx,
-            _ => RerankerConfig::Disabled,
-        });
+    let reranker = Some(if cfg.reranker_enabled {
+        RerankerConfig::LocalOnnx
+    } else {
+        RerankerConfig::Disabled
+    });
 
-    // Security secrets are not written to TOML -- return empty placeholders.
+    // Secrets and open access are env-only, never in the TOML -- placeholders.
     let security = SecurityConfig {
         encryption_key: String::new(),
         api_key_pepper: String::new(),
         initial_api_key: String::new(),
         hmac_secret: String::new(),
-        open_access: table
-            .get("security")
-            .and_then(|s| s.get("open_access"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        open_access: false,
     };
 
     Ok(InstallerConfig {
@@ -153,6 +143,7 @@ pub fn read_existing_config(config_path: &Path) -> Result<InstallerConfig, Insta
         embedding: None,
         reranker,
         security,
+        overrides: crate::config::ConfigOverrides::default(),
     })
 }
 
@@ -191,22 +182,22 @@ fn read_binary_version(path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Search common config locations for an `engram.toml` file.
+/// Search common config locations for an existing Kleos config file.
 ///
-/// Returns the first path found, or `None` if none exist.
+/// The current `kleos`-named locations are checked first, then the legacy
+/// `engram` names so a pre-rename install is still detected. Returns the first
+/// path found, or `None` if none exist.
 fn find_config_file(home: &Path) -> Option<PathBuf> {
     let candidates = [
+        home.join(".config").join("kleos").join("kleos.toml"),
+        home.join(".config").join("kleos").join("config.toml"),
+        home.join(".kleos").join("kleos.toml"),
+        PathBuf::from("/etc/kleos/kleos.toml"),
+        // Legacy (pre engram->kleos rename).
         home.join(".config").join("engram").join("engram.toml"),
         home.join(".kleos").join("engram.toml"),
         PathBuf::from("/etc/kleos/engram.toml"),
     ];
 
     candidates.into_iter().find(|p| p.exists())
-}
-
-/// Extract a string field from a TOML value map.
-///
-/// Returns `None` if the key is absent or the value is not a string.
-fn string_field(table: &toml::Value, key: &str) -> Option<String> {
-    table.get(key)?.as_str().map(|s| s.to_string())
 }
