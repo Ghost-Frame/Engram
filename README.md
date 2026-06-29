@@ -204,7 +204,7 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 
 ### What runs inside
 
-22-crate Rust workspace. The server handles:
+26-crate Rust workspace. The server handles:
 
 - **Multi-tenancy** -- each tenant gets its own encrypted SQLite database, connection pools, and quota limits
 - **8 middleware layers** -- auth, per-tenant rate limiting, audit log, IP extraction, JSON depth limits, Prometheus metrics, safe-mode, compression/timeouts
@@ -245,7 +245,7 @@ cargo build --release -p kleos-server -p kleos-cli -p kleos-mcp
 cargo build --release -p kleos-cli -p kleos-sh -p kleos-cred -p kleos-credd \
   -p agent-forge -p eidolon-supervisor
 
-# Full workspace (all 17 crates -- needs ~8 GiB RAM)
+# Full workspace (all 26 crates -- needs ~8 GiB RAM)
 cargo build --release --workspace
 ```
 
@@ -340,7 +340,7 @@ Four channels run per query:
 
 ### Scope
 
-- 20 Rust crates, ~204K lines of code
+- 26 Rust crates, ~204K lines of code
 - ~6,000 test declarations across 113 test files
 - Single statically linked binary with the mimalloc allocator
 - No Python runtime. No external service dependencies at rest.
@@ -351,14 +351,21 @@ Four channels run per query:
 | --- | --- |
 | `kleos-lib` | Core library: memory, search, embeddings, graph, intelligence, services, skills, growth, auth, gate, jobs. Feature-gated `brain` backend. |
 | `kleos-server` | Axum HTTP server. 59 route modules, 8 middleware layers, embedded React web GUI (dashboard + 3D memory graph). |
+| `kleos-config` | Shared configuration types and environment resolution, used by both the server and the installer so the two never drift. |
 | `kleos-cli` | Command-line client. Memory ops, skill management, handoffs, credential management. |
+| `kleos-client` | Shared Rust HTTP client with PIV/Ed25519 envelope signing. |
 | `kleos-mcp` | MCP transport bridge. Curated daily-driver registry with compatibility aliases; stdio by default, HTTP behind a feature flag. |
 | `kleos-sidecar` | Session-scoped memory proxy. File watcher, batched flushing, Ollama compression, persistent sessions. |
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
 | `kleos-credd` | Base credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
+| `kleos-phylax` | Agent-native credential authority library: approvals, leases, ECDH, namespaces. |
 | `kleos-phylaxd` (`phylaxd`) | The credential daemon actually deployed. Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. The `credd` service runs this binary. |
+| `kleos-phylax-ssh-agent` | OpenSSH agent protocol server: wire protocol and KeyProvider trait. |
+| `kleos-phylax-ssh-agentd` | Headless SSH agent daemon that brokers keys and signing through phylaxd. |
+| `kleos-token-client` | Tiny std-only client for the phylaxd SO_PEERCRED token broker (no kleos-lib dependency). |
 | `kleos-ingest` | Transcript ingest daemon. PIV/software-key request signing, file watching, LLM summarization, real-time observation streaming. |
 | `agent-forge` | Structured reasoning CLI. 20+ subcommands. Tree-sitter AST parsing for 7 languages. |
+| `forge` | agent-forge compute engine as a library (repo-map, code search, comment-check, challenge-code), used server-side by kleos-server. |
 | `eidolon-supervisor` | Session drift detection daemon. Real-time transcript watching, rule-based alerts. |
 | `kleos-sh` | Shell command gate. Static validation, SSRF guard, human approval queue. |
 | `kleos-fs` | AST-aware filesystem operations. Guarded read/write with agent-forge integration. |
