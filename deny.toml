@@ -13,11 +13,12 @@ ignore = [
     # Track upstream replacement work; no code path in kleos consumes paste
     # directly.
     { id = "RUSTSEC-2024-0436", reason = "unmaintained; transitive via datafusion/ratatui; no direct use" },
-    # lru 0.12.5: Stacked Borrows violation in IterMut (RUSTSEC-2026-0002).
-    # Reachable only via tantivy 0.24 -> lance-index -> lancedb (vector path)
-    # and ratatui 0.29 (cred TUI). No direct use in kleos. Cannot bump
-    # without upstream lance/ratatui releases. Review by 2026-08-01.
-    { id = "RUSTSEC-2026-0002", reason = "lru 0.12.5 unsound IterMut; transitive via tantivy/ratatui; review by 2026-08-01" },
+    # ttf-parser 0.25.1: upstream declared unmaintained (RUSTSEC-2026-0192),
+    # no safe upgrade available. Transitive only via the GUI tree
+    # (eframe -> egui -> epaint -> ab_glyph -> owned_ttf_parser). No code path
+    # in the server or CLI consumes ttf-parser directly. Track egui font-stack
+    # replacement; review on every egui/eframe bump.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via egui/eframe GUI only; no direct use" },
     # rsa 0.9.x: Marvin Attack timing sidechannel (RUSTSEC-2023-0071).
     # Transitive via yubikey 0.8 used in the PIV signing path. Upstream
     # status: "No safe upgrade is available." Threat model in kleos:

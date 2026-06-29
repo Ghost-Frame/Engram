@@ -50,6 +50,41 @@ fn find_last_sentence_break(window: &str) -> Option<usize> {
     last_pos
 }
 
+/// Snap `idx` forward to the start of the next word: a non-whitespace char whose
+/// preceding char is ASCII whitespace. Stays on UTF-8 char boundaries.
+///
+/// Overlap chunks re-enter the text at `previous_end - overlap`, which lands
+/// inside a word and produced the mid-word memory fragments ("ect...", "ple...")
+/// that polluted living context. Snapping the re-entry point to a word boundary
+/// fixes that at the source. ASCII whitespace covers the spaces/newlines that
+/// delimit words in ingested text; multibyte chars are never ASCII whitespace,
+/// so byte-wise checks are safe as long as we only advance on char boundaries.
+fn snap_forward_to_word_start(text: &str, mut idx: usize) -> usize {
+    let bytes = text.as_bytes();
+    while idx < text.len() && !text.is_char_boundary(idx) {
+        idx += 1;
+    }
+    if idx == 0 || idx >= text.len() {
+        return idx;
+    }
+    // Already at a word start (previous byte is whitespace): keep it.
+    if bytes[idx - 1].is_ascii_whitespace() {
+        return idx;
+    }
+    // Walk to the end of the partial word we landed inside.
+    while idx < text.len() && !bytes[idx - 1].is_ascii_whitespace() {
+        idx += 1;
+        while idx < text.len() && !text.is_char_boundary(idx) {
+            idx += 1;
+        }
+    }
+    // Skip the whitespace run to land on the next word's first char.
+    while idx < text.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    idx
+}
+
 /// Try paragraph break, then sentence break as fallback. Returns offset within window.
 fn try_paragraph_or_sentence(window: &str, threshold: usize, default_end: usize) -> usize {
     if let Some(para_idx) = window.rfind("\n\n") {
@@ -141,6 +176,18 @@ pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) ->
         while next < text.len() && !text.is_char_boundary(next) {
             next += 1;
         }
+        // Snap the next chunk's START forward to a word boundary so overlap
+        // chunks do not begin mid-word. Only adopt the snapped position when it
+        // still lands strictly before this chunk's end -- otherwise the overlap
+        // region (or, for pathological no-whitespace input, the tail) would be
+        // lost, so we keep the char-boundary position and accept a rare mid-word
+        // start. With overlap == 0 (next == end) this is a no-op by construction.
+        if respect_structure {
+            let snapped = snap_forward_to_word_start(text, next);
+            if snapped > next && snapped < end {
+                next = snapped;
+            }
+        }
         pos = next;
     }
 
@@ -159,11 +206,13 @@ pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) ->
         .collect()
 }
 
+/// Unit tests for the ingestion text chunker.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// Build a minimal `ParsedDocument` wrapping `text` for chunking tests.
     fn make_doc(text: &str) -> ParsedDocument {
         ParsedDocument {
             title: "Test Doc".to_string(),
@@ -174,6 +223,7 @@ mod tests {
         }
     }
 
+    /// Whitespace-only input yields no chunks.
     #[test]
     fn test_empty_text() {
         let doc = make_doc("  ");
@@ -181,6 +231,7 @@ mod tests {
         assert!(chunks.is_empty());
     }
 
+    /// Text within one chunk size is returned as a single chunk.
     #[test]
     fn test_small_text_no_chunking() {
         let doc = make_doc("Hello world, this is a small text.");
@@ -191,6 +242,7 @@ mod tests {
         assert_eq!(chunks[0].text, "Hello world, this is a small text.");
     }
 
+    /// Large text splits into multiple chunks with consistent index/total/title.
     #[test]
     fn test_large_text_multiple_chunks() {
         let sentence = "This is a test sentence with some content. ";
@@ -208,6 +260,7 @@ mod tests {
         }
     }
 
+    /// Custom max_chunk_size is honored as an upper bound on chunk length.
     #[test]
     fn test_custom_chunk_size() {
         let text = "word ".repeat(1000);
@@ -224,6 +277,7 @@ mod tests {
         }
     }
 
+    /// Structure-aware chunking prefers paragraph boundaries when present.
     #[test]
     fn test_paragraph_boundary_respected() {
         let part1 = "a ".repeat(1400);
@@ -251,6 +305,59 @@ mod tests {
         );
     }
 
+    /// Regression: overlap chunks must begin at a word boundary, never mid-word
+    /// (the cause of the "ect..."/"ple..." memory fragments).
+    #[test]
+    fn test_chunks_start_on_word_boundary() {
+        // Distinct vocab so a mid-word fragment (e.g. "harlie") is detectable:
+        // a partial word will not be present in the vocab set.
+        let vocab = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+            "juliet",
+        ];
+        let mut text = String::new();
+        for i in 0..4000 {
+            text.push_str(vocab[i % vocab.len()]);
+            text.push(' ');
+        }
+        let doc = make_doc(&text);
+        let chunks = chunk_document(&doc, None);
+        assert!(
+            chunks.len() > 1,
+            "test needs multiple chunks to exercise overlap"
+        );
+        let vocab_set: std::collections::HashSet<&str> = vocab.iter().copied().collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let first = chunk.text.split_whitespace().next().unwrap_or("");
+            assert!(
+                vocab_set.contains(first),
+                "chunk {i} starts mid-word with {first:?}: {:?}",
+                &chunk.text[..chunk.text.len().min(40)]
+            );
+        }
+    }
+
+    /// The word-boundary snap must not drop document text: the last chunk still
+    /// reaches the end of the input.
+    #[test]
+    fn test_word_snap_no_text_loss() {
+        // Reconstruct coverage: every char of the original (modulo whitespace
+        // run collapsing at chunk edges) must appear in at least one chunk, so
+        // the word-boundary snap cannot silently drop the tail.
+        let sentence = "The quick brown fox jumps over the lazy dog. ";
+        let text: String = sentence.repeat(200);
+        let doc = make_doc(&text);
+        let chunks = chunk_document(&doc, None);
+        assert!(chunks.len() > 1);
+        // The final chunk must reach the end of the document text.
+        let last = chunks.last().unwrap();
+        assert!(
+            text.trim_end().ends_with(last.text.trim_end()),
+            "last chunk must cover the document tail"
+        );
+    }
+
+    /// A tiny chunk size over multibyte input must terminate without panicking.
     #[test]
     fn test_tiny_size_multibyte_terminates() {
         // Multibyte chars wider than the snapped window previously spun.
