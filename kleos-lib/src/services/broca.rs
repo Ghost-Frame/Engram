@@ -724,7 +724,18 @@ pub(crate) async fn call_llm_endpoint<B: serde::Serialize>(
     body: B,
     api_key: Option<String>,
 ) -> std::result::Result<String, String> {
-    let mut req = BROCA_LLM_CLIENT.post(url).json(&body);
+    // Optionally inject the operator-controlled thinking-mode flag (KLEOS_LLM_THINK).
+    // When unset, take the original path verbatim (no serde round-trip, so the
+    // JSON key order on the wire is unchanged): the feature is a strict no-op.
+    let mut req = match crate::llm::think_setting() {
+        Some(setting) => {
+            let mut v = serde_json::to_value(&body)
+                .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+            crate::llm::inject_reasoning_setting(&mut v, Some(setting));
+            BROCA_LLM_CLIENT.post(url).json(&v)
+        }
+        None => BROCA_LLM_CLIENT.post(url).json(&body),
+    };
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }

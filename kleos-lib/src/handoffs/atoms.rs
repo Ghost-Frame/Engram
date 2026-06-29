@@ -404,7 +404,7 @@ fn atoms_system_prompt() -> std::borrow::Cow<'static, str> {
 pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
     let system_prompt = atoms_system_prompt();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": "llama3",
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -413,6 +413,9 @@ pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
         "response_format": {"type": "json_object"},
         "temperature": 0.1
     });
+    // Optionally inject the operator-controlled thinking-mode flag (KLEOS_LLM_THINK).
+    // No-op when the env var is unset, so the body is unchanged by default.
+    crate::llm::inject_openai_compat_reasoning(&mut body);
 
     let client = reqwest::Client::new();
     let url = format!("{}/v1/chat/completions", sidecar_url.trim_end_matches('/'));

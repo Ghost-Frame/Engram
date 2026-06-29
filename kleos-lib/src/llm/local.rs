@@ -259,6 +259,9 @@ impl LocalModelClient {
             "max_tokens": opts.max_tokens.unwrap_or(2000),
             "stream": false,
         });
+        // Optionally inject the operator-controlled thinking-mode flag (KLEOS_LLM_THINK).
+        // No-op when the env var is unset, so the body is unchanged by default.
+        super::inject_openai_compat_reasoning(&mut body);
 
         // Cloud OpenAI-proxy compatibility (Foundry/Azure backend). GPT-class
         // models behind the proxy reject the classic `max_tokens` (require

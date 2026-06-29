@@ -10,6 +10,78 @@ pub mod types;
 
 pub use types::*;
 
+/// Parse the `KLEOS_LLM_THINK` env value into an optional thinking-mode setting.
+///
+/// Accepts (case-insensitive, trimmed):
+///   - `"1"`, `"true"`, `"yes"`, `"on"`   -> `Some(true)`  (reasoning ON)
+///   - `"0"`, `"false"`, `"no"`, `"off"`  -> `Some(false)` (reasoning OFF)
+///   - absent or empty                    -> `None`        (no-op, leave it to the model)
+///   - any other value                    -> `None` + a warning
+///
+/// `None` is the neutral default: callers inject nothing, so the request body is
+/// byte-identical to one built without this feature and the model keeps its own
+/// default thinking behaviour.
+fn parse_think_setting(raw: Option<String>) -> Option<bool> {
+    let value = raw?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        other => {
+            tracing::warn!(
+                "unrecognised KLEOS_LLM_THINK={:?}, ignoring (leaving thinking mode to the model)",
+                other
+            );
+            None
+        }
+    }
+}
+
+/// Resolve the thinking-mode setting from the environment.
+///
+/// Reads `KLEOS_LLM_THINK` (canonical) with a legacy `ENGRAM_LLM_THINK` fallback
+/// via [`crate::kleos_env`]. Returns `None` when unset/empty so injection is a
+/// no-op. See [`parse_think_setting`] for the accepted values.
+pub fn think_setting() -> Option<bool> {
+    parse_think_setting(crate::kleos_env("LLM_THINK").ok())
+}
+
+/// Inject the `think` and `reasoning_effort` fields into an OpenAI-compat /
+/// Ollama request body, driven by [`think_setting`].
+///
+/// When the operator has not set `KLEOS_LLM_THINK` (or set it empty), this is a
+/// no-op and the body is left untouched -- preserving the upstream default where
+/// the model decides. When set, it injects `think = <bool>` and the
+/// OpenAI-standard `reasoning_effort` (`"high"` when ON, `"none"` when OFF), so
+/// the toggle works on both Ollama endpoint styles (Ollama silently ignores the
+/// `think` field on `/v1/chat/completions`, honouring `reasoning_effort`
+/// instead; the native `/api/*` endpoints honour `think`).
+///
+/// Idempotent: only inserts keys when absent, so a value already set by the
+/// caller is preserved. No-op on non-object JSON values.
+pub(crate) fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
+    inject_reasoning_setting(body, think_setting());
+}
+
+/// Core injector applying an explicit thinking-mode `setting`.
+///
+/// `None` is a no-op (body untouched). Lets callers that have already resolved
+/// the setting (e.g. to gate an expensive body round-trip on `is_some()`) reuse
+/// the injection logic without re-reading the environment. Idempotent: only
+/// inserts keys when absent. No-op on non-object values.
+pub(crate) fn inject_reasoning_setting(body: &mut serde_json::Value, setting: Option<bool>) {
+    let Some(think) = setting else {
+        return;
+    };
+    if let serde_json::Value::Object(ref mut map) = body {
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(think));
+        let effort = if think { "high" } else { "none" };
+        map.entry("reasoning_effort".to_string())
+            .or_insert_with(|| serde_json::Value::String(effort.to_string()));
+    }
+}
+
 /// Repair and parse JSON from LLM output that may have common formatting issues.
 ///
 /// Handles: markdown code fences, trailing commas, unterminated strings,
@@ -128,6 +200,66 @@ fn fix_trailing_commas(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn think_setting_unset_or_empty_is_none() {
+        assert_eq!(parse_think_setting(None), None);
+        assert_eq!(parse_think_setting(Some(String::new())), None);
+        assert_eq!(parse_think_setting(Some("   ".to_string())), None);
+    }
+
+    #[test]
+    fn think_setting_truthy_values() {
+        for v in ["1", "true", "TRUE", "Yes", "on"] {
+            assert_eq!(parse_think_setting(Some(v.to_string())), Some(true), "{v}");
+        }
+    }
+
+    #[test]
+    fn think_setting_falsy_values() {
+        // "0" must yield Some(false) so reasoning is explicitly turned off.
+        for v in ["0", "false", "No", "OFF"] {
+            assert_eq!(parse_think_setting(Some(v.to_string())), Some(false), "{v}");
+        }
+    }
+
+    #[test]
+    fn think_setting_unrecognised_is_none() {
+        assert_eq!(parse_think_setting(Some("maybe".to_string())), None);
+    }
+
+    #[test]
+    fn inject_is_noop_on_non_object() {
+        // Non-object bodies are returned untouched regardless of setting.
+        let mut v = serde_json::json!("a string");
+        inject_reasoning_setting(&mut v, Some(true));
+        assert_eq!(v, serde_json::json!("a string"));
+    }
+
+    #[test]
+    fn inject_reasoning_setting_none_is_noop() {
+        // The unset path (None) leaves the body byte-identical -- this is what
+        // call_llm_endpoint relies on to skip the serde round-trip entirely.
+        let mut v = serde_json::json!({"model": "x"});
+        inject_reasoning_setting(&mut v, None);
+        assert_eq!(v, serde_json::json!({"model": "x"}));
+    }
+
+    #[test]
+    fn inject_reasoning_setting_false_injects_off() {
+        let mut v = serde_json::json!({"model": "x"});
+        inject_reasoning_setting(&mut v, Some(false));
+        assert_eq!(v["think"], serde_json::json!(false));
+        assert_eq!(v["reasoning_effort"], serde_json::json!("none"));
+    }
+
+    #[test]
+    fn inject_reasoning_setting_preserves_caller_value() {
+        let mut v = serde_json::json!({"model": "x", "think": true});
+        inject_reasoning_setting(&mut v, Some(false));
+        // Caller-set value wins (idempotent or_insert_with).
+        assert_eq!(v["think"], serde_json::json!(true));
+    }
 
     #[test]
     fn test_clean_json() {
