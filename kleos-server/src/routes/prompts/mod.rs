@@ -47,6 +47,59 @@ fn living_excluded_categories() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Default maximum characters of any single memory injected into the living
+/// prompt's "Relevant Memories" section.
+///
+/// Caps total size so a handful of large ingestion chunks (up to ~3000 chars
+/// each) cannot flood the agent's context -- the root of the 15.6KB session-start
+/// blowup. Eight memories at this cap stay well under 5KB.
+const DEFAULT_LIVING_MEMORY_CHARS: usize = 600;
+
+/// Reads the per-memory char cap for living-prompt injection (env-tunable).
+fn living_memory_char_cap() -> usize {
+    std::env::var("KLEOS_RECALL_MEMORY_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n >= 80)
+        .unwrap_or(DEFAULT_LIVING_MEMORY_CHARS)
+}
+
+/// True when already-trimmed `content` appears to begin in the middle of a word
+/// -- a broken ingestion chunk like "ect and must be wrapped".
+///
+/// Such fragments open with a lowercase ASCII letter. Clean memories open with a
+/// capital, a digit, or markdown/structural punctuation ('#', '-', '|', '*',
+/// '`', quote, paren), so gating on a leading lowercase ASCII letter drops the
+/// fragments without discarding well-formed content. Belt-and-suspenders with
+/// the chunker fix and the prod data cleanup: even a stray fragment never
+/// surfaces.
+fn starts_midword(content: &str) -> bool {
+    content
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase())
+}
+
+/// Truncate `content` to at most `cap` bytes, preferring a trailing whitespace
+/// boundary so a word is not cut, appending an ellipsis when truncated.
+fn truncate_for_injection(content: &str, cap: usize) -> String {
+    if content.len() <= cap {
+        return content.to_string();
+    }
+    let mut end = cap.min(content.len());
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Prefer cutting at the last whitespace before the cap, but only if it does
+    // not throw away more than half the budget (avoids near-empty snippets).
+    if let Some(ws) = content[..end].rfind(char::is_whitespace) {
+        if ws >= cap / 2 {
+            end = ws;
+        }
+    }
+    format!("{} ...", content[..end].trim_end())
+}
+
 /// Returns true for curated sources that are exempt from the category denylist.
 ///
 /// Plan documents ingest as `plan:<relpath>`, but the auto-categorizer relabels
@@ -71,6 +124,7 @@ fn living_result_is_relevant(
     }
 }
 
+/// Builds the prompt-generation router (`/prompt`, `/prompt/generate`, `/header`).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/prompt", get(get_prompt))
@@ -78,6 +132,7 @@ pub fn router() -> Router<AppState> {
         .route("/header", post(post_header))
 }
 
+/// GET /prompt -- render a context prompt for `query` at a token budget.
 async fn get_prompt(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -108,6 +163,8 @@ async fn get_prompt(
     })))
 }
 
+/// POST /prompt/generate -- assemble the living prompt (personality, relevant
+/// memories, brain patterns, growth) for a session-start agent.
 async fn post_prompt_generate(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -228,6 +285,7 @@ async fn post_prompt_generate(
         // sidecar recall gate so one config governs every injection path.
         let min_semantic = living_min_semantic();
         let excluded = living_excluded_categories();
+        let memory_chars = living_memory_char_cap();
         let relevant: Vec<&kleos_lib::memory::types::SearchResult> = results
             .iter()
             .filter(|r| {
@@ -235,6 +293,9 @@ async fn post_prompt_generate(
                     || !excluded.contains(&r.memory.category.to_ascii_lowercase())
             })
             .filter(|r| living_result_is_relevant(r, min_semantic))
+            // Drop broken ingestion chunks that begin mid-word ("ect...",
+            // "ple...") so corrupt fragments never enter the agent's context.
+            .filter(|r| !starts_midword(r.memory.content.trim()))
             .collect();
         if !relevant.is_empty() {
             let mut buf = String::from("## Relevant Memories\n");
@@ -244,8 +305,10 @@ async fn post_prompt_generate(
                 // content (including any leaked secret or tool-call fragment)
                 // would pass straight into the agent's context.
                 let scrubbed = scrub_credentials(r.memory.content.trim());
+                // Cap each memory so a few large chunks cannot flood context.
+                let capped = truncate_for_injection(scrubbed.trim(), memory_chars);
                 buf.push_str("- ");
-                buf.push_str(scrubbed.trim());
+                buf.push_str(capped.trim());
                 buf.push('\n');
                 sources.push(json!({
                     "id": r.memory.id,
@@ -467,6 +530,7 @@ async fn post_prompt_generate(
     })))
 }
 
+/// POST /header -- generate a compact context header for the given actor.
 async fn post_header(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -508,6 +572,7 @@ fn truncate_prompt_to_chars(prompt: &mut String, target_chars: usize) -> bool {
     true
 }
 
+/// Unit tests for prompt-route helpers and request deserialization.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,6 +593,7 @@ mod tests {
         assert_eq!(q, "short");
     }
 
+    /// All living-context flags deserialize from a full request body.
     #[test]
     fn generate_request_deserializes_living_flags() {
         let json = r#"{
@@ -549,6 +615,7 @@ mod tests {
         assert_eq!(req.growth_limit, Some(3));
     }
 
+    /// Omitted living-context flags default to None (server applies defaults).
     #[test]
     fn generate_request_defaults_living_flags_to_none() {
         let json = r#"{"agent": "a", "task": "t"}"#;
@@ -573,6 +640,47 @@ mod tests {
         assert!(!is_curated_source("planning-notes"));
     }
 
+    /// Mid-word fragments (broken ingestion chunks) are rejected; well-formed
+    /// content opening with a capital, digit, or markdown punctuation passes.
+    #[test]
+    fn starts_midword_rejects_fragments_only() {
+        assert!(starts_midword("ect and must be wrapped. |"));
+        assert!(starts_midword("ple: fail soft, log/report"));
+        assert!(starts_midword("nt.\n\n- step 4"));
+        assert!(!starts_midword("The quick brown fox"));
+        assert!(!starts_midword("## Heading"));
+        assert!(!starts_midword("- bullet item"));
+        assert!(!starts_midword("| table | cell |"));
+        assert!(!starts_midword("`code`"));
+        assert!(!starts_midword("2026-06-29 deploy note"));
+        assert!(!starts_midword(""));
+    }
+
+    /// Per-memory truncation caps size, prefers a word boundary, and is a no-op
+    /// under budget.
+    #[test]
+    fn truncate_for_injection_caps_on_word_boundary() {
+        let short = "well within budget";
+        assert_eq!(truncate_for_injection(short, 600), short);
+
+        let long = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
+        let out = truncate_for_injection(long, 20);
+        assert!(out.len() <= 24, "capped length: {out:?}");
+        assert!(out.ends_with(" ..."));
+        // Must not cut inside a word: the body before " ..." ends at a vocab word.
+        let body = out.trim_end_matches(" ...");
+        assert!(
+            long.starts_with(body),
+            "body must be a clean prefix: {body:?}"
+        );
+        assert!(!body.ends_with("charli"), "must not truncate mid-word");
+
+        // Multibyte safety: budget landing inside an emoji must not panic.
+        let mb = format!("{}\u{1F600}{}", "a".repeat(10), "b".repeat(40));
+        let _ = truncate_for_injection(&mb, 12);
+    }
+
+    /// The static instinct-domains summary contains its expected anchor text.
     #[test]
     fn instinct_summary_is_static() {
         // Verify the instinct summary text is available

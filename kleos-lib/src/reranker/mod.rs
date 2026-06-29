@@ -360,6 +360,37 @@ pub struct HttpReranker {
     guard: Option<Arc<ServiceGuard>>,
 }
 
+/// Default HTTP reranker request timeout in seconds (upstream behaviour).
+const DEFAULT_RERANKER_TIMEOUT_SECS: u64 = 10;
+/// Lower clamp for the HTTP reranker request timeout.
+const MIN_RERANKER_TIMEOUT_SECS: u64 = 1;
+/// Upper clamp for the HTTP reranker request timeout.
+const MAX_RERANKER_TIMEOUT_SECS: u64 = 300;
+
+/// Resolve the HTTP reranker request timeout (seconds) from an optional raw
+/// env value (`KLEOS_RERANKER_TIMEOUT_SECS`, legacy `ENGRAM_RERANKER_TIMEOUT_SECS`).
+///
+/// Parses a `u64`, clamps to `[MIN_RERANKER_TIMEOUT_SECS, MAX_RERANKER_TIMEOUT_SECS]`,
+/// and falls back to `DEFAULT_RERANKER_TIMEOUT_SECS` when the value is absent or
+/// non-numeric (warning on the latter). Absent value reproduces the previous
+/// hardcoded default exactly, so the behaviour is unchanged when the env var is unset.
+fn resolve_reranker_timeout_secs(raw: Option<String>) -> u64 {
+    match raw {
+        None => DEFAULT_RERANKER_TIMEOUT_SECS,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) => n.clamp(MIN_RERANKER_TIMEOUT_SECS, MAX_RERANKER_TIMEOUT_SECS),
+            Err(_) => {
+                tracing::warn!(
+                    "invalid env KLEOS_RERANKER_TIMEOUT_SECS={}, using default {}",
+                    v,
+                    DEFAULT_RERANKER_TIMEOUT_SECS
+                );
+                DEFAULT_RERANKER_TIMEOUT_SECS
+            }
+        },
+    }
+}
+
 /// Constructors and request plumbing for the remote HTTP reranker.
 impl HttpReranker {
     /// Construct without a database. Uses an inline retry loop with no
@@ -378,9 +409,13 @@ impl HttpReranker {
         top_k: usize,
         db: Option<Arc<Database>>,
     ) -> Self {
+        // Request timeout is env-overridable (default 10s preserves prior behaviour).
+        let timeout_secs =
+            resolve_reranker_timeout_secs(crate::kleos_env("RERANKER_TIMEOUT_SECS").ok());
+
         // R7-002: hardened builder (connect_timeout + redirect cap).
         let client = crate::net::safe_client_builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(timeout_secs))
             .build()
             .unwrap_or_default();
 
@@ -393,6 +428,7 @@ impl HttpReranker {
             model = %model,
             format = ?format,
             top_k = top_k,
+            timeout_secs = timeout_secs,
             has_guard = db.is_some(),
             "HTTP reranker configured"
         );
@@ -420,6 +456,7 @@ impl HttpReranker {
     ///   `KLEOS_RERANKER_API_KEY`   — Bearer token (optional)
     ///   `KLEOS_RERANKER_MODEL`     — model name (default: "rerank-v3.5", omitted for TEI)
     ///   `KLEOS_RERANKER_FORMAT`    — wire format: `cohere` (default) or `tei`
+    ///   `KLEOS_RERANKER_TIMEOUT_SECS` — request timeout in seconds, clamped to [1, 300] (default 10)
     ///   Legacy: `ENGRAM_RERANKER_HTTP_ENDPOINT`, `ENGRAM_RERANKER_HTTP_API_KEY`,
     ///           `ENGRAM_RERANKER_HTTP_MODEL`, `ENGRAM_RERANKER_FORMAT`
     pub fn from_env(top_k: usize, db: Option<Arc<Database>>) -> Option<Self> {
@@ -769,5 +806,30 @@ mod tests {
         let configured = root.join("bge-reranker-v2-m3");
 
         assert!(find_staged_reranker_fallback(&configured, "bge-reranker-v2-m3").is_none());
+    }
+
+    /// Absent env value reproduces the previous hardcoded default of 10s.
+    #[test]
+    fn reranker_timeout_defaults_to_10_when_unset() {
+        assert_eq!(resolve_reranker_timeout_secs(None), 10);
+    }
+
+    /// A valid value is honoured verbatim.
+    #[test]
+    fn reranker_timeout_honours_valid_value() {
+        assert_eq!(resolve_reranker_timeout_secs(Some("30".to_string())), 30);
+    }
+
+    /// A non-numeric value falls back to the default.
+    #[test]
+    fn reranker_timeout_invalid_falls_back_to_default() {
+        assert_eq!(resolve_reranker_timeout_secs(Some("abc".to_string())), 10);
+    }
+
+    /// Out-of-range values are clamped to [1, 300].
+    #[test]
+    fn reranker_timeout_clamps_out_of_range() {
+        assert_eq!(resolve_reranker_timeout_secs(Some("0".to_string())), 1);
+        assert_eq!(resolve_reranker_timeout_secs(Some("500".to_string())), 300);
     }
 }

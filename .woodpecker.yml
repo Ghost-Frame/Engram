@@ -1,14 +1,16 @@
-# Woodpecker CI pipeline for Kleos
-# Runs on a self-hosted local runner (Podman backend)
-
-# Run exactly one pipeline per change: pull_request for PR branches, push only
-# on main, and tags. This avoids firing a push pipeline AND a pull_request
-# pipeline for the same PR-branch commit, which ran two full builds at once and
-# exhausted the 2-slot runner (SIGBUS in ld). See the per-step notes below.
+# Woodpecker CI pipeline for Kleos -- RELEASES ONLY (tag events).
+#
+# Runs on a self-hosted local runner (Podman backend) because the release
+# artifacts -- linux-x64 + windows-x64 cross-compile, docker buildx image, and
+# crate publishing -- are too heavy for GitHub-hosted runners.
+#
+# PR and push-to-main code checks (cargo check / clippy / test / fmt / deny)
+# run on GitHub Actions (.github/workflows/ci.yml) on GitHub-hosted runners.
+# They used to ALSO run here on every pull_request and push, which duplicated
+# the GitHub Actions checks and tied up the 2-slot self-hosted runner; a hung
+# or backlogged runner then left PR checks stuck "pending" on GitHub. Woodpecker
+# no longer triggers on pull_request or push -- only on tags.
 when:
-  - event: pull_request
-  - event: push
-    branch: main
   - event: tag
 
 variables:
@@ -22,64 +24,11 @@ variables:
     CARGO_TARGET_DIR: target
     CARGO_BUILD_JOBS: "4"
     CARGO_BUILD_RUSTC_WRAPPER: ""
-    # Drop test-profile debuginfo: the kleos-lib test binaries (e.g. artifacts_fts)
-    # link to ~480MB with debuginfo, and two concurrent test workflows on the
-    # 2-slot agent exhaust the container, killing ld with SIGBUS (signal 7).
-    # Mirrors the GitHub Actions fix in #79.
-    CARGO_PROFILE_TEST_DEBUG: "0"
   - &ci_env_windows
     CARGO_TARGET_DIR: target-windows
     CARGO_BUILD_RUSTC_WRAPPER: ""
 
 steps:
-  # ── CI checks (push to main + PRs) ──────────────────────────
-  check:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    environment: *ci_env
-    commands:
-      - *install_deps
-      - cargo check --workspace
-
-  clippy:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    depends_on: [check]
-    environment: *ci_env
-    commands:
-      - *install_deps
-      - rustup component add clippy
-      - cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
-
-  test:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    depends_on: [check]
-    environment: *ci_env
-    commands:
-      - *install_deps
-      - cargo test --workspace --exclude kleos-migrate
-
-  fmt:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    commands:
-      - rustup component add rustfmt
-      - cargo fmt --all -- --check
-
-  deny:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    environment: *ci_env
-    commands:
-      - cargo install --locked cargo-deny
-      - cargo deny check
-
   # ── Release builds (tags only) ───────────────────────────────
   # Two parallel build steps: linux-x64 (native), windows-x64
 
