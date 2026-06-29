@@ -340,8 +340,8 @@ Four channels run per query:
 
 ### Scope
 
-- 26 Rust crates, ~204K lines of code
-- ~6,000 test declarations across 113 test files
+- 26 Rust crates, ~211K lines of Rust across 621 files
+- ~1,800 test declarations (`#[test]` / `#[tokio::test]`) across 246 files
 - Single statically linked binary with the mimalloc allocator
 - No Python runtime. No external service dependencies at rest.
 
