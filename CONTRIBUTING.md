@@ -6,41 +6,92 @@
 git clone https://github.com/Ghost-Frame/Kleos.git
 cd Kleos
 cargo build --workspace
-cargo test --workspace
+cargo test --workspace --exclude kleos-migrate
 ```
 
 Rust 1.94 or later. The workspace builds on Linux, macOS, and WSL2. Native Windows builds are untested -- use WSL2.
+
+The full workspace is large (26 crates, wants ~8 GiB RAM to build). For day-to-day
+server work you can build just what you need and skip the heavy crates:
+
+```bash
+cargo build -p kleos-server -p kleos-cli -p kleos-mcp
+```
+
+`cargo test --workspace` excludes `kleos-migrate` throughout this guide and in CI:
+it links a second SQLite backend and conflicts with the SQLCipher symbols pulled
+in by the rest of the workspace.
 
 ### System Dependencies
 
 **Debian/Ubuntu:**
 ```bash
-sudo apt install build-essential pkg-config libssl-dev clang protobuf-compiler
+sudo apt install build-essential pkg-config libssl-dev clang protobuf-compiler libpcsclite-dev
 ```
+
+`libpcsclite-dev` is needed for the PIV/smartcard (YubiKey) path, which the
+default workspace build pulls in.
 
 **macOS:**
 ```bash
 brew install openssl protobuf
 ```
 
+(PC/SC is provided by the system framework on macOS, so no extra smartcard package is needed.)
+
 SQLite is vendored via `rusqlite` (bundled feature). SQLCipher is vendored at compile time -- no system libsqlcipher needed.
 
 ## Workspace Structure
 
+26-crate Cargo workspace, plus the `sdk/` directory (non-Rust client SDKs). Crates by area:
+
+**Core & server**
 ```
-kleos/
-  kleos-lib/            Core library -- all domain logic lives here
-  kleos-server/         HTTP API server (Axum)
-  kleos-cli/            CLI client over the HTTP API
-  kleos-sidecar/        Session-scoped memory proxy
-  kleos-mcp/            MCP server (Model Context Protocol)
-  kleos-cred/           Credential management library
-  kleos-credd/          Credential management daemon
-  kleos-approval-tui/   Approval workflow TUI (WIP)
-  kleos-migrate/        Monolith-to-tenant shard ETL tool
-  agent-forge/          Structured reasoning CLI
-  sdk/                  Client SDKs (TypeScript)
-  hooks/                Claude Code hook scripts
+kleos-lib       Core library -- all domain logic: memory, search, embeddings, graph,
+                intelligence, services, skills, growth, auth, gate, jobs. Feature-gated brain backend.
+kleos-server    Axum HTTP API server. Route modules, middleware layers, embedded React web GUI.
+kleos-config    Shared config types + env resolution, used by both the server and the
+                installer so the two never drift.
+kleos-client    Shared Rust HTTP client with PIV/Ed25519 envelope signing.
+```
+
+**Clients & integration**
+```
+kleos-cli           Command-line client over the HTTP API. Memory ops, skills, handoffs, creds.
+kleos-mcp           MCP server (Model Context Protocol). Curated tool registry; stdio by default.
+kleos-sidecar       Session-scoped memory proxy. File watcher, batched flushing, optional Ollama compression.
+kleos-token-client  Tiny std-only client for the phylaxd SO_PEERCRED token broker (no kleos-lib dep).
+sdk/                Client SDKs: TypeScript, Python, Go.
+```
+
+**Agent tooling & safety**
+```
+agent-forge         Structured-reasoning CLI. Spec/hypothesis/verify protocol, Tree-sitter AST parsing.
+forge               agent-forge compute engine as a library (repo-map, code search, comment-check,
+                    challenge-code), used server-side by kleos-server.
+kleos-sh            Shell command gate. Static validation, SSRF guard, approval queue, Claude Code hook.
+kleos-fs            AST-aware filesystem ops. Guarded read/write/edit with configurable allowed roots.
+eidolon-supervisor  Session drift-detection daemon. Real-time transcript watching, rule-based alerts.
+```
+
+**Credentials & security**
+```
+kleos-cred                Credential management library + `cred` CLI. YubiKey, Argon2id, ECDH, vault.
+kleos-credd               Base credential daemon. Two-tier (master + agent) keys, AES-256-GCM, ECDH bootstrap.
+kleos-phylax              Agent-native credential authority -- approvals, leases, ECDH, namespaces.
+kleos-phylaxd             The credential daemon actually deployed (`credd`): kleos-credd + Phylax policy.
+kleos-phylax-ssh-agent    OpenSSH agent protocol server -- wire protocol + KeyProvider trait.
+kleos-phylax-ssh-agentd   Headless SSH agent daemon that brokers keys/signing through phylaxd.
+```
+
+**Ops & install**
+```
+kleos-migrate       One-shot ETL from an encrypted monolith DB into per-tenant shards.
+kleos-cleanup       Deduplication and log-demotion utility.
+kleos-ingest        Transcript ingest daemon. Request signing, file watching, LLM summarization.
+kleos-install-core  Shared installer library (download, verification, config, system integration).
+kleos-install       TUI installer (ratatui wizard).
+kleos-install-gui   GUI installer (eframe/egui wizard).
 ```
 
 **Key rule:** domain logic goes in `kleos-lib`. Server routes go in `kleos-server`. Don't put business logic in the server crate.
@@ -67,7 +118,7 @@ scripts/install-git-hooks.sh
 cargo check --workspace
 
 # Run tests (in-memory SQLite, no external deps)
-cargo test --workspace
+cargo test --workspace --exclude kleos-migrate
 
 # Lint before committing - warnings are errors
 cargo clippy --workspace -- -D warnings
@@ -174,7 +225,7 @@ async fn test_search_returns_recent_memories_first() {
 
 - Use `#[tokio::test]` for async tests
 - Name tests descriptively: `test_search_returns_recent_memories_first`
-- Tests run with `cargo test --workspace` -- no feature flags needed
+- Tests run with `cargo test --workspace --exclude kleos-migrate` -- no feature flags needed
 
 ## Common Pitfalls
 
@@ -190,13 +241,18 @@ async fn test_search_returns_recent_memories_first() {
 | Crate | Flag | Default | Purpose |
 |-------|------|---------|---------|
 | `kleos-lib` | `brain_hopfield` | on | Brain module, Hopfield networks, spreading activation |
+| `kleos-lib` | `piv` | off | PIV/YubiKey smartcard auth (pulls in PC/SC; needs `libpcsclite-dev` on Linux) |
 | `kleos-lib` | `sqlcipher` | off | SQLCipher at-rest encryption (required for `KLEOS_ENCRYPTION_MODE` != `none`) |
+| `kleos-lib` | `sqlcipher-vendored` | off | SQLCipher with vendored OpenSSL (cross-compile targets) |
+| `kleos-lib` | `vendored-openssl` | off | Vendor OpenSSL from source (cross-compile targets) |
 | `kleos-lib` | `bundled-sqlite` | off | Vendor SQLite from source (needed on Windows) |
 | `kleos-lib` | `tenant-sharding` | off | Per-tenant database sharding |
 | `kleos-lib` | `test-utils` | off | Test helpers for downstream crates |
 | `kleos-lib` | `credd-raw` | off | Raw credential access support |
+| `kleos-mcp` | `piv` | on | PIV/YubiKey request signing (disable with `--no-default-features`) |
 | `kleos-mcp` | `http` | off | HTTP transport (default is stdio only) |
-| `kleos-cred` | `gui` | off | eframe-based credential manager GUI |
+| `kleos-client` | `piv` | on | PIV/Ed25519 envelope signing |
+| `kleos-cred` | `gui` | off | eframe-based credential manager GUI (`cred-gui` binary) |
 
 ## Migration Tool
 
