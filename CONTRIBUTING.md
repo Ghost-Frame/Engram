@@ -111,6 +111,36 @@ cargo deny check        # licenses, sources, advisories, bans -- fails independe
 - First line under 72 characters
 - Reference issues when applicable: "fix memory leak in search (#42)"
 
+### Signed Commits
+
+`main` requires every commit to carry a **verified signature**. If your commits
+are unsigned, GitHub shows an "Unverified" badge and the PR cannot be merged.
+GitHub does not warn you about this when you push, so set signing up once before
+you contribute.
+
+The simplest path is **SSH signing** -- you already have an SSH key for GitHub:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub   # your public key
+git config --global commit.gpgsign true
+```
+
+Then add that same key as a **Signing Key** under GitHub -> Settings -> SSH and
+GPG keys. A signing key is a separate entry from an authentication key, even
+when it is the same file -- without it GitHub cannot verify your signature.
+
+GPG and S/MIME signing work too if you prefer them; see GitHub's "About commit
+signature verification" documentation. Verify locally before pushing:
+
+```bash
+git log --show-signature -1     # expect: Good "git" signature ...
+```
+
+If you have already pushed unsigned commits, re-sign them with
+`git rebase --exec 'git commit --amend --no-edit -S' -i <base>` and force-push
+the branch.
+
 ## Pull Requests
 
 1. Fork the repo
@@ -127,6 +157,7 @@ cargo deny check        # licenses, sources, advisories, bans -- fails independe
 - [ ] `cargo deny check` passes (licenses, sources, advisories, bans)
 - [ ] New code has tests where applicable
 - [ ] Documentation updated if behavior changes
+- [ ] Commits are signed with a verified signature (see Signed Commits above)
 - [ ] No unrelated changes in the PR
 
 ## Testing
