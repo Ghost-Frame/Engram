@@ -27,6 +27,17 @@ ignore = [
     # deployments further degrades any timing-based attack. Track upstream
     # rsa fixes; review on every yubikey crate bump.
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.x Marvin Attack; transitive via yubikey; not on the RSA decryption path; track upstream; reviewed 2026-08-10" },
+    # quick-xml 0.30.0: two DoS advisories. RUSTSEC-2026-0194 is a quadratic
+    # parse of duplicate start-tag attributes; RUSTSEC-2026-0195 is an unbounded
+    # namespace-declaration allocation in NsReader. No safe upgrade: the version
+    # is pinned by zbus_xml 4.0.0 in the GUI installer's AT-SPI accessibility
+    # stack (kleos-install-gui -> eframe -> accesskit -> atspi -> zbus_xml), and
+    # cargo update finds no compatible newer zbus_xml. quick-xml on this path
+    # parses local D-Bus a11y introspection XML, not untrusted network input;
+    # the server and CLI never reach it. Track the accesskit/zbus stack; review
+    # on every eframe/accesskit bump.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; transitive via GUI AT-SPI (zbus_xml) only; local a11y XML not untrusted input; no safe upgrade" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS; transitive via GUI AT-SPI (zbus_xml) only; local a11y XML not untrusted input; no safe upgrade" },
 ]
 
 [licenses]

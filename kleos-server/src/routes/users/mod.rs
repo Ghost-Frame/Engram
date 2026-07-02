@@ -16,7 +16,7 @@ use crate::state::AppState;
 use kleos_lib::auth::Scope;
 
 mod types;
-use types::{CreateUserBody, ListUsersParams};
+use types::{CreateApiKeyForUserBody, CreateUserBody, ListUsersParams};
 
 /// Registers the /users routes under the authenticated API router.
 pub fn router() -> Router<AppState> {
@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/users", post(create_user))
         .route("/users", get(list_users))
         .route("/users/{id}", delete(deactivate_user))
+        .route("/users/{id}/api-keys", post(create_api_key_for_user))
 }
 
 /// Creates a new user account. Rejects duplicate usernames with 409.
@@ -98,6 +99,92 @@ async fn create_user(
         }
         Err(e) => Err(AppError(e)),
     }
+}
+
+/// Mints an API key for another user. Admin-only: this is how service
+/// accounts (users that never log in themselves) receive their first
+/// credential. The target must exist and be active -- minting a live key
+/// for a deactivated account would bypass the deactivation cascade.
+async fn create_api_key_for_user(
+    Auth(auth): Auth,
+    State(state): State<AppState>,
+    Path(user_id): Path<i64>,
+    Json(body): Json<CreateApiKeyForUserBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    if !auth.has_scope(&Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Auth(
+            "admin scope required to mint keys for other users".into(),
+        )));
+    }
+
+    // Validate scopes: read/write/admin only, non-empty.
+    let requested_raw = body.scopes.as_deref().unwrap_or("read").trim();
+    let requested: Vec<String> = requested_raw
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if requested.is_empty() {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "scopes must be one of: read, write, admin".into(),
+        )));
+    }
+    for s in &requested {
+        match s.as_str() {
+            "read" | "write" | "admin" => {}
+            other => {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                    "unknown scope: {}",
+                    other
+                ))));
+            }
+        }
+    }
+
+    // The target must exist and be active.
+    let target_active = state
+        .db
+        .read(move |conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT is_active FROM users WHERE id = ?1",
+                    params![user_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .ok())
+        })
+        .await?;
+    match target_active {
+        Some(true) => {}
+        Some(false) => {
+            return Err(AppError(kleos_lib::EngError::Forbidden(
+                "cannot mint a key for a deactivated user".into(),
+            )));
+        }
+        None => {
+            return Err(AppError(kleos_lib::EngError::NotFound(format!(
+                "user {} not found",
+                user_id
+            ))));
+        }
+    }
+
+    // Same absolute ceiling as self-minted admin keys.
+    let rate_limit = body.rate_limit.unwrap_or(1000).clamp(1, 100_000);
+    let key_name = body.name.as_deref().unwrap_or("api-key").trim().to_string();
+    let scopes_vec: Vec<Scope> = requested
+        .iter()
+        .filter_map(|s| s.parse::<Scope>().ok())
+        .collect();
+
+    let (key_record, full_key) =
+        kleos_lib::auth::create_key(&state.db, user_id, &key_name, scopes_vec, Some(rate_limit))
+            .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "key": key_record, "full_key": full_key })),
+    ))
 }
 
 /// Lists user accounts. Excludes deactivated users unless

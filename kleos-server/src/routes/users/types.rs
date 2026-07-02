@@ -20,3 +20,17 @@ pub struct ListUsersParams {
     #[serde(default)]
     pub include_inactive: Option<bool>,
 }
+
+/// Body for POST /users/{id}/api-keys -- admin mints a key for another user.
+#[derive(Deserialize)]
+pub struct CreateApiKeyForUserBody {
+    /// Display name for the key. Defaults to "api-key".
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Comma/whitespace-separated scopes (read, write, admin). Defaults to "read".
+    #[serde(default)]
+    pub scopes: Option<String>,
+    /// Requests-per-minute limit for the key. Capped at 100000.
+    #[serde(default)]
+    pub rate_limit: Option<i64>,
+}

@@ -47,11 +47,18 @@ pub fn resolve_within_roots(path: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    /// Unit tests for `resolve_within_roots`. Each test manipulates the env
-    /// variable directly; they must not run in parallel (`--test-threads=1`).
+    /// Unit tests for `resolve_within_roots`. Each test manipulates the
+    /// process-global env variable, so they serialize on `ENV_LOCK` --
+    /// without it, parallel test threads race on set_var/remove_var and
+    /// fail intermittently.
     use super::*;
     use std::env;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Serializes tests that mutate `KLEOS_FORGE_FS_ROOTS`. A poisoned lock
+    /// (earlier test panicked) is still safe to reuse for env serialization.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Helper: create a real temp directory whose canonical form we can use.
     fn make_tempdir() -> TempDir {
@@ -61,6 +68,7 @@ mod tests {
     /// A path that is a direct child of a configured root is allowed.
     #[test]
     fn within_root_returns_some() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = make_tempdir();
         let root = dir.path().to_str().expect("tempdir must be valid UTF-8");
 
@@ -78,6 +86,7 @@ mod tests {
     /// A path outside every configured root must be rejected.
     #[test]
     fn outside_root_returns_none() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let allowed = make_tempdir();
         let other = make_tempdir();
 
@@ -96,6 +105,7 @@ mod tests {
     /// When the env var is absent the function must always return None.
     #[test]
     fn no_env_returns_none() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = make_tempdir();
         let child = dir.path().join("file.txt");
         std::fs::write(&child, b"x").unwrap();
