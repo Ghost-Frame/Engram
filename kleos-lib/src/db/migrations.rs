@@ -32,6 +32,13 @@ pub struct Migration {
     /// When true the up/down fn is wrapped in a SAVEPOINT so it rolls back
     /// automatically on failure.
     pub transactional: bool,
+    /// When true the up fn is a `PRAGMA foreign_keys`-toggling table rebuild that
+    /// cannot run inside a SAVEPOINT (the pragma is a silent no-op there). Such
+    /// migrations must be `transactional: false`; `apply_migration_up` wraps them
+    /// atomically via `apply_fk_rebuild` (foreign keys OFF outside any
+    /// transaction, then the whole apply in one BEGIN..COMMIT) so a crash
+    /// mid-rebuild rolls back and retries instead of bricking the database.
+    pub fk_rebuild: bool,
 }
 
 // --- Migration plan (returned by dry_run and migrate_down) ---
@@ -76,6 +83,7 @@ macro_rules! migration {
             up: $up,
             down: None,
             transactional: false,
+            fk_rebuild: false,
         }
     };
     // No down, transactional
@@ -86,6 +94,20 @@ macro_rules! migration {
             up: $up,
             down: None,
             transactional: true,
+            fk_rebuild: false,
+        }
+    };
+    // No down, foreign-key table rebuild. Toggles PRAGMA foreign_keys, so it
+    // cannot use a SAVEPOINT; apply_migration_up wraps it atomically via
+    // apply_fk_rebuild (foreign keys OFF outside any tx, then one BEGIN..COMMIT).
+    ($ver:expr, $desc:expr, $up:expr, fkrebuild) => {
+        Migration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            down: None,
+            transactional: false,
+            fk_rebuild: true,
         }
     };
     // With down, not transactional
@@ -96,6 +118,7 @@ macro_rules! migration {
             up: $up,
             down: Some($down),
             transactional: false,
+            fk_rebuild: false,
         }
     };
     // With down, transactional
@@ -106,6 +129,7 @@ macro_rules! migration {
             up: $up,
             down: Some($down),
             transactional: true,
+            fk_rebuild: false,
         }
     };
 }
@@ -155,7 +179,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         26,
         "drop_user_id_scratchpad",
-        run_migration_drop_user_id_scratchpad
+        run_migration_drop_user_id_scratchpad,
+        fkrebuild
     ),
     // DROP COLUMN is destructive; no safe inverse without a backup.
     migration!(
@@ -174,7 +199,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         31,
         "drop_user_id_projects",
-        run_migration_drop_user_id_projects
+        run_migration_drop_user_id_projects,
+        fkrebuild
     ),
     // DROP COLUMN is destructive; no safe inverse without a backup.
     migration!(
@@ -193,32 +219,56 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         36,
         "drop_user_id_ingestion_hashes",
-        run_migration_drop_user_id_ingestion_hashes
+        run_migration_drop_user_id_ingestion_hashes,
+        fkrebuild
     ),
     // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(37, "drop_user_id_loom", run_migration_drop_user_id_loom),
+    migration!(
+        37,
+        "drop_user_id_loom",
+        run_migration_drop_user_id_loom,
+        fkrebuild
+    ),
     // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(38, "drop_user_id_graph", run_migration_drop_user_id_graph),
+    migration!(
+        38,
+        "drop_user_id_graph",
+        run_migration_drop_user_id_graph,
+        fkrebuild
+    ),
     // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
-    migration!(39, "drop_user_id_thymus", run_migration_drop_user_id_thymus),
+    migration!(
+        39,
+        "drop_user_id_thymus",
+        run_migration_drop_user_id_thymus,
+        fkrebuild
+    ),
     // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
     migration!(
         40,
         "drop_user_id_portability",
-        run_migration_drop_user_id_portability
+        run_migration_drop_user_id_portability,
+        fkrebuild
     ),
     migration!(
         41,
         "drop_user_id_intelligence",
-        run_migration_drop_user_id_intelligence
+        run_migration_drop_user_id_intelligence,
+        fkrebuild
     ),
     // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
-    migration!(42, "drop_user_id_skills", run_migration_drop_user_id_skills),
+    migration!(
+        42,
+        "drop_user_id_skills",
+        run_migration_drop_user_id_skills,
+        fkrebuild
+    ),
     // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
     migration!(
         43,
         "drop_user_id_episodes",
-        run_migration_drop_user_id_episodes
+        run_migration_drop_user_id_episodes,
+        fkrebuild
     ),
     // C-R3-004: re-add user_id to monolith projects + broca_actions so
     // single-DB deployments are safe even when tenant sharding is disabled.
@@ -226,7 +276,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         44,
         "readd_user_id_projects",
-        run_migration_readd_user_id_projects
+        run_migration_readd_user_id_projects,
+        fkrebuild
     ),
     migration!(45, "readd_user_id_broca", run_migration_readd_user_id_broca),
     // Sparkling Fairy Stage 1: identity tables for PIV-Everywhere auth.
@@ -244,7 +295,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         48,
         "drop_api_keys_agent_fk",
-        run_migration_drop_api_keys_agent_fk
+        run_migration_drop_api_keys_agent_fk,
+        fkrebuild
     ),
     migration!(49, "supervisor_injections", run_migration_supervisor_injections, down: down_migration_supervisor_injections, tx),
     migration!(50, "gate_requests_session_id", run_migration_gate_requests_session_id, down: down_migration_gate_requests_session_id, tx),
@@ -293,7 +345,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         67,
         "readd_user_id_soma_agents",
-        run_migration_readd_user_id_soma_agents
+        run_migration_readd_user_id_soma_agents,
+        fkrebuild
     ),
     migration!(68, "readd_user_id_axon_events", run_migration_readd_user_id_axon_events, down: down_migration_readd_user_id_axon_events, tx),
     migration!(69, "readd_user_id_chiasm_tasks", run_migration_readd_user_id_chiasm_tasks, down: down_migration_readd_user_id_chiasm_tasks, tx),
@@ -306,7 +359,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         72,
         "readd_user_id_graph_entities",
-        run_migration_readd_user_id_graph_entities
+        run_migration_readd_user_id_graph_entities,
+        fkrebuild
     ),
     migration!(73, "readd_user_id_episodes", run_migration_readd_user_id_episodes, down: down_migration_readd_user_id_episodes, tx),
     // Re-adds user_id to the remaining 5 intelligence tables that v71 skipped:
@@ -317,7 +371,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         74,
         "readd_user_id_intelligence_remainder",
-        run_migration_readd_user_id_intelligence_remainder
+        run_migration_readd_user_id_intelligence_remainder,
+        fkrebuild
     ),
     // Re-adds user_id to the 5 thymus tables that migration 39 dropped:
     // rubrics (UNIQUE rebuild -- index changes from name to (user_id, name)),
@@ -328,7 +383,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         75,
         "readd_user_id_thymus",
-        run_migration_readd_user_id_thymus
+        run_migration_readd_user_id_thymus,
+        fkrebuild
     ),
     // Re-adds user_id to entity_cooccurrences that v38 dropped.
     // structured_facts already got user_id from v64 (memory-core).
@@ -347,7 +403,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         77,
         "readd_user_id_user_preferences",
-        run_migration_readd_user_id_user_preferences
+        run_migration_readd_user_id_user_preferences,
+        fkrebuild
     ),
     // Re-adds user_id to skill_records that v42 dropped via REBUILD.
     // UNIQUE changes from (name, agent, version) to (name, agent, version, user_id).
@@ -356,7 +413,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         78,
         "readd_user_id_skills",
-        run_migration_readd_user_id_skills
+        run_migration_readd_user_id_skills,
+        fkrebuild
     ),
     // Re-adds user_id to brain_edges that v38 dropped.
     // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not include user_id.
@@ -428,7 +486,8 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         92,
         "readd_user_id_scratchpad",
-        run_migration_readd_user_id_scratchpad
+        run_migration_readd_user_id_scratchpad,
+        fkrebuild
     ),
     // facts_fts FTS5 index over structured_facts for the L5 facts retrieval channel.
     // Additive: create the virtual table + sync triggers and rebuild from existing rows so
@@ -456,14 +515,16 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(
         97,
         "readd_user_id_axon_subscriptions",
-        run_migration_readd_user_id_axon_subscriptions
+        run_migration_readd_user_id_axon_subscriptions,
+        fkrebuild
     ),
     // v98: re-add user_id to axon_cursors with PRIMARY KEY(agent, channel,
     // user_id). Table rebuild, so notx.
     migration!(
         98,
         "readd_user_id_axon_cursors",
-        run_migration_readd_user_id_axon_cursors
+        run_migration_readd_user_id_axon_cursors,
+        fkrebuild
     ),
 ];
 
@@ -535,8 +596,10 @@ pub fn run_migrations_to(conn: &rusqlite::Connection, target_version: u32) -> Re
 /// DB-1: for transactional migrations the up fn and the schema_version insert
 /// are wrapped in one SAVEPOINT so they commit atomically; on error the
 /// savepoint is rolled back, leaving neither the partial DDL nor the version
-/// row. Non-transactional migrations (which toggle PRAGMA foreign_keys, illegal
-/// inside a SAVEPOINT) run bare and depend on their own idempotent construction.
+/// row. `fk_rebuild` migrations (which toggle PRAGMA foreign_keys, illegal inside
+/// a SAVEPOINT) instead go through `apply_fk_rebuild`, which achieves the same
+/// atomicity with a plain BEGIN..COMMIT and foreign keys toggled outside it. The
+/// remaining plain migrations are idempotent, additive statements and run bare.
 fn apply_migration_up(conn: &rusqlite::Connection, m: &Migration) -> Result<()> {
     let version = m.version as i64;
     if m.transactional {
@@ -557,11 +620,82 @@ fn apply_migration_up(conn: &rusqlite::Connection, m: &Migration) -> Result<()> 
                 Err(e)
             }
         }
+    } else if m.fk_rebuild {
+        apply_fk_rebuild(conn, || {
+            (m.up)(conn)?;
+            record_migration(conn, version, m.description)
+        })
     } else {
         (m.up)(conn)?;
         record_migration(conn, version, m.description)?;
         Ok(())
     }
+}
+
+/// Apply a foreign-key table-rebuild migration atomically.
+///
+/// The up fn toggles `PRAGMA foreign_keys` for a SQLite table rebuild, and that
+/// pragma is a silent no-op inside a SAVEPOINT/transaction -- which is why these
+/// migrations cannot use the transactional path. Running the rebuild as bare
+/// autocommitting statements, however, is not crash-safe: a crash or kill
+/// between the rebuild's RENAME/CREATE/INSERT/DROP steps leaves the database with
+/// a half-rebuilt schema, and because `record_migration` never runs, a retry
+/// re-executes the rebuild against the partial state (e.g. RENAME on an
+/// already-renamed table) and fails.
+///
+/// This follows SQLite's own ALTER TABLE procedure: disable foreign keys OUTSIDE
+/// any transaction (the only place the pragma takes effect), then wrap the whole
+/// apply -- rebuild plus the `schema_version` record -- in one BEGIN..COMMIT. A
+/// crash mid-rebuild rolls the transaction back, so the version stays unrecorded
+/// and the migration retries cleanly on the next startup. Foreign keys are
+/// re-enabled after the transaction closes: every such migration's SQL ends with
+/// `PRAGMA foreign_keys = ON` (a no-op inside the transaction), so leaving
+/// enforcement ON is the established postcondition, and a fresh SQLite connection
+/// defaults foreign_keys OFF.
+fn apply_fk_rebuild(conn: &rusqlite::Connection, apply: impl FnOnce() -> Result<()>) -> Result<()> {
+    // Disable FK enforcement before opening the transaction (the rebuild renames
+    // and drops FK-referenced tables). If BEGIN itself fails, foreign keys were
+    // already toggled OFF (that half of the batch autocommitted, no transaction
+    // was open yet), so re-enable them before returning.
+    if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN;") {
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+        return Err(EngError::from(e));
+    }
+    let outcome = match apply() {
+        Ok(()) => match conn.execute_batch("COMMIT;") {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // A failed COMMIT leaves the rebuild uncommitted; roll it back so
+                // the database is not left half-migrated. If the recovery ROLLBACK
+                // also fails the connection is unusable -- surface that distinctly.
+                if let Err(re) = conn.execute_batch("ROLLBACK;") {
+                    tracing::error!(
+                        commit_error = %e,
+                        rollback_error = %re,
+                        "fk-rebuild migration COMMIT failed and recovery ROLLBACK also failed; connection unusable"
+                    );
+                }
+                Err(EngError::from(e))
+            }
+        },
+        Err(e) => {
+            // Roll back the partial rebuild so a crash/error never leaves the
+            // database half-migrated with the version falsely recorded.
+            if let Err(re) = conn.execute_batch("ROLLBACK;") {
+                tracing::error!(
+                    apply_error = %e,
+                    rollback_error = %re,
+                    "fk-rebuild migration failed and recovery ROLLBACK also failed; connection unusable"
+                );
+            }
+            Err(e)
+        }
+    };
+    // Re-enable foreign keys outside the now-closed transaction, reproducing the
+    // postcondition every fk-rebuild migration's trailing `PRAGMA foreign_keys =
+    // ON` used to establish in autocommit.
+    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    outcome
 }
 
 /// Inserts a row into schema_version to record that a migration has been applied.
@@ -5256,6 +5390,7 @@ mod tests {
             },
             down: None,
             transactional: true,
+            fk_rebuild: false,
         };
 
         let r = apply_migration_up(&conn, &failing);
@@ -5280,6 +5415,170 @@ mod tests {
         assert_eq!(
             probe_exists, 0,
             "partial DDL must be rolled back by the savepoint"
+        );
+    }
+
+    /// An `fk_rebuild` migration that crashes mid-rebuild must roll back
+    /// atomically: the original table + rows survive, no half-rebuilt artifacts
+    /// remain, the version is not recorded (so it retries on next startup), and
+    /// foreign_keys is restored ON. This is the crash-mid-rebuild path the older
+    /// bare execution left un-atomic.
+    #[test]
+    fn failed_fk_rebuild_migration_rolls_back_and_records_nothing() {
+        let conn = open_test_db();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE schema_version (
+                 version INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT NOT NULL);
+             INSERT INTO t (id, x) VALUES (1, 'orig');",
+        )
+        .unwrap();
+
+        let failing = Migration {
+            version: 9998,
+            description: "failing_fk_rebuild",
+            up: |c| {
+                // Partial rebuild (rename + recreate), then crash before copying
+                // rows / dropping the old table -- the window that used to leave a
+                // half-rebuilt schema behind.
+                c.execute_batch(
+                    "PRAGMA foreign_keys = OFF;
+                     ALTER TABLE t RENAME TO _t_old;
+                     CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT NOT NULL, y TEXT);",
+                )?;
+                Err(crate::EngError::Internal("boom mid-rebuild".into()))
+            },
+            down: None,
+            transactional: false,
+            fk_rebuild: true,
+        };
+
+        let r = apply_migration_up(&conn, &failing);
+        assert!(r.is_err(), "the fk-rebuild up fn returned Err");
+
+        // Original table + row survive the rollback.
+        let x: String = conn
+            .query_row("SELECT x FROM t WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(x, "orig", "original table + row survive rollback");
+
+        // The renamed-away table and the rebuilt schema are rolled back.
+        let old: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_t_old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, 0, "renamed-away table must not survive rollback");
+        let has_y: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('t') WHERE name='y'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_y, 0, "rebuilt schema must be rolled back");
+
+        // Version not recorded -> the migration retries on next startup.
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM schema_version WHERE version = 9998",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 0, "failed fk-rebuild must not be recorded");
+
+        // foreign_keys restored ON.
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys restored to ON after apply_fk_rebuild");
+    }
+
+    /// A real `fk_rebuild` migration driven through the runner (so through
+    /// `apply_fk_rebuild`) must preserve populated rows and their FK-child
+    /// relationships, leave no dangling references, and keep ON DELETE CASCADE
+    /// enforcement live. Migration 67 rebuilds `soma_agents` (preserving ids)
+    /// while `soma_agent_logs.agent_id` references it ON DELETE CASCADE. The base
+    /// schema ships `soma_agents` without `user_id`, so v67 genuinely rebuilds.
+    #[test]
+    fn soma_agents_v67_rebuild_preserves_fk_children_through_runner() {
+        let conn = open_test_db();
+        // Build the monolith up to just before the v67 soma_agents rebuild.
+        run_migrations_to(&conn, 66).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        // Seed a parent agent and a child log referencing it ON DELETE CASCADE.
+        conn.execute(
+            "INSERT INTO soma_agents (name, type) VALUES ('agent-1', 'worker')",
+            [],
+        )
+        .unwrap();
+        let agent_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO soma_agent_logs (agent_id, message) VALUES (?1, 'hello')",
+            rusqlite::params![agent_id],
+        )
+        .unwrap();
+
+        // Apply v67 through the runner (apply_fk_rebuild wraps the rebuild).
+        run_migrations_to(&conn, 67).unwrap();
+
+        // Parent survived, id preserved, legacy row backfilled to user_id = 1.
+        let (name, uid): (String, i64) = conn
+            .query_row(
+                "SELECT name, user_id FROM soma_agents WHERE id = ?1",
+                rusqlite::params![agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "agent-1", "parent row survives the v67 rebuild");
+        assert_eq!(uid, 1, "legacy row backfilled to system owner");
+
+        // Child survived and still references the preserved parent id.
+        let child: i64 = conn
+            .query_row(
+                "SELECT agent_id FROM soma_agent_logs WHERE message = 'hello'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(child, agent_id, "child FK still references the parent id");
+
+        // No dangling foreign keys anywhere after the rebuild.
+        let dangling: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(dangling, 0, "no dangling FK references after v67 rebuild");
+
+        // Enforcement is live: deleting the parent cascades to the child.
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys ON after the fk-rebuild");
+        conn.execute(
+            "DELETE FROM soma_agents WHERE id = ?1",
+            rusqlite::params![agent_id],
+        )
+        .unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM soma_agent_logs WHERE agent_id = ?1",
+                rusqlite::params![agent_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "ON DELETE CASCADE still enforced after v67 rebuild"
         );
     }
 
