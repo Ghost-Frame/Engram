@@ -22,7 +22,10 @@ pub struct TenantMigration {
     /// When true the up fn is wrapped in a SAVEPOINT so it commits atomically
     /// with its schema_migrations record (DB-1). Migrations that toggle
     /// `PRAGMA foreign_keys` for a table rebuild MUST be false: that pragma is a
-    /// silent no-op inside a SAVEPOINT, which would break the rebuild.
+    /// silent no-op inside a SAVEPOINT, which would break the rebuild. Such
+    /// `notx` migrations are still applied atomically -- `apply_notx` disables
+    /// foreign keys outside any transaction and wraps the rebuild in a plain
+    /// `BEGIN..COMMIT` instead of a SAVEPOINT (see `run_tenant_migrations_to`).
     pub transactional: bool,
 }
 
@@ -38,7 +41,9 @@ macro_rules! tenant_migration {
         }
     };
     // `notx`: NOT savepoint-wrapped -- the migration toggles PRAGMA foreign_keys
-    // (illegal/no-op inside a SAVEPOINT). Relies on idempotent construction.
+    // (a no-op inside a SAVEPOINT). apply_notx still applies it atomically by
+    // disabling foreign keys outside any transaction and wrapping the rebuild in
+    // a plain BEGIN..COMMIT, so a crash mid-rebuild rolls back and retries.
     ($ver:expr, $desc:expr, $up:expr, notx) => {
         TenantMigration {
             version: $ver,
@@ -1352,6 +1357,79 @@ fn drop_column_if_exists(conn: &Connection, table: &str, column: &str, version: 
     Ok(())
 }
 
+/// Apply a `notx` migration atomically.
+///
+/// A `notx` migration's up fn toggles `PRAGMA foreign_keys` for a SQLite table
+/// rebuild, and that pragma is a silent no-op inside a SAVEPOINT/transaction --
+/// which is why these migrations cannot use the savepoint path. Running the
+/// rebuild as bare autocommitting statements, however, is not crash-safe: a
+/// power loss or kill between the `RENAME`/`CREATE`/`INSERT`/`DROP` steps leaves
+/// the shard with a half-rebuilt schema, and any early self-recorded version
+/// marks the migration complete so it is never retried.
+///
+/// This wrapper follows SQLite's own ALTER TABLE procedure: it disables foreign
+/// keys OUTSIDE any transaction (the only place the pragma takes effect), then
+/// wraps the entire apply -- rebuild, owner backfill, and `schema_migrations`
+/// record -- in a single `BEGIN..COMMIT`. A crash or error mid-rebuild rolls the
+/// whole transaction back, so the version stays unrecorded and the migration
+/// retries cleanly on the next tenant load. Foreign keys are re-enabled after
+/// the transaction closes -- every notx migration's own SQL ends with
+/// `PRAGMA foreign_keys = ON` (now a no-op inside the transaction), so leaving
+/// enforcement ON is the chain's long-standing postcondition, which a later
+/// migration and the loaded shard rely on (e.g. ON DELETE CASCADE). The up fn's
+/// own `PRAGMA foreign_keys` toggles become harmless no-ops inside the wrapper.
+fn apply_notx(conn: &Connection, apply: &dyn Fn(&Connection) -> Result<()>) -> Result<()> {
+    // Disable FK enforcement before opening the transaction (the rebuild renames
+    // and drops FK-referenced tables), then begin the atomic wrapper. If BEGIN
+    // itself fails, foreign keys were already toggled OFF (that half of the batch
+    // autocommitted, no transaction was open yet), so re-enable them before
+    // returning rather than leaking an FK-disabled connection back to the caller.
+    if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN;") {
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+        return Err(EngError::from(e));
+    }
+    let outcome = match apply(conn) {
+        Ok(()) => match conn.execute_batch("COMMIT;") {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // A failed COMMIT leaves the rebuild uncommitted; roll it back so
+                // the shard is not left half-migrated. If the recovery ROLLBACK
+                // also fails the connection is unusable -- surface that distinctly
+                // (it is a fresh per-load connection open_tenant will drop).
+                if let Err(re) = conn.execute_batch("ROLLBACK;") {
+                    tracing::error!(
+                        commit_error = %e,
+                        rollback_error = %re,
+                        "notx migration COMMIT failed and recovery ROLLBACK also failed; connection unusable"
+                    );
+                }
+                Err(EngError::from(e))
+            }
+        },
+        Err(e) => {
+            // Roll back the partial rebuild so a crash/error never leaves the
+            // shard half-migrated with the version falsely recorded. Log a failed
+            // ROLLBACK distinctly so an operator can tell a poisoned connection
+            // apart from a plain migration error.
+            if let Err(re) = conn.execute_batch("ROLLBACK;") {
+                tracing::error!(
+                    apply_error = %e,
+                    rollback_error = %re,
+                    "notx migration failed and recovery ROLLBACK also failed; connection unusable"
+                );
+            }
+            Err(e)
+        }
+    };
+    // Re-enable foreign keys outside the now-closed transaction, reproducing the
+    // postcondition every notx migration's trailing `PRAGMA foreign_keys = ON`
+    // used to establish in autocommit. Unconditional (not "restore prior state"):
+    // a fresh SQLite connection defaults foreign_keys OFF, and later migrations /
+    // the loaded shard depend on enforcement being ON.
+    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    outcome
+}
+
 /// Run all pending tenant migrations against `conn`.
 ///
 /// Idempotent: safe to call on every tenant load. A freshly created tenant
@@ -1444,8 +1522,12 @@ pub fn run_tenant_migrations_to(
                 }
             }
         } else {
-            // PRAGMA-foreign_keys-toggling rebuild: must run outside a SAVEPOINT.
-            apply(conn)?;
+            // notx: the up fn toggles PRAGMA foreign_keys for a table rebuild,
+            // a no-op inside a SAVEPOINT. apply_notx disables foreign keys
+            // outside any transaction and wraps the whole apply in one
+            // BEGIN..COMMIT, so a crash mid-rebuild rolls back atomically and the
+            // migration is retried -- never falsely marked complete -- next load.
+            apply_notx(conn, &apply)?;
         }
     }
 
@@ -7825,5 +7907,234 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
         apply_schema_v70_tenant_state(&conn).unwrap();
+    }
+
+    /// A `notx` migration that crashes mid-rebuild must roll back atomically:
+    /// the original table and its rows survive, no half-rebuilt artifacts
+    /// remain, any prematurely self-recorded version is undone so the migration
+    /// retries on the next load, and the caller's foreign_keys setting is
+    /// restored. This is the crash-mid-rebuild scenario the happy-path chain
+    /// tests do not exercise -- the whole reason finding [6] was filed.
+    #[test]
+    fn apply_notx_rolls_back_partial_rebuild_on_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT NOT NULL);
+             INSERT INTO t (id, x) VALUES (1, 'orig');
+             CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+
+        // An up fn that renames + recreates the table (partial rebuild) and
+        // self-records its version, then dies before copying rows / dropping the
+        // old table -- exactly the window that used to brick a shard.
+        let partial_then_fail = |c: &Connection| -> Result<()> {
+            c.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 ALTER TABLE t RENAME TO _t_old;
+                 CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT NOT NULL, y TEXT);
+                 INSERT OR IGNORE INTO schema_migrations (version) VALUES (999);",
+            )?;
+            Err(EngError::DatabaseMessage(
+                "simulated crash mid-rebuild".into(),
+            ))
+        };
+
+        let res = apply_notx(&conn, &partial_then_fail);
+        assert!(res.is_err(), "apply_notx must surface the up fn error");
+
+        // The original table and row survive the rollback.
+        let orig: String = conn
+            .query_row("SELECT x FROM t WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orig, "orig", "original table + row survive rollback");
+
+        // The renamed-away table is gone (CREATE/RENAME rolled back).
+        let old_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_t_old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_exists, 0, "renamed-away table must not survive");
+
+        // The rebuilt schema (added 'y' column) is rolled back.
+        let has_y: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('t') WHERE name='y'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_y, 0, "rebuilt schema must be rolled back");
+
+        // The premature version record is undone -> migration retries next load.
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM schema_migrations WHERE version = 999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 0, "premature version record must be rolled back");
+
+        // foreign_keys restored to the caller's ON setting.
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys restored to ON after apply_notx");
+    }
+
+    /// A `notx` migration that completes must commit atomically and restore the
+    /// caller's foreign_keys setting. Also asserts foreign keys are actually
+    /// disabled inside the wrapper -- proof the pragma took effect before BEGIN
+    /// (it is a no-op inside a transaction).
+    #[test]
+    fn apply_notx_commits_completed_rebuild_and_restores_fk() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT NOT NULL);
+             INSERT INTO t (id, x) VALUES (1, 'orig');
+             CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+
+        let full_rebuild = |c: &Connection| -> Result<()> {
+            let fk_inside: i64 = c
+                .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(fk_inside, 0, "apply_notx disables FK before the rebuild");
+            c.execute_batch(
+                "ALTER TABLE t RENAME TO _t_old;
+                 CREATE TABLE t (id INTEGER PRIMARY KEY, x TEXT NOT NULL, y TEXT DEFAULT 'new');
+                 INSERT INTO t (id, x) SELECT id, x FROM _t_old;
+                 DROP TABLE _t_old;
+                 INSERT OR IGNORE INTO schema_migrations (version) VALUES (999);",
+            )?;
+            Ok(())
+        };
+
+        apply_notx(&conn, &full_rebuild).unwrap();
+
+        let (x, y): (String, String) = conn
+            .query_row("SELECT x, y FROM t WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(x, "orig", "original row preserved through rebuild");
+        assert_eq!(y, "new", "added column present after committed rebuild");
+
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM schema_migrations WHERE version = 999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 1, "version recorded on success");
+
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys restored to ON after success");
+    }
+
+    /// A notx table-rebuild driven through the REAL runner (so through
+    /// `apply_notx`'s BEGIN..COMMIT wrapper) must preserve populated rows AND
+    /// their FK-child relationships, leave no dangling references, run the owner
+    /// backfill atomically, and keep ON DELETE CASCADE enforcement live
+    /// afterward. v58 rebuilds `soma_agents` (preserving ids) while
+    /// `soma_agent_logs.agent_id` references it ON DELETE CASCADE. The direct-up
+    /// chain tests seed rows but bypass the runner wrapper; this closes that gap
+    /// on real seeded data with a real FK child.
+    #[test]
+    fn soma_agents_v58_rebuild_preserves_fk_children_through_runner() {
+        const OWNER: i64 = 7;
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build the shard up to just before the v58 soma_agents rebuild.
+        run_tenant_migrations_to(&conn, Some(OWNER), 57).unwrap();
+
+        // Seed a parent agent and a child log referencing it ON DELETE CASCADE.
+        conn.execute(
+            "INSERT INTO soma_agents (name, type) VALUES ('agent-1', 'worker')",
+            [],
+        )
+        .unwrap();
+        let agent_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO soma_agent_logs (agent_id, message) VALUES (?1, 'hello')",
+            rusqlite::params![agent_id],
+        )
+        .unwrap();
+
+        // Apply v58 through the real runner (apply_notx wraps rebuild + backfill).
+        run_tenant_migrations_to(&conn, Some(OWNER), 58).unwrap();
+
+        // Parent survived, id preserved, and the owner backfill ran inside the wrap.
+        let (name, uid): (String, i64) = conn
+            .query_row(
+                "SELECT name, user_id FROM soma_agents WHERE id = ?1",
+                rusqlite::params![agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "agent-1", "parent row survives the v58 rebuild");
+        assert_eq!(
+            uid, OWNER,
+            "v58 owner backfill ran atomically with the rebuild"
+        );
+
+        // Child survived and still references the preserved parent id.
+        let child_agent: i64 = conn
+            .query_row(
+                "SELECT agent_id FROM soma_agent_logs WHERE message = 'hello'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            child_agent, agent_id,
+            "child FK still references the parent id"
+        );
+
+        // No dangling foreign keys anywhere after the rebuild.
+        let dangling: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(dangling, 0, "no dangling FK references after v58 rebuild");
+
+        // Enforcement is live: deleting the parent cascades to the child.
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys ON after the notx rebuild");
+        conn.execute(
+            "DELETE FROM soma_agents WHERE id = ?1",
+            rusqlite::params![agent_id],
+        )
+        .unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM soma_agent_logs WHERE agent_id = ?1",
+                rusqlite::params![agent_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "ON DELETE CASCADE still enforced after v58 rebuild"
+        );
     }
 }
