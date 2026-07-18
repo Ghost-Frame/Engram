@@ -187,11 +187,17 @@ pub fn truncate_to_token_budget(content: &str, max_memory_tokens: usize) -> Stri
     if estimate_tokens(content) <= max_memory_tokens {
         return content.to_string();
     }
+    // CTX-1 discipline: estimate_tokens counts chars, so the retained window
+    // must be measured in chars too. The previous byte-based helper treated
+    // this char-derived limit as a byte ceiling, silently over-truncating
+    // multi-byte (CJK/emoji) content to a third or a quarter of the budget.
     let max_chars = max_memory_tokens * 4;
-    let safe_window = crate::validation::truncate_on_char_boundary(content, max_chars);
-    // Try to find a sentence boundary (". ") within the last 40% of the allowed range
+    let safe_window: String = content.chars().take(max_chars).collect();
+    // Try to find a sentence boundary (". ") within the last 40% of the
+    // window. Both offsets are byte positions within safe_window, so the
+    // comparison stays consistent for multi-byte content.
     if let Some(cut_point) = safe_window.rfind(". ") {
-        let threshold = (max_chars as f64 * 0.6) as usize;
+        let threshold = (safe_window.len() as f64 * 0.6) as usize;
         if cut_point > threshold {
             return format!("{}. [truncated]", &safe_window[..cut_point]);
         }
@@ -253,6 +259,22 @@ mod tests {
         assert!(result.ends_with("... [truncated]"));
         // Content portion should be around 40 chars
         assert!(result.len() < 60);
+    }
+
+    /// CTX-1 discipline for the truncation side: the retained window must be
+    /// measured in chars (matching estimate_tokens), not bytes. 3-byte CJK
+    /// chars previously shrank the window to a third of the token budget.
+    #[test]
+    fn truncate_to_token_budget_counts_chars_not_bytes() {
+        let text = "中".repeat(100); // 100 chars, 300 bytes, no sentence boundary
+        let budget = 10; // 10 tokens = 40 chars allowed
+        let result = truncate_to_token_budget(&text, budget);
+        assert!(result.ends_with("... [truncated]"));
+        let kept = result.trim_end_matches("... [truncated]").chars().count();
+        assert_eq!(
+            kept, 40,
+            "window must hold 40 chars; byte-based truncation kept only 13"
+        );
     }
 
     // -- Model-aware budgeting tests --

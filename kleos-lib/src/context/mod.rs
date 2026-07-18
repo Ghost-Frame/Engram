@@ -551,7 +551,10 @@ async fn assemble_context_inner(
 
     // ---- Phase 1: Static facts, ranked by query relevance ----
     if flags.include_static {
-        let mut statics = get_static_memories(db, user_id).await.unwrap_or_default();
+        let mut statics = get_static_memories(db, user_id).await.unwrap_or_else(|e| {
+            tracing::warn!("context assembly: static-memory fetch failed: {e}");
+            Default::default()
+        });
         if let Some(ref sf) = source_filter {
             statics.retain(|s| s.source.contains(sf.as_str()));
         }
@@ -656,7 +659,13 @@ async fn assemble_context_inner(
         exclude_consolidated: Some(true),
         ..Default::default()
     };
-    let mut semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
+    // A failed semantic search must be observable: silently defaulting to an
+    // empty result set is indistinguishable from "no relevant memories" and
+    // hides systemic DB/embedding failures from operators.
+    let mut semantic_results = hybrid_search(db, search_req).await.unwrap_or_else(|e| {
+        tracing::warn!("context assembly: semantic search failed: {e}");
+        Default::default()
+    });
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);
 
     // 3.1: context assembly is what the model actually reads, yet without this it ranks
@@ -970,7 +979,10 @@ async fn assemble_context_inner(
             if used_tokens >= (token_budget as f64 * 0.85) as usize {
                 break;
             }
-            let linked = get_links(db, sid, user_id).await.unwrap_or_default();
+            let linked = get_links(db, sid, user_id).await.unwrap_or_else(|e| {
+                tracing::warn!(sid, "context assembly: link expansion failed: {e}");
+                Default::default()
+            });
             for l in &linked {
                 if seen_ids.contains(&l.id) || l.is_forgotten {
                     continue;
@@ -1040,7 +1052,12 @@ async fn assemble_context_inner(
     let t_recent = Instant::now();
     let recent_ceiling = (token_budget as f64 * 0.93) as usize;
     if flags.include_recent && used_tokens < recent_ceiling {
-        let recent = get_recent_dynamic(db, user_id, 5).await.unwrap_or_default();
+        let recent = get_recent_dynamic(db, user_id, 5)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("context assembly: recent-memory fetch failed: {e}");
+                Default::default()
+            });
         for r in &recent {
             if seen_ids.contains(&r.id) {
                 continue;
@@ -1180,13 +1197,19 @@ async fn assemble_context_inner(
             }
             scratchpad::list_entries(db, user_id, None, None, session_filter)
                 .await
+                .inspect_err(|e| tracing::warn!("context assembly: scratchpad fetch failed: {e}"))
                 .ok()
         },
         async {
             if !flags.include_current_state {
                 return None;
             }
-            get_current_state(db, user_id).await.ok()
+            get_current_state(db, user_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("context assembly: current-state fetch failed: {e}")
+                })
+                .ok()
         },
         async {
             if !flags.include_personality {
@@ -1194,6 +1217,7 @@ async fn assemble_context_inner(
             }
             personality::get_profile_for_injection(db, user_id)
                 .await
+                .inspect_err(|e| tracing::warn!("context assembly: personality fetch failed: {e}"))
                 .ok()
                 .flatten()
         },
@@ -1201,7 +1225,10 @@ async fn assemble_context_inner(
             if !flags.include_preferences {
                 return None;
             }
-            get_user_preferences(db, user_id).await.ok()
+            get_user_preferences(db, user_id)
+                .await
+                .inspect_err(|e| tracing::warn!("context assembly: preferences fetch failed: {e}"))
+                .ok()
         },
     );
 
@@ -1373,7 +1400,10 @@ async fn assemble_context_inner(
     let ctx_mem_ids: Vec<i64> = blocks.iter().map(|b| b.id).collect();
     let ctx_art_map = crate::artifacts::enrich_with_artifacts(db, user_id, &ctx_mem_ids)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("context assembly: artifact enrichment failed: {e}");
+            Default::default()
+        });
 
     let block_summaries: Vec<ContextBlockSummary> = blocks
         .iter()
