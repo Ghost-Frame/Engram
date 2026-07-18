@@ -271,6 +271,42 @@ pub fn lance_key_to_memory_id(chunk_key: i64) -> i64 {
     chunk_key / 1000
 }
 
+/// Best-effort removal of a memory's chunk vectors from the chunk ANN index.
+///
+/// Soft deletes (delete / mark_forgotten) never fire the `memory_chunks`
+/// ON DELETE CASCADE, so without this the chunk vectors of a forgotten
+/// memory keep matching in chunk-level search. Failures are swallowed like
+/// the carry_forward_chunks cleanup loop: the vector-sync replay ledger only
+/// covers the whole-memory index, so there is no retry mechanism for chunk
+/// ops to record into.
+async fn delete_chunk_vectors(db: &Database, memory_id: i64) {
+    let Some(index) = db.chunk_vector_index.as_ref() else {
+        return;
+    };
+    let idxs: Result<Vec<usize>> = db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT chunk_idx FROM memory_chunks WHERE memory_id = ?1 ORDER BY chunk_idx",
+            )?;
+            let rows =
+                stmt.query_map(rusqlite::params![memory_id], |row| row.get::<_, usize>(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await;
+    match idxs {
+        Ok(idxs) => {
+            for idx in idxs {
+                let key = chunk_lance_key(memory_id, idx);
+                let _ = index.delete(key).await;
+            }
+        }
+        Err(e) => warn!(
+            "chunk-vector cleanup: reading memory_chunks failed for memory {}: {}",
+            memory_id, e
+        ),
+    }
+}
+
 /// Serialize a normalized embedding into a little-endian byte blob.
 fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(embedding.len() * 4);
@@ -1300,6 +1336,7 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
             record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
+    delete_chunk_vectors(db, id).await;
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after delete for user {}: {}",
@@ -1789,6 +1826,7 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
             record_vector_sync_failure(db, id, user_id, "delete", &e.to_string()).await;
         }
     }
+    delete_chunk_vectors(db, id).await;
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
         warn!(
             "mark_pagerank_dirty failed after mark_forgotten for user {}: {}",
@@ -2811,5 +2849,73 @@ mod tests {
             .await
             .expect("important");
         assert_eq!(important.len(), 1, "list_important withholds pending");
+    }
+
+    /// Soft deletes must purge chunk vectors from the chunk ANN index.
+    /// delete()/mark_forgotten() only UPDATE `memories`, so the memory_chunks
+    /// CASCADE never fires; pre-fix, the chunk vectors of a forgotten memory
+    /// kept matching in chunk-level search forever.
+    #[cfg(feature = "ml")]
+    #[tokio::test]
+    async fn soft_delete_purges_chunk_vectors() {
+        use crate::vector::lance::LanceIndex;
+        use crate::vector::VectorIndex;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chunk_index = Arc::new(
+            LanceIndex::open_with_table(dir.path().to_string_lossy(), 4, "chunks_test")
+                .await
+                .expect("open chunk index"),
+        );
+        let mut db = Database::connect_memory().await.expect("in-mem db");
+        db.chunk_vector_index = Some(chunk_index.clone());
+
+        // Seed two owned memories with two chunks each.
+        let mut ids = Vec::new();
+        for content in ["chunked memory alpha", "chunked memory beta"] {
+            let id: i64 = db
+                .write(move |conn| {
+                    Ok(conn.query_row(
+                        "INSERT INTO memories (content, category, source, importance, user_id) \
+                         VALUES (?1, 'general', 'test', 5, 1) RETURNING id",
+                        rusqlite::params![content],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await
+                .expect("seed memory");
+            write_chunks(
+                &db,
+                id,
+                &[
+                    ("first chunk".to_string(), vec![1.0, 0.0, 0.0, 0.0]),
+                    ("second chunk".to_string(), vec![0.0, 1.0, 0.0, 0.0]),
+                ],
+            )
+            .await;
+            ids.push(id);
+        }
+        assert_eq!(
+            chunk_index.count().await.expect("count"),
+            4,
+            "two memories x two chunks indexed"
+        );
+
+        // delete() purges its memory's chunk vectors, leaving the other's.
+        delete(&db, ids[0], 1).await.expect("delete");
+        assert_eq!(
+            chunk_index.count().await.expect("count"),
+            2,
+            "delete() must remove the deleted memory's chunk vectors"
+        );
+
+        // mark_forgotten() purges the rest.
+        mark_forgotten(&db, ids[1], 1).await.expect("forget");
+        assert_eq!(
+            chunk_index.count().await.expect("count"),
+            0,
+            "mark_forgotten() must remove the forgotten memory's chunk vectors"
+        );
     }
 }
