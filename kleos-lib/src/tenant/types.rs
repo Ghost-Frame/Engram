@@ -309,29 +309,3 @@ pub struct TenantQuotaRow {
     /// When the usage was last synced (ISO 8601 datetime).
     pub last_synced_at: Option<String>,
 }
-
-/// Configuration for tenant database connection pools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TenantPoolConfig {
-    /// Maximum number of reader connections per tenant.
-    pub max_readers: usize,
-    /// Number of writer connections (usually 1 for SQLite).
-    pub writer_count: usize,
-    /// Busy timeout in milliseconds.
-    pub busy_timeout_ms: u64,
-    /// WAL autocheckpoint interval.
-    pub wal_autocheckpoint: u64,
-}
-
-// Conservative per-tenant pool sizing (many shards resident at once).
-impl Default for TenantPoolConfig {
-    // Minimal per-shard pools; thousands of tenants may be resident.
-    fn default() -> Self {
-        Self {
-            max_readers: 4,
-            writer_count: 1,
-            busy_timeout_ms: 5_000,
-            wal_autocheckpoint: 10_000,
-        }
-    }
-}

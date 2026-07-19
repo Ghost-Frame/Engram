@@ -1391,15 +1391,6 @@ pub const SYNTHEOS_SERVICES_SQL: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at);
     CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status);
 
-    -- Scheduler: named leases for singleton background jobs ----------
-    CREATE TABLE IF NOT EXISTS scheduler_leases (
-        job_name TEXT PRIMARY KEY,
-        holder_id TEXT NOT NULL,
-        acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
-        expires_at TEXT NOT NULL,
-        last_run_at TEXT
-    );
-
     -- Webhook dead-letter log -----------------------------------------
     CREATE TABLE IF NOT EXISTS webhook_dead_letters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

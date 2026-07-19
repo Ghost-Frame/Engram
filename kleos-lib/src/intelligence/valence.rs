@@ -62,6 +62,10 @@ const VALENCE_CLASSES: &[(&str, &str, f64, f64)] = &[
 /// eliminating the cross-language false positives that arose from the old flat
 /// Vec (where a French word could match an English pattern) and reducing
 /// per-call work from O(all languages) to O(one language).
+// Frozen for the process lifetime: built once from kleos_lib::lexicon and
+// never refreshed, so lexicon override edits on disk do not reach this cache
+// without a restart. Any future lexicon hot-reload feature must invalidate
+// this cache too, not just the lexicon module's own TTL cache.
 static EMOTION_PATTERNS: LazyLock<HashMap<String, Vec<EmotionPattern>>> = LazyLock::new(|| {
     let mut map: HashMap<String, Vec<EmotionPattern>> = HashMap::new();
     for lang in crate::lexicon::supported_languages() {

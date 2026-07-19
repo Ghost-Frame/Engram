@@ -1,5 +1,3 @@
-#[cfg(feature = "ml")]
-pub mod pool;
 mod types;
 
 /// Re-exported so callers can select the HTTP wire format explicitly (see

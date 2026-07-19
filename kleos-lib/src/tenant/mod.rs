@@ -8,21 +8,17 @@
 
 pub mod id;
 pub mod loader;
-pub mod pool;
-pub mod ratelimit;
 pub mod registry;
 pub mod registry_db;
-pub mod schema;
 pub mod teardown;
 pub mod types;
 
 pub use id::tenant_id_from_user;
-pub use pool::TenantPools;
 pub use registry::TenantRegistry;
 pub use teardown::{
     DeprovisionId, DeprovisionReport, RecoveryReport, TeardownStatus, TeardownStep,
 };
-pub use types::{TenantConfig, TenantHandle, TenantPoolConfig, TenantRow, TenantStatus};
+pub use types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
 
 /// Reserved tenant id that owns the cross-user session-handoff table set
 /// (schema_v43). The string is ASCII-safe so `tenant_id_from_user` returns

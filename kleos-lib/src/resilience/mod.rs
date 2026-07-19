@@ -39,7 +39,10 @@
 //! # Dead letter
 //!
 //! When all retry attempts fail or the circuit is open, a row is written to
-//! `service_dead_letters` so operators can inspect and replay it.
+//! `service_dead_letters` so operators can inspect it via
+//! `GET /admin/dead-letters`. Rows older than
+//! [`dead_letter::DEFAULT_RETAIN_HOURS`] are pruned automatically by the
+//! server's dead-letter-retention background task.
 
 pub mod circuit_breaker;
 pub mod dead_letter;
@@ -47,7 +50,9 @@ pub mod retry;
 
 // Re-export the primary public API.
 pub use circuit_breaker::{CircuitBreaker, CircuitState};
-pub use dead_letter::{record_dead_letter, ServiceDeadLetter};
+pub use dead_letter::{
+    list_dead_letters, prune_dead_letters, record_dead_letter, ServiceDeadLetter,
+};
 pub use retry::{with_retry, RetryPolicy};
 
 // Legacy re-exports for backwards compatibility with existing callsites

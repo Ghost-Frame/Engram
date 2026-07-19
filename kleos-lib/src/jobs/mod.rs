@@ -59,16 +59,6 @@ fn job_timeout_for(job_type: &str) -> Duration {
     }
 }
 
-/// Ensure the jobs and scheduler lease tables exist.
-#[tracing::instrument(skip(db))]
-pub async fn ensure_schema(db: &Database) -> Result<()> {
-    db.write(|conn| {
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), claimed_at TEXT, completed_at TEXT, next_retry_at TEXT); CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at); CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status); CREATE TABLE IF NOT EXISTS scheduler_leases (job_name TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL, last_run_at TEXT);")?;
-        Ok(())
-    })
-    .await
-}
-
 /// Enqueue a pending job and return its row id.
 #[tracing::instrument(skip(db, payload), fields(job_type = %job_type))]
 pub async fn enqueue_job(
@@ -591,72 +581,7 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     Ok(true)
 }
 
-// -- Scheduler leases (ported from TS jobs/scheduler.ts) --
-/// Acquire or renew a scheduler lease for the current holder.
-#[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
-pub async fn acquire_lease(
-    db: &Database,
-    job_name: &str,
-    holder_id: &str,
-    ttl_sec: i64,
-) -> Result<bool> {
-    let job_name = job_name.to_string();
-    let holder_id = holder_id.to_string();
-    let modifier = format!("+{} seconds", ttl_sec);
-    db.write(move |conn| {
-        let n = conn.execute(
-            "INSERT INTO scheduler_leases (job_name, holder_id, expires_at) \
-                 VALUES (?1, ?2, datetime('now', ?3)) \
-                 ON CONFLICT(job_name) DO UPDATE SET \
-                   holder_id = ?2, \
-                   acquired_at = datetime('now'), \
-                   expires_at = datetime('now', ?3) \
-                 WHERE expires_at < datetime('now') OR holder_id = ?2",
-            params![job_name, holder_id, modifier],
-        )?;
-        Ok(n > 0)
-    })
-    .await
-}
-
-/// Release a scheduler lease held by the current holder.
-#[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
-pub async fn release_lease(db: &Database, job_name: &str, holder_id: &str) -> Result<()> {
-    let job_name = job_name.to_string();
-    let holder_id = holder_id.to_string();
-    db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM scheduler_leases WHERE job_name = ?1 AND holder_id = ?2",
-            params![job_name, holder_id],
-        )?;
-        Ok(())
-    })
-    .await
-}
-
-/// Extend a scheduler lease and record that the holder ran the job.
-#[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
-pub async fn touch_lease(
-    db: &Database,
-    job_name: &str,
-    holder_id: &str,
-    ttl_sec: i64,
-) -> Result<bool> {
-    let job_name = job_name.to_string();
-    let holder_id = holder_id.to_string();
-    let modifier = format!("+{} seconds", ttl_sec);
-    db.write(move |conn| {
-        let n = conn
-            .execute(
-                "UPDATE scheduler_leases SET expires_at = datetime('now', ?3), last_run_at = datetime('now') WHERE job_name = ?1 AND holder_id = ?2",
-                params![job_name, holder_id, modifier],
-            )?;
-        Ok(n > 0)
-    })
-    .await
-}
-
-/// Unit tests for durable jobs and scheduler lease helpers.
+/// Unit tests for durable jobs.
 #[cfg(test)]
 mod tests {
     use super::*;

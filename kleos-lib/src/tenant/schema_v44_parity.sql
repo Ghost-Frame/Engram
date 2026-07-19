@@ -287,13 +287,4 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status);
 
--- Scheduler: named leases for singleton background jobs
-CREATE TABLE IF NOT EXISTS scheduler_leases (
-    job_name TEXT PRIMARY KEY,
-    holder_id TEXT NOT NULL,
-    acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at TEXT NOT NULL,
-    last_run_at TEXT
-);
-
 INSERT OR IGNORE INTO schema_migrations (version) VALUES (44);

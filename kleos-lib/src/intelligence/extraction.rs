@@ -301,6 +301,10 @@ struct LangRegexCache {
     all_copulas: HashSet<String>,
 }
 
+// Frozen for the process lifetime: built once from kleos_lib::lexicon and
+// never refreshed, so lexicon override edits on disk do not reach this cache
+// without a restart. Any future lexicon hot-reload feature must invalidate
+// this cache too, not just the lexicon module's own TTL cache.
 static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
     let mut like = HashMap::new();
     let mut dislike = HashMap::new();

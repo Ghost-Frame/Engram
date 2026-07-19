@@ -169,15 +169,6 @@ pub(super) fn clear_cache() {
     }
 }
 
-/// Clear the entire lexicon override cache so the next lookup re-reads the
-/// override files from disk. Used by `POST /admin/lexicon/reload` to force
-/// an immediate refresh ahead of the 5-second TTL.
-pub fn purge_runtime_cache() {
-    if let Ok(mut g) = cache().write() {
-        g.clear();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

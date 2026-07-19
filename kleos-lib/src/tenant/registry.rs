@@ -8,13 +8,17 @@
 use super::id::tenant_id_from_user;
 use super::loader::TenantLoader;
 use super::registry_db::RegistryDb;
-use super::schema::SCHEMA_VERSION;
 use super::types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
 use crate::{EngError, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
+
+/// Schema version stamped on a newly created tenant registry row. Shards
+/// start at v1 (tenant migration `apply_schema_v1`); the tenant migration
+/// runner advances the shard schema from there on first load.
+const SCHEMA_VERSION: i64 = 1;
 
 /// The tenant registry manages all tenants.
 ///

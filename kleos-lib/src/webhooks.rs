@@ -1,4 +1,11 @@
-//! Webhooks -- event dispatch with HMAC signing, CRUD, sync.
+//! Webhooks -- registration, HMAC-signed test-fire delivery, and change-feed
+//! polling sync.
+//!
+//! NOTE: registering a webhook here does not subscribe it to live domain
+//! events. Only `POST /webhooks/test/{id}` ever delivers to a registered URL;
+//! `get_changes_since` is the actual sync mechanism (pull, not push). For
+//! wired event delivery use Axon subscriptions (`POST /axon/subscribe`),
+//! which fire on activity-report and task-lifecycle events.
 //!
 //! Ports: platform/webhooks.ts, webhooks/routes.ts (logic)
 
@@ -538,6 +545,10 @@ async fn record_delivery_success(db: &Database, hook_id: i64) -> Result<()> {
 /// webhook is owned by the caller, so one user cannot read another's delivery
 /// failures by guessing a webhook id (the BOLA that single-DB mode would
 /// otherwise expose, since `webhook_dead_letters` has no `user_id` of its own).
+///
+/// Nothing currently writes `webhook_dead_letters` (the historical dispatch
+/// pipeline that populated it was removed), so this returns an empty list
+/// today; the table and route remain for when live dispatch is reintroduced.
 #[tracing::instrument(skip(db))]
 pub async fn list_dead_letters(
     db: &Database,

@@ -165,7 +165,7 @@ async fn onboard(
         vec![
             "Store your first real memory: POST /store { content: '...' }",
             "Search for it: POST /search { query: '...' }",
-            "Set up a webhook for events: POST /webhooks { url: '...', events: ['*'] }",
+            "Subscribe to live events via Axon: POST /axon/subscribe { agent, channel, webhook_url }",
         ]
     } else {
         vec!["Fix the failed checks above, then run POST /onboard again"]

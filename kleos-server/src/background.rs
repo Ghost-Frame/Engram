@@ -940,6 +940,46 @@ pub fn start_event_retention_task(
     (token, handle)
 }
 
+/// Prunes service dead-letter rows hourly once they age past the retention
+/// window. The `service_dead_letters` table lives on the monolith/system DB
+/// only (migration 22; tenant shards never create it), so unlike the event
+/// retention task there is no per-shard sweep. Retention defaults to
+/// [`kleos_lib::resilience::dead_letter::DEFAULT_RETAIN_HOURS`] and can be
+/// tuned per deployment via `KLEOS_DEAD_LETTER_RETAIN_HOURS`.
+pub fn start_dead_letter_retention_task(
+    db: Arc<Database>,
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+
+    let retain_hours = std::env::var("KLEOS_DEAD_LETTER_RETAIN_HOURS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|h| *h > 0)
+        .unwrap_or(kleos_lib::resilience::dead_letter::DEFAULT_RETAIN_HOURS);
+
+    let handle = tokio::spawn(async move {
+        let interval = Duration::from_secs(3600);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("dead-letter-retention task shutting down");
+                    break;
+                }
+                _ = tokio::time::sleep(interval) => {
+                    match kleos_lib::resilience::prune_dead_letters(&db, retain_hours).await {
+                        Ok(n) if n > 0 => info!(pruned = n, "dead-letter retention: pruned rows"),
+                        Err(e) => warn!(error = %e, "dead-letter retention error"),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
+
+    (token, handle)
+}
+
 /// Unit tests.
 #[cfg(test)]
 mod tests {

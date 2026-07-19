@@ -190,3 +190,12 @@ pub(super) struct SetQuotaBody {
     /// Maximum disk bytes (None = unlimited).
     pub disk_bytes: Option<i64>,
 }
+
+/// Query params for the service dead-letter listing.
+#[derive(Deserialize)]
+pub(super) struct DeadLettersQuery {
+    /// Optional service-name filter (e.g. "reranker").
+    pub service: Option<String>,
+    /// Maximum rows to return; the handler clamps to [1, 200].
+    pub limit: Option<i64>,
+}

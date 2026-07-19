@@ -18,13 +18,15 @@ use kleos_lib::graph::{communities, cooccurrence};
 mod types;
 use types::{
     AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, AsyncDeprovisionBody,
-    BackfillEntitiesBody, BootstrapBody, ColdStorageParams, DeprovisionBody, GcBody,
-    MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody, RecentDeprovisionQuery,
-    ReembedBody, ResetBody, SetQuotaBody, SkipShardBody, VectorRebuildIndexBody,
-    VectorSyncReplayBody,
+    BackfillEntitiesBody, BootstrapBody, ColdStorageParams, DeadLettersQuery, DeprovisionBody,
+    GcBody, MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody,
+    RecentDeprovisionQuery, ReembedBody, ResetBody, SetQuotaBody, SkipShardBody,
+    VectorRebuildIndexBody, VectorSyncReplayBody,
 };
 
-/// Reject the request with a 403 unless the auth context carries the admin scope.
+/// Reject the request unless the auth context carries the admin scope.
+/// EngError::Auth maps to 401 at the error layer, so non-admin callers
+/// receive 401 "admin scope required" on every route in this file.
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
     if !auth.has_scope(&Scope::Admin) {
         return Err(AppError(kleos_lib::EngError::Auth(
@@ -73,6 +75,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/cold-storage", get(cold_storage_handler))
         .route("/admin/providers", get(admin_providers))
         .route("/admin/tasks", get(admin_tasks))
+        .route("/admin/dead-letters", get(admin_dead_letters))
         .route("/admin/cred/resolve", post(admin_cred_resolve))
         .route("/admin/cred/proxy", post(admin_cred_proxy))
         // Maintenance + SLA
@@ -672,6 +675,24 @@ async fn admin_tasks(
     require_admin(&auth)?;
     let stats = kleos_lib::jobs::get_job_stats(&state.db).await?;
     to_json(stats)
+}
+
+/// GET /admin/dead-letters -- list service dead-letter rows (newest first),
+/// optionally filtered by `?service=` and capped by `?limit=` (default 50,
+/// max 200). Rows are written by ServiceGuard when a guarded internal call
+/// exhausts its retries; pruning past the retention window is automatic.
+#[tracing::instrument(skip_all)]
+async fn admin_dead_letters(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(query): Query<DeadLettersQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let items =
+        kleos_lib::resilience::list_dead_letters(&state.db, query.service.as_deref(), limit)
+            .await?;
+    Ok(Json(json!({ "count": items.len(), "dead_letters": items })))
 }
 
 /// POST /admin/cred/resolve -- ask credd to resolve a cred slot for a named agent.

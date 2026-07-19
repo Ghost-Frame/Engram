@@ -115,6 +115,28 @@ pub async fn list_dead_letters(
     .await
 }
 
+// --- Retention ---
+
+/// Default retention window for dead-letter rows, in hours (30 days).
+/// Overridable per deployment via `KLEOS_DEAD_LETTER_RETAIN_HOURS`.
+pub const DEFAULT_RETAIN_HOURS: i64 = 720;
+
+/// Delete dead-letter rows older than `retain_hours`, returning the number
+/// of rows removed. Called hourly by the server's dead-letter-retention
+/// background task so the table cannot grow without bound.
+#[tracing::instrument(skip(db))]
+pub async fn prune_dead_letters(db: &Database, retain_hours: i64) -> Result<usize> {
+    let modifier = format!("-{} hours", retain_hours);
+    db.write(move |conn| {
+        let n = conn.execute(
+            "DELETE FROM service_dead_letters WHERE created_at < datetime('now', ?1)",
+            rusqlite::params![modifier],
+        )?;
+        Ok(n)
+    })
+    .await
+}
+
 // --- Tests ---
 
 #[cfg(test)]
@@ -168,5 +190,33 @@ mod tests {
         let embedder_only = list_dead_letters(&db, Some("embedder"), 50).await.unwrap();
         assert_eq!(embedder_only.len(), 1);
         assert_eq!(embedder_only[0].service, "embedder");
+    }
+
+    #[tokio::test]
+    async fn prune_removes_only_expired_rows() {
+        let db = Database::connect_memory().await.unwrap();
+
+        record_dead_letter(&db, "reranker", "rerank", serde_json::Value::Null, "503", 3)
+            .await
+            .unwrap();
+        // Backdate one row past the retention window; the fresh row stays.
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO service_dead_letters \
+                 (service, operation, payload_json, error, retry_count, created_at) \
+                 VALUES ('embedder', 'embed', NULL, 'timeout', 3, datetime('now', '-31 days'))",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let pruned = prune_dead_letters(&db, DEFAULT_RETAIN_HOURS).await.unwrap();
+        assert_eq!(pruned, 1, "only the backdated row is past retention");
+
+        let remaining = list_dead_letters(&db, None, 50).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].service, "reranker");
     }
 }

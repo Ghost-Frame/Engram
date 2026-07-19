@@ -33,6 +33,10 @@ const SENTIMENT_BUCKETS: &[(&str, i32)] = &[
 /// Each language is built independently so a word that appears in two language
 /// lexicons maps to its own-language score without the arbitrary ordering
 /// collision produced by a single flat union map.
+// Frozen for the process lifetime: built once from kleos_lib::lexicon and
+// never refreshed, so lexicon override edits on disk do not reach this cache
+// without a restart. Any future lexicon hot-reload feature must invalidate
+// this cache too, not just the lexicon module's own TTL cache.
 static SENTIMENT_MAP: LazyLock<HashMap<String, HashMap<String, i32>>> = LazyLock::new(|| {
     let mut outer: HashMap<String, HashMap<String, i32>> = HashMap::new();
     for lang in crate::lexicon::supported_languages() {
