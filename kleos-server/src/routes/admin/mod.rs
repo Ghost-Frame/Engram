@@ -2206,24 +2206,26 @@ async fn force_retry_deprovision(
                 "deprovision {dep_id} not found"
             )))
         })?;
+    // A missing tenant row means there is nothing to retry against; enqueuing
+    // a teardown job with an empty tenant_id would run against nothing and
+    // report as re-enqueued. Surface it instead of a misleading success.
     let tenant_row = registry
         .registry_db()
-        .get_by_user_id(&log.target_user_id.to_string())?;
-    // Extract tenant_id before consuming tenant_row in the if-let to avoid borrow-after-move.
-    let tenant_id = tenant_row
-        .as_ref()
-        .map(|r| r.tenant_id.clone())
-        .unwrap_or_default();
-    if let Some(row) = tenant_row {
-        registry.registry_db().update_status(
-            &row.tenant_id,
-            kleos_lib::tenant::types::TenantStatus::Deleting,
-        )?;
-    }
+        .get_by_user_id(&log.target_user_id.to_string())?
+        .ok_or_else(|| {
+            AppError(kleos_lib::EngError::NotFound(format!(
+                "no tenant row for user_id {}; nothing to retry",
+                log.target_user_id
+            )))
+        })?;
+    registry.registry_db().update_status(
+        &tenant_row.tenant_id,
+        kleos_lib::tenant::types::TenantStatus::Deleting,
+    )?;
     let payload = serde_json::json!({
         "deprovision_id": dep_id,
         "user_id": log.target_user_id,
-        "tenant_id": tenant_id,
+        "tenant_id": tenant_row.tenant_id,
     })
     .to_string();
     kleos_lib::jobs::enqueue_job(&state.db, "deprovision_teardown", &payload, 5).await?;
@@ -2287,9 +2289,13 @@ async fn skip_shard_deprovision(
         .registry_db()
         .update_deletion_log_shard_skipped(&dep_id, note)?;
 
+    // The log row was already marked skipped above, so a missing tenant row is
+    // reported rather than erroring: the response distinguishes "skipped and
+    // cleaned" from "skipped but no tenant row existed to clean".
     let tenant_row = registry
         .registry_db()
         .get_by_user_id(&log.target_user_id.to_string())?;
+    let tenant_row_found = tenant_row.is_some();
     if let Some(row) = &tenant_row {
         kleos_lib::tenant::teardown::delete_monolith_rows(&state.db, log.target_user_id).await?;
         registry.registry_db().mark_tombstone(&row.tenant_id)?;
@@ -2297,6 +2303,7 @@ async fn skip_shard_deprovision(
 
     Ok(Json(json!({
         "skipped": true,
+        "tenant_row_found": tenant_row_found,
         "deprovision_id": dep_id,
     })))
 }

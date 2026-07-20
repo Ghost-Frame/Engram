@@ -481,6 +481,27 @@ pub async fn run_teardown_job(
 
 // ── Entry Point ───────────────────────────────────────────────────────────
 
+/// Resolve the real username for a deletion-log snapshot. The log is the
+/// post-teardown record of WHO was removed, so the numeric id alone defeats
+/// its purpose. Falls back to the id string when the users row is already
+/// gone or the lookup fails -- the log write must never be blocked on it.
+async fn lookup_username(monolith_db: &Database, user_id: i64, fallback: &str) -> String {
+    let looked_up: Option<String> = monolith_db
+        .read(move |conn| {
+            use rusqlite::OptionalExtension;
+            Ok(conn
+                .query_row(
+                    "SELECT username FROM users WHERE id = ?1",
+                    [user_id],
+                    |row| row.get(0),
+                )
+                .optional()?)
+        })
+        .await
+        .unwrap_or(None);
+    looked_up.unwrap_or_else(|| fallback.to_string())
+}
+
 /// Initiate an async two-phase deprovision.
 ///
 /// This is the sync HTTP entry point (returns 202 Accepted). It:
@@ -533,11 +554,12 @@ pub async fn begin_deprovision(
     } else {
         Some(reason.as_str())
     };
+    let username = lookup_username(monolith_db, target_user_id, &user_id_str).await;
     rdb.insert_deletion_log(
         dep_id.as_str(),
         Some(admin_user_id),
         target_user_id,
-        &user_id_str, // username snapshot -- we use user_id_str since we don't have username here
+        &username,
         reason_opt,
     )?;
 
@@ -585,11 +607,12 @@ pub async fn recover_orphans(
                 // No log row -- generate a recovery deprovision ID.
                 let id = DeprovisionId::new();
                 let uid = row.user_id.parse::<i64>().unwrap_or(0);
+                let username = lookup_username(monolith_db, uid, &row.user_id).await;
                 registry_db.insert_deletion_log(
                     id.as_str(),
                     None,
                     uid,
-                    &row.user_id,
+                    &username,
                     Some("recovery: no deletion log found"),
                 )?;
                 (id.0, uid)

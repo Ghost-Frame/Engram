@@ -106,14 +106,27 @@ async fn main() {
                 OpenAiProvider::from_env(embed_http_client, config.embedding_dim)
             {
                 tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
-                match p.embed("warmup").await {
-                    Ok(_) => {
-                        tracing::info!("OpenAI-compatible embedding provider ready");
-                        Some(Arc::new(p))
-                    }
-                    Err(e) => {
-                        tracing::warn!("OpenAI-compatible embedding provider probe failed: {}. Vector search disabled.", e);
-                        None
+                // Probe with capped-backoff retry: the embedding endpoint is
+                // often still starting when this server boots, and the old
+                // single-shot probe left vector search disabled until a manual
+                // restart. A permanently-dead endpoint keeps warning at the
+                // backoff cap, which is visible and recoverable in place.
+                let mut delay = std::time::Duration::from_secs(5);
+                loop {
+                    match p.embed("warmup").await {
+                        Ok(_) => {
+                            tracing::info!("OpenAI-compatible embedding provider ready");
+                            break Some(Arc::new(p));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                retry_in_secs = delay.as_secs(),
+                                "OpenAI-compatible embedding provider probe failed: {}. Vector search disabled until it succeeds.",
+                                e
+                            );
+                            tokio::time::sleep(delay).await;
+                            delay = (delay * 2).min(std::time::Duration::from_secs(300));
+                        }
                     }
                 }
             } else {
