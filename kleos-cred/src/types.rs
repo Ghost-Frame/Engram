@@ -286,14 +286,26 @@ impl SecretData {
                 format!("{} @ {}", username, url_str)
             }
             Self::ApiKey { key, .. } => {
-                let start = &key[..2.min(key.len())];
-                let end = &key[key.len().saturating_sub(2)..];
+                // Char-based slicing: raw byte offsets panic when a key
+                // contains multi-byte UTF-8 near either end.
+                let start: String = key.chars().take(2).collect();
+                let end: String = key
+                    .chars()
+                    .rev()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
                 format!("{}...{}", start, end)
             }
             Self::OAuthApp { client_id, .. } => format!("client_id={}", client_id),
             Self::SshKey { .. } => "[private key]".to_string(),
             Self::Note { content } => {
-                let preview = &content[..40.min(content.len())];
+                // Char-based truncation for the same multi-byte-boundary
+                // panic as the ApiKey arm above.
+                let preview: String = content.chars().take(40).collect();
+                let preview = preview.as_str();
                 format!("{}...", preview)
             }
             Self::Environment { variables } => {

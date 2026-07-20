@@ -2848,6 +2848,18 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             )
                         };
                     let hash = sha256_hex(&content);
+                    // Refuse to write through an existing symlink or any
+                    // non-regular entry: a poisoned skill row could otherwise
+                    // redirect this write over an arbitrary user file.
+                    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                        if !meta.is_file() {
+                            eprintln!(
+                                "Refusing to write {}: existing path is not a regular file",
+                                path
+                            );
+                            return;
+                        }
+                    }
                     if let Err(e) = std::fs::write(&path, &content) {
                         eprintln!("Failed to write {}: {}", path, e);
                         return;
@@ -2882,7 +2894,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             // file that looks like a materialized agent (a .md
                             // with no traversal component) so a poisoned record
                             // cannot turn dematerialize into arbitrary deletion.
-                            if !is_safe_materialization_path(path) {
+                            if !is_safe_materialization_path(
+                                path,
+                                std::env::var("HOME").ok().as_deref(),
+                            ) {
                                 eprintln!(
                                     "Refusing to remove suspicious materialization path: {}",
                                     path
@@ -3153,10 +3168,11 @@ fn sanitize_download_name(server_name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// True when a server-supplied materialization path is safe to delete: it must
-/// be a `.md` file (what materialize writes) and contain no `..` traversal
-/// component. Guards dematerialize against a poisoned record pointing the
-/// removal at an arbitrary file.
-fn is_safe_materialization_path(path: &str) -> bool {
+/// be a `.md` file (what materialize writes), contain no `..` traversal
+/// component, and -- when absolute -- sit inside `~/.claude/`. Guards
+/// dematerialize against a poisoned record pointing the removal at an
+/// arbitrary file.
+fn is_safe_materialization_path(path: &str, home: Option<&str>) -> bool {
     let p = std::path::Path::new(path);
     let is_md = p
         .extension()
@@ -3165,7 +3181,16 @@ fn is_safe_materialization_path(path: &str) -> bool {
     let no_traversal = !p
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
-    is_md && no_traversal
+    // Absolute paths must sit inside ~/.claude/: target_path comes from the
+    // server, and an unconstrained absolute path from a poisoned record could
+    // point the dematerialize remove_file at any .md the user owns. Custom
+    // materialize dirs outside ~/.claude get a refusal and delete manually.
+    let in_allowed_root = if p.is_absolute() {
+        home.is_some_and(|h| p.starts_with(std::path::Path::new(h).join(".claude")))
+    } else {
+        true
+    };
+    is_md && no_traversal && in_allowed_root
 }
 
 /// Encodes a byte slice as lowercase hexadecimal.
@@ -4798,7 +4823,19 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
                     if s.trim().is_empty() {
                         None
                     } else {
-                        serde_json::from_str::<Vec<String>>(&s).ok()
+                        match serde_json::from_str::<Vec<String>>(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                // Surface malformed rows instead of silently
+                                // rendering them as empty lists.
+                                eprintln!(
+                                    "warning: malformed JSON array in spec row ({}): {}",
+                                    e,
+                                    s.chars().take(80).collect::<String>()
+                                );
+                                None
+                            }
+                        }
                     }
                 })
                 .unwrap_or_default()
@@ -4966,18 +5003,33 @@ mod tests {
     };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
 
-    /// Dematerialize only deletes .md files with no traversal component.
+    /// Dematerialize only deletes .md files with no traversal component,
+    /// and absolute paths only inside ~/.claude/.
     #[test]
     fn safe_materialization_path_guards_deletion() {
+        let home = Some("/home/u");
         assert!(is_safe_materialization_path(
-            "/home/u/.claude/agents/foo.md"
+            "/home/u/.claude/agents/foo.md",
+            home
         ));
-        assert!(is_safe_materialization_path("agents/bar.md"));
+        assert!(is_safe_materialization_path("agents/bar.md", home));
         // Wrong extension or traversal is refused.
-        assert!(!is_safe_materialization_path("/etc/cron.d/evil"));
-        assert!(!is_safe_materialization_path("/home/u/.bashrc"));
-        assert!(!is_safe_materialization_path("../../etc/passwd.md"));
-        assert!(!is_safe_materialization_path("agents/../../x.md"));
+        assert!(!is_safe_materialization_path("/etc/cron.d/evil", home));
+        assert!(!is_safe_materialization_path("/home/u/.bashrc", home));
+        assert!(!is_safe_materialization_path("../../etc/passwd.md", home));
+        assert!(!is_safe_materialization_path("agents/../../x.md", home));
+        // Absolute .md OUTSIDE ~/.claude is refused: a poisoned record must
+        // not aim deletion at arbitrary user documents.
+        assert!(!is_safe_materialization_path("/home/u/notes/real.md", home));
+        assert!(!is_safe_materialization_path(
+            "/home/other/.claude/agents/foo.md",
+            home
+        ));
+        // No HOME resolvable: refuse all absolute paths.
+        assert!(!is_safe_materialization_path(
+            "/home/u/.claude/agents/foo.md",
+            None
+        ));
     }
 
     /// A server-supplied filename is reduced to its final, CWD-relative component.

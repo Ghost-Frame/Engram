@@ -26,8 +26,9 @@ tower-http.workspace = true
 # Async
 tokio.workspace = true
 
-# HTTP client for proxy
+# HTTP client for proxy; futures for streaming the capped proxy body.
 reqwest.workspace = true
+futures.workspace = true
 
 # Serialization
 serde.workspace = true

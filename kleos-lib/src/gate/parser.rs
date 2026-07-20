@@ -6,11 +6,21 @@ pub struct SshTarget {
     pub port: Option<u16>,
 }
 
+/// True when a command token invokes ssh: matched by basename so absolute
+/// invocations (`/usr/bin/ssh`, `/opt/homebrew/bin/ssh`) are recognized.
+/// Exact-token matching let any pathed invocation bypass SSRF detection
+/// entirely, which is the security-relevant consumer of this parser.
+fn is_ssh_token(token: &str) -> bool {
+    token == "ssh" || token.rsplit('/').next() == Some("ssh")
+}
+
 /// Parse an SSH command string to extract the target host, user, and port.
-/// Used for SSRF detection and server map lookups.
+/// Used for SSRF detection and server map lookups. Leading environment
+/// wrappers (`env`, `VAR=value` assignments) before the ssh token are
+/// skipped by the token scan itself.
 pub fn parse_ssh_target(command: &str) -> Option<SshTarget> {
     let tokens: Vec<&str> = command.split_whitespace().collect();
-    let ssh_pos = tokens.iter().position(|&t| t == "ssh")?;
+    let ssh_pos = tokens.iter().position(|&t| is_ssh_token(t))?;
 
     let mut host_raw: Option<&str> = None;
     let mut port: Option<u16> = None;

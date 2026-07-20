@@ -5028,6 +5028,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures",
  "hex",
  "hkdf",
  "http-body-util",
@@ -5274,6 +5275,7 @@ dependencies = [
 name = "kleos-phylax-ssh-agent"
 version = "1.9.0"
 dependencies = [
+ "libc",
  "log",
  "ssh-key",
  "thiserror 2.0.18",

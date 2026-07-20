@@ -448,19 +448,29 @@ pub async fn proxy_handler(
         }
     }
 
-    let body = response
-        .text()
-        .await
-        .map_err(|e| CredError::InvalidInput(format!("proxy response read failed: {}", e)))?;
-
-    if body.len() > MAX_PROXY_RESPONSE {
-        return Err(CredError::InvalidInput(format!(
-            "proxy response body too large: {} bytes (max {})",
-            body.len(),
-            MAX_PROXY_RESPONSE
-        ))
-        .into());
-    }
+    // Stream the body and abort as soon as the cap is crossed: the
+    // Content-Length hint above only protects against honest servers, and a
+    // chunked response without one would otherwise buffer fully before the
+    // size check ran.
+    let body = {
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                CredError::InvalidInput(format!("proxy response read failed: {}", e))
+            })?;
+            if buf.len() + chunk.len() > MAX_PROXY_RESPONSE {
+                return Err(CredError::InvalidInput(format!(
+                    "proxy response body too large: exceeds max {} bytes",
+                    MAX_PROXY_RESPONSE
+                ))
+                .into());
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    };
 
     log_audit(
         &state.db,

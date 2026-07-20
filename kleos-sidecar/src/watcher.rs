@@ -490,10 +490,17 @@ async fn store_gate_results(results: &[GateResult], state: &SidecarState) -> usi
             "user_id": state.user_id,
         });
 
-        let mut request = state.client.post(&url).json(&req);
-        if let Some(ref api_key) = state.kleos_api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
-        }
+        // Route through the shared tiered auth (PIV/ed25519 signed headers,
+        // else bearer) so watcher stores authenticate exactly like every
+        // other sidecar-to-kleos call, instead of a bearer-only side channel.
+        let body_bytes = serde_json::to_vec(&req).unwrap_or_default();
+        let request = crate::routes::apply_kleos_auth(
+            state,
+            state.client.post(&url).json(&req),
+            "POST",
+            "/store",
+            &body_bytes,
+        );
 
         match request.send().await {
             Ok(resp) if resp.status().is_success() => {

@@ -49,7 +49,7 @@ pub async fn redeem_lease(
     State(state): State<PhylaxState>,
     Path(jti): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let l = match lease::redeem_lease(&state.inner.db, &jti).await {
+    let l = match lease::redeem_lease(&state.inner.db, &jti, auth.user_id()).await {
         Ok(lease) => lease,
         Err(CredError::Database(msg)) if msg.contains("already redeemed") => {
             let _ = log_phylax_audit(

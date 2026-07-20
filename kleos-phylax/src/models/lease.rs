@@ -118,9 +118,13 @@ pub async fn mint_lease(
 
 /// Atomically redeem a lease. Returns the lease if successful.
 ///
-/// Fails with CredError::NotFound if lease doesn't exist.
+/// Scoped to `user_id`: a lease can only be redeemed (or even probed for its
+/// failure reason) by its owner, so one caller cannot burn or enumerate
+/// another's leases by guessing the jti.
+///
+/// Fails with CredError::NotFound if lease doesn't exist for this owner.
 /// Fails with CredError::InvalidInput if lease is already used or expired.
-pub async fn redeem_lease(db: &Database, jti: &str) -> Result<Lease> {
+pub async fn redeem_lease(db: &Database, jti: &str, user_id: i64) -> Result<Lease> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let jti_owned = jti.to_string();
     let now2 = now.clone();
@@ -131,8 +135,8 @@ pub async fn redeem_lease(db: &Database, jti: &str) -> Result<Lease> {
         // Atomic: only succeeds if used_at IS NULL and not expired.
         let affected = conn.execute(
             "UPDATE phylax_leases SET used_at = ?1
-             WHERE jti = ?2 AND used_at IS NULL AND expires_at > ?1",
-            params![now2, jti_owned],
+             WHERE jti = ?2 AND user_id = ?3 AND used_at IS NULL AND expires_at > ?1",
+            params![now2, jti_owned, user_id],
         )?;
 
         if affected == 0 {
@@ -140,9 +144,9 @@ pub async fn redeem_lease(db: &Database, jti: &str) -> Result<Lease> {
             let mut stmt = conn.prepare(
                 "SELECT id, user_id, approval_id, agent_name, category, secret_name,
                         jti, correlation_id, created_at, expires_at, used_at
-                 FROM phylax_leases WHERE jti = ?1",
+                 FROM phylax_leases WHERE jti = ?1 AND user_id = ?2",
             )?;
-            let lease = stmt.query_row(params![jti3], row_to_lease).ok();
+            let lease = stmt.query_row(params![jti3, user_id], row_to_lease).ok();
             return match lease {
                 None => Err(kleos_lib::EngError::NotFound("lease not found".into())),
                 Some(l) if l.used_at.is_some() => Err(kleos_lib::EngError::Conflict(
@@ -156,9 +160,9 @@ pub async fn redeem_lease(db: &Database, jti: &str) -> Result<Lease> {
         let mut stmt = conn.prepare(
             "SELECT id, user_id, approval_id, agent_name, category, secret_name,
                     jti, correlation_id, created_at, expires_at, used_at
-             FROM phylax_leases WHERE jti = ?1",
+             FROM phylax_leases WHERE jti = ?1 AND user_id = ?2",
         )?;
-        let lease = stmt.query_row(params![jti4], row_to_lease)?;
+        let lease = stmt.query_row(params![jti4, user_id], row_to_lease)?;
         Ok(lease)
     })
     .await

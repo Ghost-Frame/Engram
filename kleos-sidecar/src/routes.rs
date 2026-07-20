@@ -19,8 +19,10 @@ use crate::metrics;
 use crate::session::Observation;
 use crate::SidecarState;
 
-/// Apply tiered Kleos auth (PIV/ed25519 signed headers, else bearer) to a request.
-fn apply_kleos_auth(
+/// Apply tiered Kleos auth (PIV/ed25519 signed headers, else bearer) to a
+/// request. pub(crate): the watcher's outbound stores use the same tiering so
+/// all sidecar-to-kleos calls authenticate consistently.
+pub(crate) fn apply_kleos_auth(
     state: &SidecarState,
     req: reqwest::RequestBuilder,
     method: &str,

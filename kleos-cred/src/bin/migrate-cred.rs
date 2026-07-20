@@ -7,7 +7,13 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use kleos_cred::crypto::derive_key;
+#[allow(deprecated)]
+use kleos_cred::crypto::derive_key_legacy;
+
+/// Canonical user_id for the local cred store. Matches cred.rs CRED_USER_ID:
+/// user_id=1 is the operator across the Kleos system, and rows stored under
+/// 0 were invisible to every cred read path.
+const CRED_USER_ID: i64 = 1;
 use kleos_cred::types::SecretData;
 use kleos_lib::db::Database;
 use serde::Deserialize;
@@ -105,17 +111,21 @@ async fn main() -> anyhow::Result<()> {
     let entries: Vec<BackupEntry> = serde_json::from_str(&json_data)?;
     println!("Found {} entries", entries.len());
 
-    // Derive encryption key
+    // Derive encryption key with the SAME KDF the cred binary uses to unlock
+    // in YubiKey mode (derive_key_legacy). The modern derive_key uses a
+    // different salt and parameters, so rows migrated under it would be
+    // permanently undecryptable by cred itself.
+    #[allow(deprecated)]
     let encryption_key = if args.software_hmac {
         println!("Using software HMAC (testing mode)");
         let challenge = kleos_cred::yubikey::get_or_create_challenge()?;
         let response = kleos_cred::yubikey::software_hmac(b"test-secret", &challenge);
-        derive_key(1, b"", Some(&response))
+        derive_key_legacy(&response)
     } else {
         println!("Touch YubiKey slot 2 to derive encryption key...");
         let challenge = kleos_cred::yubikey::get_or_create_challenge()?;
         let response = kleos_cred::yubikey::challenge_response(&challenge)?;
-        derive_key(1, b"", Some(&response))
+        derive_key_legacy(&response)
     };
     println!("Encryption key derived");
 
@@ -155,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
             Some(data) => {
                 match kleos_cred::storage::store_secret(
                     &db,
-                    0,
+                    CRED_USER_ID,
                     category,
                     name,
                     &data,
@@ -172,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
                         if e.to_string().contains("UNIQUE constraint") {
                             match kleos_cred::storage::update_secret(
                                 &db,
-                                0,
+                                CRED_USER_ID,
                                 category,
                                 name,
                                 &data,

@@ -324,13 +324,19 @@ async fn sidecar_post(path: &str, body: &Value, timeout: Duration) -> Option<Val
 }
 
 /// Converts hook tool output into bounded text for sidecar observation storage.
+///
+/// Claude Code's PostToolUse hook payload carries the output under
+/// `tool_response`; `tool_result` is kept as a legacy fallback for callers
+/// that ever supplied that key. Reading only the legacy key meant every real
+/// hook invocation stored an empty observation.
 fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
-    let raw = input
-        .get("tool_result")
+    let value = input
+        .get("tool_response")
+        .or_else(|| input.get("tool_result"));
+    let raw = value
         .and_then(|v| v.as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| {
-            input
-                .get("tool_result")
+            value
                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                 .unwrap_or_default()
         });

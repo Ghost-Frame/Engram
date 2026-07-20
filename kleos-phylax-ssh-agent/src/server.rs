@@ -63,9 +63,22 @@ impl<P: KeyProvider + 'static> AgentServer<P> {
             }
         }
 
-        let listener = UnixListener::bind(&self.path)?;
+        // Bind under a restrictive umask so the socket is never observable
+        // with wider permissions: the previous bind-then-chmod sequence left
+        // a window where another local user could connect to a key-holding
+        // agent socket created with the process default umask.
+        //
+        // SAFETY: umask(2) only swaps the process file-mode creation mask and
+        // cannot fail; the original mask is restored immediately after bind.
+        let listener = {
+            let old_mask = unsafe { libc::umask(0o177) };
+            let bound = UnixListener::bind(&self.path);
+            unsafe { libc::umask(old_mask) };
+            bound?
+        };
 
-        // Set socket permissions to 0600 (owner-only).
+        // Belt-and-suspenders: normalize to 0600 (owner-only) in case the
+        // platform ignored the mask for socket inodes.
         std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600))?;
 
         log::info!("SSH agent listening on {}", self.path);
