@@ -43,6 +43,7 @@ tokio-rusqlite = { workspace = true }
 deadpool-sqlite = { workspace = true, features = ["tracing"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+csv = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

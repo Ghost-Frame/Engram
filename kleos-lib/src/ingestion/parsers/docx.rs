@@ -86,23 +86,38 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
 fn extract_paragraphs(xml: &str) -> String {
     let mut paragraphs: Vec<String> = Vec::new();
 
-    // Each segment after splitting on "<w:p" is one paragraph's content.
-    // The first segment is everything before the first <w:p, which we skip.
-    let mut iter = xml.splitn(usize::MAX, "<w:p");
-    iter.next(); // discard content before the first paragraph tag
+    // Byte offsets of every REAL <w:p> paragraph start. A boundary check is
+    // required because "<w:p" is also the prefix of <w:pPr>, <w:pStyle>,
+    // <w:pgMar> and friends -- the old prefix split minted a phantom
+    // paragraph for every paragraph-property tag.
+    let mut starts: Vec<usize> = Vec::new();
+    let mut from = 0;
+    while let Some(pos) = find_tag(&xml[from..], "w:p") {
+        starts.push(from + pos);
+        from += pos + 4; // advance past "<w:p"
+    }
 
-    for para_segment in iter {
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied().unwrap_or(xml.len());
         let mut para_text = String::new();
-        let mut remaining = para_segment;
+        let mut remaining = &xml[start..end];
 
-        // Collect all <w:t>...</w:t> runs in this paragraph
-        while let Some(tag_start) = remaining.find("<w:t") {
-            // Advance past the tag's closing >
+        // Collect all <w:t>...</w:t> runs in this paragraph. find_tag
+        // rejects the <w:tbl>/<w:tc>/<w:tr>/<w:tab> prefix collisions the
+        // bare substring search fell into.
+        while let Some(tag_start) = find_tag(remaining, "w:t") {
             let after_tag_start = &remaining[tag_start..];
             let tag_close = match after_tag_start.find('>') {
                 Some(pos) => pos,
                 None => break,
             };
+            // Self-closing <w:t/> is an empty run: contribute nothing and
+            // keep scanning after it, instead of harvesting up to the NEXT
+            // run's closing tag.
+            if after_tag_start[..tag_close].ends_with('/') {
+                remaining = &remaining[tag_start + tag_close + 1..];
+                continue;
+            }
             let content_start = tag_start + tag_close + 1;
             // Find the closing </w:t>
             let after_content = &remaining[content_start..];
@@ -123,6 +138,24 @@ fn extract_paragraphs(xml: &str) -> String {
     }
 
     paragraphs.join("\n\n")
+}
+
+/// Find the next occurrence of `<{name}` that is a real tag start: the
+/// prefix must be followed by `>`, whitespace (attributes), or `/`
+/// (self-closing). Returns the byte offset of the `<`, or None.
+fn find_tag(haystack: &str, name: &str) -> Option<usize> {
+    let needle = format!("<{name}");
+    let mut from = 0;
+    while let Some(pos) = haystack[from..].find(&needle) {
+        let abs = from + pos;
+        match haystack.as_bytes().get(abs + needle.len()) {
+            Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n') | Some(b'/') => {
+                return Some(abs)
+            }
+            _ => from = abs + needle.len(),
+        }
+    }
+    None
 }
 
 /// Decode the five predefined XML entities.
@@ -158,6 +191,47 @@ mod tests {
         assert_eq!(decode_xml_entities("&apos;s"), "'s");
         // &amp; decoded last avoids double-decode of e.g. &amp;lt;
         assert_eq!(decode_xml_entities("&amp;lt;"), "&lt;");
+    }
+
+    #[test]
+    fn test_extract_paragraphs_table_cells() {
+        // <w:tbl>/<w:tr>/<w:tc> share the "<w:t" prefix; only the real
+        // <w:t> runs may contribute text.
+        let xml = "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell one</w:t></w:r></w:p></w:tc>\
+                   <w:tc><w:p><w:r><w:t>cell two</w:t></w:r></w:p></w:tc></w:tr></w:tbl>";
+        assert_eq!(extract_paragraphs(xml), "cell one\n\ncell two");
+    }
+
+    #[test]
+    fn test_extract_paragraphs_ppr_no_phantom() {
+        // <w:pPr>/<w:pStyle> share the "<w:p" prefix; they must not mint
+        // phantom paragraphs (which duplicated run text before the fix).
+        let xml = "<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>\
+                   <w:r><w:t>only once</w:t></w:r></w:p>";
+        assert_eq!(extract_paragraphs(xml), "only once");
+    }
+
+    #[test]
+    fn test_extract_paragraphs_self_closing_run() {
+        // A self-closing <w:t/> is an empty run; text in later runs must
+        // survive it un-garbled.
+        let xml = "<w:p><w:r><w:t/></w:r><w:r><w:t>after empty</w:t></w:r></w:p>";
+        assert_eq!(extract_paragraphs(xml), "after empty");
+    }
+
+    #[test]
+    fn test_extract_paragraphs_tab_run() {
+        // <w:tab/> also shares the "<w:t" prefix inside a run.
+        let xml = "<w:p><w:r><w:t>left</w:t></w:r><w:r><w:tab/></w:r>\
+                   <w:r><w:t>right</w:t></w:r></w:p>";
+        assert_eq!(extract_paragraphs(xml), "leftright");
+    }
+
+    #[test]
+    fn test_extract_paragraphs_preserve_space_attr() {
+        // Attribute form <w:t xml:space="preserve"> still parses.
+        let xml = "<w:p><w:r><w:t xml:space=\"preserve\"> spaced </w:t></w:r></w:p>";
+        assert_eq!(extract_paragraphs(xml), "spaced");
     }
 
     #[test]

@@ -9,55 +9,6 @@ use std::collections::HashMap;
 const CONTENT_COLUMN_NAMES: &[&str] = &["content", "text", "body", "message"];
 const TITLE_COLUMN_NAMES: &[&str] = &["title", "name"];
 
-/// Parse a single CSV line respecting quoted fields with escaped quotes.
-fn parse_csv_line(line: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let bytes = line.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'"' {
-            // Quoted field
-            i += 1; // skip opening quote
-            let mut field = String::new();
-            while i < bytes.len() {
-                if bytes[i] == b'"' {
-                    if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-                        // Escaped quote
-                        field.push('"');
-                        i += 2;
-                    } else {
-                        // End of quoted field
-                        i += 1; // skip closing quote
-                        break;
-                    }
-                } else {
-                    // Decode full UTF-8 char (bytes[i] as char is mojibake for multi-byte)
-                    let ch = line[i..].chars().next().unwrap();
-                    field.push(ch);
-                    i += ch.len_utf8();
-                }
-            }
-            fields.push(field);
-            if i < bytes.len() && bytes[i] == b',' {
-                i += 1;
-            }
-        } else {
-            // Unquoted field
-            let start = i;
-            while i < bytes.len() && bytes[i] != b',' {
-                i += 1;
-            }
-            fields.push(String::from_utf8_lossy(&bytes[start..i]).to_string());
-            if i < bytes.len() && bytes[i] == b',' {
-                i += 1;
-            }
-        }
-    }
-
-    fields
-}
-
 /// Detect which column contains the main content by name, then by average length.
 fn detect_content_column(headers: &[String], rows: &[Vec<String>]) -> usize {
     for name in CONTENT_COLUMN_NAMES {
@@ -100,14 +51,33 @@ fn detect_title_column(headers: &[String]) -> Option<usize> {
 }
 
 /// Parse CSV text into parsed documents (one per row).
+///
+/// Reads through the `csv` crate so quoted fields containing embedded
+/// newlines, commas, and escaped quotes parse per RFC 4180. The previous
+/// hand-rolled per-line splitter broke any quoted multi-line field into
+/// separate phantom rows. Headers are consumed manually (`has_headers(false)`
+/// plus a first-record take) because the column-detection heuristics below
+/// need them as an ordinary row; `flexible(true)` keeps the old tolerance
+/// for rows with a different field count, and malformed records are skipped
+/// rather than failing the whole document.
 pub fn parse(input: &str) -> Result<Vec<ParsedDocument>> {
-    let lines: Vec<&str> = input.lines().filter(|l| !l.is_empty()).collect();
-    if lines.len() < 2 {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(input.as_bytes());
+
+    let mut records = reader.records();
+    let headers: Vec<String> = match records.next() {
+        Some(Ok(record)) => record.iter().map(|s| s.to_string()).collect(),
+        _ => return Ok(vec![]),
+    };
+    let rows: Vec<Vec<String>> = records
+        .filter_map(|r| r.ok())
+        .map(|record| record.iter().map(|s| s.to_string()).collect())
+        .collect();
+    if rows.is_empty() {
         return Ok(vec![]);
     }
-
-    let headers = parse_csv_line(lines[0]);
-    let rows: Vec<Vec<String>> = lines[1..].iter().map(|l| parse_csv_line(l)).collect();
 
     let content_idx = detect_content_column(&headers, &rows);
     let title_idx = detect_title_column(&headers);
@@ -154,15 +124,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_csv_line_simple() {
-        let fields = parse_csv_line("a,b,c");
-        assert_eq!(fields, vec!["a", "b", "c"]);
+    fn test_parse_csv_quoted_fields() {
+        // Quoted commas and escaped quotes stay inside their field.
+        let csv = "title,content\n\"hello, world\",\"she said \"\"hi\"\" twice\"";
+        let docs = parse(csv).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "hello, world");
+        assert_eq!(docs[0].text, "she said \"hi\" twice");
     }
 
     #[test]
-    fn test_parse_csv_line_quoted() {
-        let fields = parse_csv_line("\"hello, world\",b,\"c\"\"d\"");
-        assert_eq!(fields, vec!["hello, world", "b", "c\"d"]);
+    fn test_parse_csv_quoted_embedded_newline() {
+        // A quoted field containing a newline is ONE row, not two. The old
+        // hand-rolled line splitter broke this into phantom rows.
+        let csv = "title,content\nnote,\"first line\nsecond line\"\nother,plain";
+        let docs = parse(csv).unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].text, "first line\nsecond line");
+        assert_eq!(docs[1].title, "other");
+        assert_eq!(docs[1].text, "plain");
     }
 
     #[test]

@@ -113,6 +113,12 @@ pub struct Chunk {
     pub document_title: String,
     pub source: String,
     pub metadata: HashMap<String, serde_json::Value>,
+    /// Source-document timestamp carried through from the parser (e.g.
+    /// conversation exports record when the content was written). Processors
+    /// forward it as the memory's creation-time override so imported content
+    /// keeps its original chronology.
+    #[serde(default)]
+    pub timestamp: Option<String>,
 }
 
 // -- Options and results --

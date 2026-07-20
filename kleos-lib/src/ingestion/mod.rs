@@ -283,8 +283,13 @@ async fn ingest_inner(
         duration_ms
     );
 
-    // Record hash so future identical content is skipped.
-    record_hash(db.as_ref(), &hash, options.user_id, &job_id).await;
+    // Record hash so future identical content is skipped. Only after at
+    // least one memory landed: a fully-failed ingest must stay retryable
+    // instead of poisoning the dedup table with a hash for content that was
+    // never actually stored.
+    if total_memories > 0 {
+        record_hash(db.as_ref(), &hash, options.user_id, &job_id).await;
+    }
 
     emit(
         &progress_tx,
@@ -429,8 +434,13 @@ pub async fn ingest_binary(
         }
     }
 
-    // Record hash so future identical content is skipped.
-    record_hash(db.as_ref(), &hash, options.user_id, &job_id).await;
+    // Record hash so future identical content is skipped. Only after at
+    // least one memory landed: a fully-failed ingest must stay retryable
+    // instead of poisoning the dedup table with a hash for content that was
+    // never actually stored.
+    if total_memories > 0 {
+        record_hash(db.as_ref(), &hash, options.user_id, &job_id).await;
+    }
 
     Ok(IngestResult {
         job_id,

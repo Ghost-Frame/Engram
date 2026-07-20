@@ -129,6 +129,7 @@ pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) ->
             document_title: doc.title.clone(),
             source: doc.source.clone(),
             metadata: doc.metadata.clone(),
+            timestamp: doc.timestamp.clone(),
         }];
     }
 
@@ -202,6 +203,7 @@ pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) ->
             document_title: doc.title.clone(),
             source: doc.source.clone(),
             metadata: doc.metadata.clone(),
+            timestamp: doc.timestamp.clone(),
         })
         .collect()
 }

@@ -5139,6 +5139,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "criterion",
+ "csv",
  "deadpool-sqlite",
  "dirs 6.0.0",
  "ed25519-dalek",

@@ -38,12 +38,26 @@ pub async fn process(
             continue;
         }
 
+        // Per-document identity captured by the parser: a source-document
+        // timestamp (conversation exports carry one) becomes the memory's
+        // creation-time override so imported content keeps its chronology,
+        // and the document title survives as a searchable `doc:` tag. The
+        // caller's batch-level `source` label stays authoritative -- parser
+        // source values are format tags like "csv", not document identities.
+        let title = chunk.document_title.trim();
+        let tags = if title.is_empty() {
+            None
+        } else {
+            Some(vec![format!("doc:{title}").chars().take(64).collect()])
+        };
         let req = StoreRequest {
             content: content.to_string(),
             category: options.category.clone(),
             source: options.source.clone(),
             user_id: Some(options.user_id),
             space_id: options.space_id,
+            tags,
+            created_at: chunk.timestamp.clone(),
             ..Default::default()
         };
 
@@ -58,6 +72,40 @@ pub async fn process(
                     continue;
                 }
                 memories_created += 1;
+                // Explicit caller-supplied associations from the ingest
+                // request. These are request data, not derived intelligence,
+                // so they apply even to memories held for review; failures
+                // are recorded per chunk without aborting the batch.
+                if let Some(project_id) = options.project_id {
+                    if let Err(e) = crate::projects::link_memory(
+                        db.as_ref(),
+                        result.id,
+                        project_id,
+                        options.user_id,
+                    )
+                    .await
+                    {
+                        errors.push(format!("Chunk {}: project link: {}", chunk.index, e));
+                    }
+                }
+                if let Some(entity_ids) = &options.entity_ids {
+                    for entity_id in entity_ids {
+                        if let Err(e) = crate::graph::entities::link_memory_entity(
+                            db.as_ref(),
+                            result.id,
+                            *entity_id,
+                            options.user_id,
+                            1.0,
+                        )
+                        .await
+                        {
+                            errors.push(format!(
+                                "Chunk {}: entity {} link: {}",
+                                chunk.index, entity_id, e
+                            ));
+                        }
+                    }
+                }
                 // A memory held for review (pending) must not seed derived facts
                 // or entity links until it is approved; the inbox approve route
                 // runs that derivation once it clears review. The memory is still

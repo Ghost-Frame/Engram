@@ -92,12 +92,23 @@ pub async fn process(
         }
 
         for fact in facts {
+            // Facts inherit their source document's identity: the parser
+            // timestamp becomes the creation-time override and the document
+            // title survives as a searchable `doc:` tag (mirrors raw.rs).
+            let title = chunk.document_title.trim();
+            let tags = if title.is_empty() {
+                None
+            } else {
+                Some(vec![format!("doc:{title}").chars().take(64).collect()])
+            };
             let req = StoreRequest {
                 content: fact.clone(),
                 category: options.category.clone(),
                 source: options.source.clone(),
                 user_id: Some(options.user_id),
                 space_id: options.space_id,
+                tags,
+                created_at: chunk.timestamp.clone(),
                 ..Default::default()
             };
 
@@ -114,6 +125,39 @@ pub async fn process(
                         continue;
                     }
                     memories_created += 1;
+                    // Explicit caller-supplied associations from the ingest
+                    // request (request data, not derived intelligence, so they
+                    // apply even to memories held for review; mirrors raw.rs).
+                    if let Some(project_id) = options.project_id {
+                        if let Err(e) = crate::projects::link_memory(
+                            db.as_ref(),
+                            result.id,
+                            project_id,
+                            options.user_id,
+                        )
+                        .await
+                        {
+                            errors.push(format!("Chunk {}: project link: {}", chunk.index, e));
+                        }
+                    }
+                    if let Some(entity_ids) = &options.entity_ids {
+                        for entity_id in entity_ids {
+                            if let Err(e) = crate::graph::entities::link_memory_entity(
+                                db.as_ref(),
+                                result.id,
+                                *entity_id,
+                                options.user_id,
+                                1.0,
+                            )
+                            .await
+                            {
+                                errors.push(format!(
+                                    "Chunk {}: entity {} link: {}",
+                                    chunk.index, entity_id, e
+                                ));
+                            }
+                        }
+                    }
                     // A memory held for review (pending) must not seed derived
                     // facts until it is approved; the inbox approve route runs that
                     // derivation once it clears review. The memory is still created
