@@ -3880,7 +3880,9 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                     if v.get("skipped").and_then(|s| s.as_bool()).unwrap_or(false) {
                         eprintln!("Skipped duplicate mechanical handoff for '{}'", project);
                     } else if let Some(id) = v.get("id") {
-                        println!("Stored mechanical handoff #{} (project={})", id, project);
+                        // stderr, not stdout: Codex fails any hook whose stdout is non-JSON,
+                        // and this runs as a Stop hook. Matches the skip-path message above.
+                        eprintln!("Stored mechanical handoff #{} (project={})", id, project);
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
