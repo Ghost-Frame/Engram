@@ -112,9 +112,14 @@ impl FromRequestParts<AppState> for ResolvedDb {
                 .get_or_create(&effective.to_string())
                 .await
                 .map_err(|e| {
+                    // SECURITY: registry failures can carry filesystem paths
+                    // and pool internals. Log server-side and keep the client
+                    // body generic, mirroring the EngError::Internal handling
+                    // in error.rs.
+                    tracing::error!(user_id = effective, "tenant registry error: {e}");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("tenant registry error: {}", e) })),
+                        Json(json!({ "error": "tenant resolution failed" })),
                     )
                 })?;
 

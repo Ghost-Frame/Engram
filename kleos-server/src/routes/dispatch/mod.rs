@@ -25,6 +25,38 @@ fn default_method() -> String {
     "POST".to_string()
 }
 
+/// HTTP methods a dispatch config may use. Unknown methods are rejected at
+/// write time so a typo cannot persist a config the dispatcher can never
+/// execute (the outbound call would otherwise fail only at dispatch time).
+const ALLOWED_DISPATCH_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+/// Validate a dispatch config method against the allowlist and normalize it
+/// to uppercase so stored values compare exactly at dispatch time.
+fn validate_method(method: &str) -> Result<String, AppError> {
+    let normalized = method.trim().to_uppercase();
+    if !ALLOWED_DISPATCH_METHODS.contains(&normalized.as_str()) {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+            "invalid method '{}'; must be one of {:?}",
+            method, ALLOWED_DISPATCH_METHODS
+        ))));
+    }
+    Ok(normalized)
+}
+
+/// Require a schema value to be a JSON object before persisting it. Full
+/// JSON-Schema meta validation would pull in a new dependency for an
+/// admin-gated write path; the object-shape check catches the practical
+/// corruption (arrays or scalars stored where the dispatcher expects a
+/// schema object).
+fn require_schema_object(value: &serde_json::Value, field: &str) -> Result<(), AppError> {
+    if !value.is_object() {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+            "{field} must be a JSON object"
+        ))));
+    }
+    Ok(())
+}
+
 /// Returns the default target type for new dispatch configs.
 fn default_target_type() -> String {
     "internal".to_string()
@@ -320,9 +352,11 @@ async fn create_config(
     }
 
     let description = body.description.unwrap_or_default();
-    let method = body.method;
+    let method = validate_method(&body.method)?;
     let target_type = body.target_type;
-    let params_schema_str = serde_json::to_string(&body.params_schema.unwrap_or(json!({})))
+    let params_schema = body.params_schema.unwrap_or(json!({}));
+    require_schema_object(&params_schema, "params_schema")?;
+    let params_schema_str = serde_json::to_string(&params_schema)
         .map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
     let output_hints_str = serde_json::to_string(&body.output_hints.unwrap_or(json!({})))
         .map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
@@ -395,6 +429,7 @@ async fn update_config(
         idx += 1;
     }
     if let Some(m) = body.method {
+        let m = validate_method(&m)?;
         set_parts.push(format!("method = ?{}", idx));
         bound_values.push(rusqlite::types::Value::Text(m));
         idx += 1;
@@ -405,6 +440,7 @@ async fn update_config(
         idx += 1;
     }
     if let Some(ps) = body.params_schema {
+        require_schema_object(&ps, "params_schema")?;
         let s = serde_json::to_string(&ps)
             .map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
         set_parts.push(format!("params_schema = ?{}", idx));

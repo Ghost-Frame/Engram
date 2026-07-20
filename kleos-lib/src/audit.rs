@@ -143,7 +143,12 @@ pub async fn query_audit_log(
     limit: usize,
     user_id: i64,
 ) -> Result<Vec<AuditEntry>> {
-    let target_id: Option<i64> = resource_id.and_then(|r| r.parse().ok());
+    // A malformed resource_id must be an error, not a silent None: dropping
+    // the filter would silently widen the query to every resource.
+    let target_id: Option<i64> = resource_id
+        .map(|r| r.parse())
+        .transpose()
+        .map_err(|_| crate::EngError::InvalidInput("resource_id must be numeric".into()))?;
     let limit_i64 = limit as i64;
     let resource_type = resource_type.map(|s| s.to_string());
 
@@ -251,7 +256,12 @@ pub async fn query_audit_log_admin(
     resource_id: Option<&str>,
     limit: usize,
 ) -> Result<Vec<AuditEntry>> {
-    let target_id: Option<i64> = resource_id.and_then(|r| r.parse().ok());
+    // A malformed resource_id must be an error, not a silent None: dropping
+    // the filter would silently widen the query to every resource.
+    let target_id: Option<i64> = resource_id
+        .map(|r| r.parse())
+        .transpose()
+        .map_err(|_| crate::EngError::InvalidInput("resource_id must be numeric".into()))?;
     let limit_i64 = limit as i64;
     let resource_type = resource_type.map(|s| s.to_string());
 
