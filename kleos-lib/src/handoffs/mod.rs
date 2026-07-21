@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
+/// A stored session handoff row as returned to callers (list/get).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handoff {
     pub id: i64,
@@ -32,6 +33,7 @@ pub struct Handoff {
     pub content_hash: Option<String>,
 }
 
+/// Input payload for [`HandoffsDb::store`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreParams {
     pub project: String,
@@ -47,6 +49,7 @@ pub struct StoreParams {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Optional filters for listing/searching handoffs; all fields are AND-joined.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct HandoffFilters {
     pub project: Option<String>,
@@ -60,6 +63,7 @@ pub struct HandoffFilters {
     pub limit: Option<i64>,
 }
 
+/// A single FTS5 search hit over handoffs, with a highlighted content snippet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub id: i64,
@@ -72,6 +76,7 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// Handoff count and most recent timestamp for a single project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectStats {
     pub name: String,
@@ -79,6 +84,7 @@ pub struct ProjectStats {
     pub latest: String,
 }
 
+/// Handoff count and most recent timestamp for a single agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStats {
     pub name: String,
@@ -86,6 +92,7 @@ pub struct AgentStats {
     pub latest: String,
 }
 
+/// Handoff count and most recent timestamp for a single host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostStats {
     pub name: String,
@@ -93,6 +100,7 @@ pub struct HostStats {
     pub latest: String,
 }
 
+/// Handoff count, most recent timestamp, and total content bytes for a single type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeStats {
     pub name: String,
@@ -101,6 +109,8 @@ pub struct TypeStats {
     pub total_bytes: i64,
 }
 
+/// Aggregate handoff statistics for a user: totals plus breakdowns by
+/// project, agent, host, and type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffStats {
     pub total: i64,
@@ -112,18 +122,23 @@ pub struct HandoffStats {
     pub by_type: Vec<TypeStats>,
 }
 
+/// Outcome of a [`HandoffsDb::store`] call: the new row id, or `skipped`
+/// when a duplicate mechanical handoff was suppressed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreResult {
     pub id: Option<i64>,
     pub skipped: bool,
 }
 
+/// Outcome of a [`HandoffsDb::gc`] call: rows deleted and rows remaining.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GcResult {
     pub deleted: i64,
     pub remaining: i64,
 }
 
+/// Facade over a tenant database providing handoff storage, search, GC, and
+/// context-atom management, all scoped by `user_id`.
 pub struct HandoffsDb {
     /// Tenant database hosting the handoffs table set (schema_v43).
     db: Arc<Database>,
@@ -131,6 +146,8 @@ pub struct HandoffsDb {
     gc_sem: Arc<Semaphore>,
 }
 
+/// Methods for storing, listing, searching, and garbage-collecting handoffs
+/// and their extracted context atoms.
 impl HandoffsDb {
     /// Build a handoffs facade over a tenant database. The caller resolves
     /// the reserved "handoffs" tenant via the registry; schema_v43 runs
@@ -139,14 +156,19 @@ impl HandoffsDb {
         Self { db, gc_sem }
     }
 
+    /// Returns the pooled reader connection for the handoffs tenant database.
     fn reader(&self) -> Pool {
         self.db.pools().reader().clone()
     }
 
+    /// Returns the pooled writer connection for the handoffs tenant database.
     fn writer(&self) -> Pool {
         self.db.pools().writer().clone()
     }
 
+    /// Inserts a new handoff row, deduplicating mechanical handoffs by
+    /// content hash within the same project, and spawns a throttled
+    /// background auto-GC pass when the user's row count exceeds 500.
     pub async fn store(&self, params: StoreParams, user_id: i64) -> Result<StoreResult> {
         let handoff_type = params
             .handoff_type
@@ -337,6 +359,8 @@ impl HandoffsDb {
         Ok(result)
     }
 
+    /// Lists handoffs for a user, applying the given filters (AND-joined)
+    /// and ordering by `created_at` descending.
     pub async fn list(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
         let limit = filters.limit.unwrap_or(20);
         let conn =
@@ -421,6 +445,9 @@ impl HandoffsDb {
         .map_err(|e| EngError::Internal(format!("handoffs list interact failed: {e}")))?
     }
 
+    /// Returns the most recent handoff matching `filters`. If a `project`
+    /// filter is set and yields no results, falls back to the most recent
+    /// handoff across all projects for the user.
     pub async fn get_latest(
         &self,
         filters: HandoffFilters,
@@ -445,6 +472,10 @@ impl HandoffsDb {
         Ok(None)
     }
 
+    /// Full-text search over handoffs, scoped to the caller and optionally a
+    /// project. The raw query is sanitized before being bound to FTS5 MATCH so
+    /// user-supplied operators/punctuation cannot produce an FTS syntax error
+    /// (mirrors conversations::search_messages).
     pub async fn search(
         &self,
         query: &str,
@@ -452,12 +483,17 @@ impl HandoffsDb {
         limit: i64,
         user_id: i64,
     ) -> Result<Vec<SearchResult>> {
+        // Sanitized-empty queries (all punctuation/operators) match nothing.
+        let query = crate::memory::fts::sanitize_fts_query(query);
+        if query.is_empty() {
+            return Ok(vec![]);
+        }
+
         let conn =
             self.reader().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
             })?;
 
-        let query = query.to_string();
         let project = project.map(|s| s.to_string());
 
         conn.interact(move |conn| {
@@ -524,6 +560,8 @@ impl HandoffsDb {
         .map_err(|e| EngError::Internal(format!("handoffs search interact failed: {e}")))?
     }
 
+    /// Computes aggregate handoff statistics for a user: totals plus
+    /// breakdowns by project, agent, host, and type.
     pub async fn stats(&self, user_id: i64) -> Result<HandoffStats> {
         let conn =
             self.reader().get().await.map_err(|e| {
@@ -630,6 +668,10 @@ impl HandoffsDb {
         .map_err(|e| EngError::Internal(format!("handoffs stats interact failed: {e}")))?
     }
 
+    /// Garbage-collects a user's handoffs. When `keep` is set, retains only
+    /// the newest `keep` rows per project. Otherwise, when `tiered` is true,
+    /// applies age-based tiered retention (mechanical: 7 days, manual/auto:
+    /// 90 days) plus a 50-row-per-project cap.
     pub async fn gc(&self, tiered: bool, keep: Option<i64>, user_id: i64) -> Result<GcResult> {
         let conn =
             self.writer().get().await.map_err(|e| {
@@ -708,6 +750,8 @@ impl HandoffsDb {
         .map_err(|e| EngError::Internal(format!("handoffs gc interact failed: {e}")))?
     }
 
+    /// Deletes a single handoff by id, scoped to the owning user. Returns
+    /// `false` if no row matched (including cross-user attempts).
     pub async fn delete(&self, id: i64, user_id: i64) -> Result<bool> {
         let conn =
             self.writer().get().await.map_err(|e| {
@@ -1011,6 +1055,9 @@ impl HandoffsDb {
     }
 }
 
+/// Computes a 16-hex-char SHA-256 prefix of `content`, used for mechanical
+/// handoff deduplication. Mechanical content has volatile timestamp lines
+/// stripped before hashing so identical git-state dumps hash the same.
 fn compute_content_hash(content: &str, handoff_type: &str) -> String {
     let to_hash = if handoff_type == "mechanical" {
         strip_mechanical_timestamps(content)
@@ -1021,6 +1068,8 @@ fn compute_content_hash(content: &str, handoff_type: &str) -> String {
     format!("{:x}", hash)[..16].to_string()
 }
 
+/// Removes volatile "Generated:" lines and "Recently Modified Files"
+/// sections from mechanical handoff content so hashing is stable across runs.
 fn strip_mechanical_timestamps(content: &str) -> String {
     let mut lines: Vec<&str> = Vec::new();
     let mut skip_section = false;
@@ -1044,6 +1093,8 @@ fn strip_mechanical_timestamps(content: &str) -> String {
     lines.join("\n")
 }
 
+/// Applies tiered age-based retention (mechanical: 7 days, manual/auto: 90
+/// days) plus a 50-row-per-project cap, for a single user/project pair.
 fn run_tiered_gc(
     conn: &mut rusqlite::Connection,
     project: &str,
@@ -1066,10 +1117,12 @@ fn run_tiered_gc(
     Ok(())
 }
 
+/// Tests for handoff storage, listing, search, delete, and GC user scoping.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Build a minimal StoreParams for tests with the given project/content.
     fn store_params(project: &str, content: &str) -> StoreParams {
         StoreParams {
             project: project.to_string(),
@@ -1099,6 +1152,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// store() writes rows under the caller's user_id only.
     async fn store_scopes_to_user() {
         let db = fresh_db().await;
         let a = db
@@ -1129,6 +1183,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// delete() must not remove another user's handoff by id.
     async fn delete_refuses_cross_user() {
         let db = fresh_db().await;
         let a_id = db
@@ -1152,6 +1207,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// search() returns only the caller's handoffs.
     async fn search_scopes_to_user() {
         let db = fresh_db().await;
         db.store(store_params("proj-a", "alice has a uniquemarker phrase"), 7)
@@ -1176,6 +1232,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// gc() prunes only the caller's rows, never another user's.
     async fn gc_scopes_to_user() {
         let db = fresh_db().await;
         for i in 0..5 {
@@ -1199,6 +1256,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// stats() aggregates only the caller's handoffs.
     async fn stats_scopes_to_user() {
         let db = fresh_db().await;
         db.store(store_params("proj-a", "alice"), 7)

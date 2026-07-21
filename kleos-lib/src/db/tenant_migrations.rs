@@ -442,6 +442,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         apply_schema_v82_tz_default_rebuild,
         notx
     ),
+    // v83: skill_records.duration_sample_count (mirror of global migration
+    // 100) -- denominator for the avg_duration_ms running average ([51]).
+    tenant_migration!(
+        83,
+        "skill_duration_sample_count",
+        apply_schema_v83_skill_duration_sample_count
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -791,6 +798,12 @@ tenant_migration_sql!(
     "v79",
     "../tenant/schema_v79_attention_notes.sql"
 );
+// Tenant v83: skill_records.duration_sample_count column + backfill.
+tenant_migration_sql!(
+    apply_schema_v83_skill_duration_sample_count,
+    "v83",
+    "../tenant/schema_v83_skill_duration_sample_count.sql"
+);
 tenant_migration_sql!(
     apply_schema_v55_memories_readd,
     "v55",
@@ -952,6 +965,7 @@ fn apply_schema_v82_tz_default_rebuild(conn: &Connection) -> Result<()> {
                  branch TEXT,
                  directory TEXT,
                  agent TEXT DEFAULT 'unknown',
+                 -- handoff kind discriminator for handoffs (e.g. manual, auto)
                  type TEXT DEFAULT 'manual',
                  content TEXT NOT NULL,
                  metadata TEXT,

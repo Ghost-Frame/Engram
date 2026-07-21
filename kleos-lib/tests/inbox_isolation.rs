@@ -100,16 +100,30 @@ async fn inbox_mutations_are_scoped_to_caller() {
     let m_reject = insert_pending(&db, "to reject", OWNER).await;
     let m_edit = insert_pending(&db, "to edit", OWNER).await;
 
-    // Intruder attempts on every id are no-ops: rows stay pending.
-    kleos_lib::inbox::approve_memory(&db, m_approve, INTRUDER)
-        .await
-        .expect("intruder approve");
-    kleos_lib::inbox::reject_memory(&db, m_reject, INTRUDER)
-        .await
-        .expect("intruder reject");
-    kleos_lib::inbox::edit_and_approve(&db, m_edit, INTRUDER, Some("hijacked"), None, None, None)
-        .await
-        .expect("intruder edit");
+    // Intruder attempts on every id fail loudly with NotFound (finding [73]
+    // turned the former silent no-op into a state-checked error) and must not
+    // mutate the rows.
+    assert!(matches!(
+        kleos_lib::inbox::approve_memory(&db, m_approve, INTRUDER).await,
+        Err(kleos_lib::EngError::NotFound(_))
+    ));
+    assert!(matches!(
+        kleos_lib::inbox::reject_memory(&db, m_reject, INTRUDER).await,
+        Err(kleos_lib::EngError::NotFound(_))
+    ));
+    assert!(matches!(
+        kleos_lib::inbox::edit_and_approve(
+            &db,
+            m_edit,
+            INTRUDER,
+            Some("hijacked"),
+            None,
+            None,
+            None
+        )
+        .await,
+        Err(kleos_lib::EngError::NotFound(_))
+    ));
 
     assert_eq!(status_of(&db, m_approve).await, "pending");
     assert_eq!(status_of(&db, m_reject).await, "pending");
@@ -129,6 +143,13 @@ async fn inbox_mutations_are_scoped_to_caller() {
     assert_eq!(status_of(&db, m_approve).await, "approved");
     assert_eq!(status_of(&db, m_reject).await, "rejected");
     assert_eq!(status_of(&db, m_edit).await, "approved");
+
+    // Re-deciding an already-decided row is NotFound, not silent success:
+    // only pending rows are eligible for inbox transitions.
+    assert!(matches!(
+        kleos_lib::inbox::approve_memory(&db, m_approve, OWNER).await,
+        Err(kleos_lib::EngError::NotFound(_))
+    ));
 
     // The intruder's edit content never landed.
     let edited_content = db

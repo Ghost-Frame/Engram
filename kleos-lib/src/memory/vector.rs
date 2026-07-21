@@ -190,7 +190,13 @@ pub async fn chunk_vector_search(
 /// Return the subset of `ids` that belong to `user_id` and are currently
 /// visible (is_latest, not forgotten). One batched query; preserves nothing
 /// about order (caller re-orders against its candidate list).
-async fn filter_owned_visible(db: &Database, ids: &[i64], user_id: i64) -> Result<HashSet<i64>> {
+/// `pub(super)` so search.rs's centroid path can apply the same shared-index
+/// ownership filter (finding [87]).
+pub(super) async fn filter_owned_visible(
+    db: &Database,
+    ids: &[i64],
+    user_id: i64,
+) -> Result<HashSet<i64>> {
     if ids.is_empty() {
         return Ok(HashSet::new());
     }
@@ -218,6 +224,8 @@ async fn filter_owned_visible(db: &Database, ids: &[i64], user_id: i64) -> Resul
     .await
 }
 
+/// Fetches chunk content for a batch of `(memory_id, chunk_idx)` winners in a
+/// single reader connection, keyed by memory id. Missing chunks are skipped.
 async fn fetch_chunk_texts_batch(
     db: &Database,
     winners: &[(i64, usize)],
@@ -247,10 +255,13 @@ async fn fetch_chunk_texts_batch(
     .await
 }
 
+/// Tests for embedding JSON serialization and owner/visibility chunk filtering.
 #[cfg(test)]
 mod tests {
     use super::embedding_to_json_array;
 
+    /// Reference (pre-optimization) JSON-array formatter used to verify
+    /// `embedding_to_json_array` produces byte-identical output.
     fn old_format(embedding: &[f32]) -> String {
         format!(
             "[{}]",
@@ -262,22 +273,27 @@ mod tests {
         )
     }
 
+    /// Verifies an empty embedding serializes to an empty JSON array.
     #[test]
     fn empty() {
         assert_eq!(embedding_to_json_array(&[]), "[]");
     }
 
+    /// Verifies a single-element embedding matches the old formatter's output.
     #[test]
     fn single() {
         assert_eq!(embedding_to_json_array(&[1.5]), old_format(&[1.5]));
     }
 
+    /// Verifies a full 1024-dim embedding matches the old formatter byte-for-byte.
     #[test]
     fn matches_old_format_on_full_vector() {
         let v: Vec<f32> = (0..1024).map(|i| (i as f32).sin() * 0.25).collect();
         assert_eq!(embedding_to_json_array(&v), old_format(&v));
     }
 
+    /// Verifies special float values (zero, negative zero, min/max, subnormal
+    /// scale) still match the old formatter's output.
     #[test]
     fn matches_old_format_with_specials() {
         let v = [0.0_f32, -0.0, 1.0, -1.0, f32::MIN, f32::MAX, 1e-10, 1e10];

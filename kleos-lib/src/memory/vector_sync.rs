@@ -181,6 +181,50 @@ enum ReplayOutcome {
     Failed(String),
 }
 
+/// Replay one 'chunk-insert' ledger row: rebuild the memory's chunk-vector
+/// batch from the persisted memory_chunks rows and insert it into the chunk
+/// index. Missing chunk index or missing rows are unactionable (Skipped).
+async fn replay_chunk_insert(db: &Database, memory_id: i64) -> ReplayOutcome {
+    let Some(chunk_index) = db.chunk_vector_index.as_ref() else {
+        return ReplayOutcome::Skipped;
+    };
+    let rows: Result<Vec<(i64, Vec<u8>)>> = db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT chunk_idx, embedding_vec_1024 FROM memory_chunks \
+                 WHERE memory_id = ?1 ORDER BY chunk_idx ASC",
+            )?;
+            let rows: Vec<(i64, Vec<u8>)> = stmt
+                .query_map(params![memory_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(rows)
+        })
+        .await;
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => return ReplayOutcome::Failed(e.to_string()),
+    };
+    if rows.is_empty() {
+        return ReplayOutcome::Skipped;
+    }
+    let batch: Vec<(i64, Vec<f32>)> = rows
+        .iter()
+        .map(|(idx, blob)| {
+            (
+                super::chunk_lance_key(memory_id, *idx as usize),
+                blob_to_embedding(blob),
+            )
+        })
+        .collect();
+    match chunk_index.insert_many(&batch).await {
+        Ok(()) => ReplayOutcome::Synced,
+        Err(e) => ReplayOutcome::Failed(e.to_string()),
+    }
+}
+
 /// Process a batch of pending vector-sync rows with batched DB reads and
 /// a single batched DELETE for cleared rows.  Failed rows still take an
 /// individual UPDATE because we stamp per-row error text.
@@ -218,6 +262,12 @@ async fn process_pending_batch(
                 }
                 None => ReplayOutcome::Skipped,
             },
+            // Finding [30]: a failed chunk-vector batch write (write_chunks or
+            // carry_forward_chunks). The chunk rows + embeddings are persisted
+            // in memory_chunks, so the batch is re-derived from there. A memory
+            // whose chunk rows are gone (hard delete since the failure) or a
+            // deployment without a chunk index is unactionable -> Skipped.
+            "chunk-insert" => replay_chunk_insert(db, memory_id).await,
             other => {
                 warn!("replay skipped unknown vector_sync op '{}'", other);
                 ReplayOutcome::Skipped
@@ -412,6 +462,9 @@ pub async fn backfill_missing_embeddings_limited(
     const BATCH_SIZE: usize = 32;
     let mut pending_primary: Vec<(i64, Vec<f32>)> = Vec::with_capacity(BATCH_SIZE);
 
+    /// Bulk-inserts a batch of primary embeddings into the Lance vector
+    /// index in one round trip; no-op if the batch is empty or no index is
+    /// configured.
     async fn flush_primary_batch(db: &Database, batch: &[(i64, Vec<f32>)]) {
         if batch.is_empty() {
             return;
@@ -491,6 +544,9 @@ async fn persist_primary_db_only(db: &Database, memory_id: i64, emb: &[f32]) -> 
     Ok(())
 }
 
+/// Rebuilds the Lance chunk vector index from existing `memory_chunks`
+/// embeddings already stored in SQLite. Returns the number of chunks indexed,
+/// or `0` if no chunk vector index is configured.
 #[tracing::instrument(skip(db))]
 pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usize> {
     let Some(index) = db.chunk_vector_index.as_ref() else {

@@ -45,6 +45,8 @@ async fn derive_after_approve(
     }
 }
 
+/// Builds the inbox route table: list/approve/reject/edit/bulk on `/inbox`
+/// plus the legacy `/pending` alias for listing.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/inbox", get(list_inbox))
@@ -55,6 +57,8 @@ pub fn router() -> Router<AppState> {
         .route("/pending", get(list_pending_legacy))
 }
 
+/// Lists the caller's pending memories, paginated by `limit`/`offset`
+/// (clamped to [1, 200]), alongside the total pending count.
 async fn list_inbox(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -72,6 +76,8 @@ async fn list_inbox(
     ))
 }
 
+/// Approves a pending memory and runs the deferred post-store derivation
+/// (facts, entity links, brain associations) now that it has cleared review.
 async fn approve(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -86,6 +92,8 @@ async fn approve(
     Ok(Json(json!({ "approved": true, "id": id })))
 }
 
+/// Rejects a pending memory and, if a reason was supplied, records it
+/// best-effort (a recording failure is logged but does not fail the request).
 async fn reject(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -133,6 +141,9 @@ async fn edit(
     Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
 }
 
+/// Applies "approve" or "reject" to a batch of pending memory ids for the
+/// caller, tolerating per-id NotFound (already decided/missing/foreign) by
+/// counting them as skipped instead of aborting the whole batch.
 async fn bulk_action(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -141,18 +152,27 @@ async fn bulk_action(
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.effective_user_id();
     let mut count = 0;
+    // Ids that were not pending for this caller (already decided, missing, or
+    // foreign). The lib layer reports them as NotFound (finding [73]); a bulk
+    // sweep tolerates them per-id instead of aborting mid-batch, and reports
+    // how many were skipped so the caller can tell partial from full effect.
+    let mut skipped = 0;
     for id in &body.ids {
         match body.action.as_str() {
-            "approve" => {
-                kleos_lib::inbox::approve_memory(&db, *id, user_id).await?;
-                // Same deferred derivation the single-approve path runs.
-                derive_after_approve(&state, &db, *id, user_id).await;
-                count += 1;
-            }
-            "reject" => {
-                kleos_lib::inbox::reject_memory(&db, *id, user_id).await?;
-                count += 1;
-            }
+            "approve" => match kleos_lib::inbox::approve_memory(&db, *id, user_id).await {
+                Ok(()) => {
+                    // Same deferred derivation the single-approve path runs.
+                    derive_after_approve(&state, &db, *id, user_id).await;
+                    count += 1;
+                }
+                Err(kleos_lib::EngError::NotFound(_)) => skipped += 1,
+                Err(e) => return Err(AppError(e)),
+            },
+            "reject" => match kleos_lib::inbox::reject_memory(&db, *id, user_id).await {
+                Ok(()) => count += 1,
+                Err(kleos_lib::EngError::NotFound(_)) => skipped += 1,
+                Err(e) => return Err(AppError(e)),
+            },
             _ => {
                 return Err(AppError(kleos_lib::EngError::InvalidInput(
                     "action must be approve or reject".into(),
@@ -161,10 +181,11 @@ async fn bulk_action(
         }
     }
     Ok(Json(
-        json!({ "action": body.action, "count": count, "ids": body.ids }),
+        json!({ "action": body.action, "count": count, "skipped": skipped, "ids": body.ids }),
     ))
 }
 
+/// Legacy alias of [`list_inbox`] served at `/pending` for older clients.
 async fn list_pending_legacy(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,

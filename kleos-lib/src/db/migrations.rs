@@ -539,6 +539,17 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_tz_default_rebuild,
         fkrebuild
     ),
+    // v100: skill_records.duration_sample_count -- denominator for the running
+    // avg_duration_ms. Previously the average divided by execution_count, so
+    // executions that reported no duration silently dragged the average toward
+    // zero weight ([51]). Backfills existing rows with execution_count where an
+    // average exists (best available approximation of past sample counts).
+    migration!(
+        100,
+        "skill_duration_sample_count",
+        run_migration_skill_duration_sample_count,
+        tx
+    ),
 ];
 
 // --- Version constants ---
@@ -1891,6 +1902,7 @@ fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Resul
          CREATE TABLE soma_agents (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              name TEXT NOT NULL,
+             -- agent role/category discriminator for soma_agents
              type TEXT NOT NULL,
              description TEXT,
              capabilities TEXT NOT NULL DEFAULT '[]',
@@ -2145,6 +2157,7 @@ fn run_migration_tz_default_rebuild(conn: &rusqlite::Connection) -> Result<()> {
                  branch TEXT,
                  directory TEXT,
                  agent TEXT DEFAULT 'unknown',
+                 -- handoff kind discriminator for handoffs (e.g. manual, auto)
                  type TEXT DEFAULT 'manual',
                  content TEXT NOT NULL,
                  metadata TEXT,
@@ -2584,6 +2597,7 @@ fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Re
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              name TEXT NOT NULL,
              entity_type TEXT NOT NULL DEFAULT 'concept',
+             -- entity subtype discriminator for entities
              type TEXT NOT NULL DEFAULT 'generic',
              description TEXT,
              aliases TEXT,
@@ -3762,6 +3776,7 @@ fn run_migration_drop_user_id_graph(conn: &rusqlite::Connection) -> Result<()> {
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              name TEXT NOT NULL,
              entity_type TEXT NOT NULL DEFAULT 'concept',
+             -- entity subtype discriminator for entities
              type TEXT NOT NULL DEFAULT 'generic',
              description TEXT,
              aliases TEXT,
@@ -4665,6 +4680,24 @@ fn run_migration_add_memory_lang(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+/// v100: add skill_records.duration_sample_count and backfill it from
+/// execution_count for rows that already carry an average (the closest
+/// available approximation of how many samples produced that average).
+fn run_migration_skill_duration_sample_count(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute(
+        "ALTER TABLE skill_records ADD COLUMN duration_sample_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE skill_records SET duration_sample_count = execution_count \
+         WHERE avg_duration_ms IS NOT NULL",
+        [],
+    )?;
+    info!("Migration 100 complete: skill_records.duration_sample_count added");
+    Ok(())
+}
+
+/// Migration 96: creates the attention_notes table for user-priority reminders.
 fn run_migration_attention_notes(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS attention_notes (
@@ -5127,6 +5160,7 @@ fn run_migration_handoffs_global(conn: &rusqlite::Connection) -> Result<()> {
             branch TEXT,
             directory TEXT,
             agent TEXT DEFAULT 'unknown',
+            -- handoff kind discriminator for handoffs (e.g. manual, auto)
             type TEXT DEFAULT 'manual',
             content TEXT NOT NULL,
             metadata TEXT,

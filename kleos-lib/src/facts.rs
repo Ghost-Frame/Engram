@@ -16,6 +16,7 @@ pub struct StructuredFact {
     pub created_at: String,
 }
 
+/// Input payload for creating a new structured fact (subject/predicate/object triple).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateFactRequest {
     pub memory_id: Option<i64>,
@@ -25,6 +26,7 @@ pub struct CreateFactRequest {
     pub confidence: Option<f64>,
 }
 
+/// A single agent/key-value entry in the current_state table, scoped to a user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentState {
     pub id: i64,
@@ -86,6 +88,14 @@ pub async fn create_fact(
     user_id: i64,
 ) -> Result<StructuredFact> {
     let confidence = req.confidence.unwrap_or(1.0);
+    // Write-side guard (deep-sweep F7 residual): confidence is a probability.
+    // NaN/Inf/out-of-range values previously landed in the column and every
+    // consumer needed its own read-side guard; reject at the boundary instead.
+    if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+        return Err(EngError::InvalidInput(
+            "confidence must be a finite value between 0.0 and 1.0".to_string(),
+        ));
+    }
 
     if let Some(mid) = req.memory_id {
         let exists = db

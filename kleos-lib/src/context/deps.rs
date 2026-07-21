@@ -5,6 +5,7 @@
 use crate::db::Database;
 use crate::memory::types::Memory;
 use crate::memory::{row_to_memory, MEMORY_COLUMNS};
+use crate::validation::MAX_STATIC_CONTEXT_MEMORIES;
 use crate::Result;
 
 /// One revision in a memory's version chain, surfaced when context assembly
@@ -82,9 +83,13 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
     // by importance and injected verbatim, so without it the gate would withhold
     // a high-importance memory from search and then inject it here anyway --
     // defeating the gate on exactly the memories it exists to hold back.
+    // Finding [19]: bound the injection set. Static memories are injected
+    // verbatim into every context assembly, so an unbounded set lets one
+    // user's static corpus dominate assembly cost. Top-N by importance keeps
+    // the highest-value facts; the downstream token budget trims further.
     let sql = format!(
-        "SELECT {} FROM memories WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 AND status != 'pending' ORDER BY importance DESC",
-        MEMORY_COLUMNS,
+        "SELECT {} FROM memories WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 AND status != 'pending' ORDER BY importance DESC LIMIT {}",
+        MEMORY_COLUMNS, MAX_STATIC_CONTEXT_MEMORIES,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;

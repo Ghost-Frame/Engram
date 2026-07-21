@@ -6,6 +6,7 @@ use crate::db::Database;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
+/// A memory row awaiting user approval/rejection in the inbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMemory {
     pub id: i64,
@@ -22,6 +23,8 @@ pub struct PendingMemory {
     pub model: Option<String>,
 }
 
+/// Lists pending, non-forgotten memories for a user, newest first, paginated
+/// by `limit`/`offset`.
 #[tracing::instrument(skip(db), fields(user_id, limit, offset))]
 pub async fn list_pending(
     db: &Database,
@@ -67,6 +70,7 @@ pub async fn list_pending(
     .await
 }
 
+/// Counts pending, non-forgotten memories for a user.
 #[tracing::instrument(skip(db))]
 pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
@@ -80,33 +84,54 @@ pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     .await
 }
 
+/// Approve a pending memory. The `status = 'pending'` predicate makes the
+/// transition state-checked and the affected-row count observable: approving a
+/// missing, foreign, or already-decided row returns NotFound instead of a
+/// silent no-op Ok (finding [73]).
 #[tracing::instrument(skip(db))]
 pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE memories SET status = 'approved', updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
-        )?;
-        Ok(())
-    })
-    .await
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE memories SET status = 'approved', updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2 AND status = 'pending'",
+                rusqlite::params![id, user_id],
+            )?)
+        })
+        .await?;
+    if affected == 0 {
+        return Err(crate::EngError::NotFound(format!(
+            "no pending memory {} for this user",
+            id
+        )));
+    }
+    Ok(())
 }
 
+/// Reject a pending memory (archives it). Same state-checked contract as
+/// [`approve_memory`]: only pending rows are eligible, and a zero-row update
+/// surfaces as NotFound rather than silent success (finding [73]).
 #[tracing::instrument(skip(db), fields(memory_id = id, user_id))]
 pub async fn reject_memory(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') \
-             WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![id, user_id],
-        )
-        ?;
-        Ok(())
-    })
-    .await
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') \
+                 WHERE id = ?1 AND user_id = ?2 AND status = 'pending'",
+                rusqlite::params![id, user_id],
+            )?)
+        })
+        .await?;
+    if affected == 0 {
+        return Err(crate::EngError::NotFound(format!(
+            "no pending memory {} for this user",
+            id
+        )));
+    }
+    Ok(())
 }
 
+/// Records the reason a memory was forgotten/rejected, scoped to the owning user.
 #[tracing::instrument(skip(db, reason), fields(memory_id = id, user_id))]
 pub async fn set_forget_reason(db: &Database, id: i64, user_id: i64, reason: &str) -> Result<()> {
     let reason = reason.to_string();
@@ -120,6 +145,14 @@ pub async fn set_forget_reason(db: &Database, id: i64, user_id: i64, reason: &st
     .await
 }
 
+/// Edit fields of a pending memory and approve it in one write.
+///
+/// Every supplied field passes through the same validation the generic
+/// memory-write paths use (finding [72]): content via
+/// `validation::validate_content`, importance clamped to the supported range,
+/// and tags parsed + normalized into the canonical JSON-array form so the
+/// column never holds raw non-JSON text. Only pending rows are eligible and a
+/// zero-row update returns NotFound (finding [73]).
 #[tracing::instrument(skip(db, content, tags), fields(memory_id = id, user_id, category = ?category, importance = ?importance))]
 pub async fn edit_and_approve(
     db: &Database,
@@ -137,38 +170,63 @@ pub async fn edit_and_approve(
     let mut vals: Vec<rusqlite::types::Value> = Vec::new();
     let mut idx = 1;
     if let Some(c) = content {
+        crate::validation::validate_content(c)?;
         sets.push(format!("content = ?{}", idx));
-        vals.push(rusqlite::types::Value::Text(c.to_string()));
+        vals.push(rusqlite::types::Value::Text(c.trim().to_string()));
         idx += 1;
     }
     if let Some(c) = category {
+        let trimmed = c.trim();
+        if trimmed.is_empty() {
+            return Err(crate::EngError::InvalidInput(
+                "category must not be empty".to_string(),
+            ));
+        }
         sets.push(format!("category = ?{}", idx));
-        vals.push(rusqlite::types::Value::Text(c.to_string()));
+        vals.push(rusqlite::types::Value::Text(trimmed.to_string()));
         idx += 1;
     }
     if let Some(i) = importance {
         sets.push(format!("importance = ?{}", idx));
-        vals.push(rusqlite::types::Value::Integer(i));
+        vals.push(rusqlite::types::Value::Integer(
+            crate::validation::clamp_importance_i64(i),
+        ));
         idx += 1;
     }
     if let Some(t) = tags {
-        sets.push(format!("tags = ?{}", idx));
-        vals.push(rusqlite::types::Value::Text(t.to_string()));
-        idx += 1;
+        // NULL out the column when normalization leaves no usable tags,
+        // matching memory::store's normalize_tags behavior.
+        match crate::validation::normalize_tags_json(t)? {
+            Some(json) => {
+                sets.push(format!("tags = ?{}", idx));
+                vals.push(rusqlite::types::Value::Text(json));
+                idx += 1;
+            }
+            None => {
+                sets.push("tags = NULL".to_string());
+            }
+        }
     }
     let id_idx = idx;
     vals.push(rusqlite::types::Value::Integer(id));
     let user_idx = idx + 1;
     vals.push(rusqlite::types::Value::Integer(user_id));
     let sql = format!(
-        "UPDATE memories SET {} WHERE id = ?{} AND user_id = ?{}",
+        "UPDATE memories SET {} WHERE id = ?{} AND user_id = ?{} AND status = 'pending'",
         sets.join(", "),
         id_idx,
         user_idx
     );
-    db.write(move |conn| {
-        conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))?;
-        Ok(())
-    })
-    .await
+    let affected = db
+        .write(
+            move |conn| Ok(conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))?),
+        )
+        .await?;
+    if affected == 0 {
+        return Err(crate::EngError::NotFound(format!(
+            "no pending memory {} for this user",
+            id
+        )));
+    }
+    Ok(())
 }

@@ -158,7 +158,36 @@ fn preceded_by_rust_comment(lines: &[&str], idx: usize) -> bool {
         if t.starts_with("#[") || t.starts_with("#![") {
             continue;
         }
-        return t.starts_with("//");
+        // Skip multi-line attribute blocks: a closing `)]` / `]` line whose
+        // opener (a `#[` line) sits further up in the same contiguous block.
+        // Without this, a doc comment above a wrapped #[tracing::instrument(
+        // ... )] was invisible and the declaration was falsely flagged.
+        if t == "]" || t.ends_with(")]") {
+            let mut j = i;
+            let mut opener = None;
+            while j > 0 {
+                j -= 1;
+                let u = lines[j].trim();
+                if u.is_empty() {
+                    break;
+                }
+                if u.starts_with("#[") || u.starts_with("#![") {
+                    opener = Some(j);
+                    break;
+                }
+            }
+            match opener {
+                Some(j) => {
+                    i = j;
+                    continue;
+                }
+                None => return false,
+            }
+        }
+        // `--` covers SQL comments inside embedded schema string literals:
+        // the line-based scanner cannot tell literal contents from code, so a
+        // SQL `type` column is documentable only with SQL comment syntax.
+        return t.starts_with("//") || t.starts_with("--");
     }
     false
 }
@@ -305,4 +334,47 @@ fn scan_python(lines: &[&str]) -> (usize, Vec<Finding>) {
     }
 
     (total, findings)
+}
+
+/// Tests for the Rust comment-precedence walk (attribute skipping and
+/// embedded-SQL comment recognition).
+#[cfg(test)]
+mod tests {
+    use super::preceded_by_rust_comment;
+
+    /// A doc comment above a multi-line #[attr(...)] block must still count
+    /// as documenting the declaration below the block.
+    #[test]
+    fn doc_above_multiline_attribute_is_seen() {
+        let src = [
+            "/// Documented.",
+            "#[tracing::instrument(",
+            "    skip(db),",
+            "    fields(user_id)",
+            ")]",
+            "pub async fn documented() {}",
+        ];
+        assert!(preceded_by_rust_comment(&src, 5));
+    }
+
+    /// An undocumented declaration below a multi-line attribute stays flagged.
+    #[test]
+    fn undocumented_below_multiline_attribute_is_flagged() {
+        let src = [
+            "fn other() {}",
+            "#[tracing::instrument(",
+            "    skip(db)",
+            ")]",
+            "pub async fn undocumented() {}",
+        ];
+        assert!(!preceded_by_rust_comment(&src, 4));
+    }
+
+    /// SQL `--` comments inside embedded schema strings document the
+    /// pseudo-declarations the line-based scanner finds there.
+    #[test]
+    fn sql_comment_counts_inside_string_literals() {
+        let src = ["    -- kind discriminator", "    type TEXT NOT NULL,"];
+        assert!(preceded_by_rust_comment(&src, 1));
+    }
 }

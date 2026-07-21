@@ -759,16 +759,37 @@ async fn centroid_or_sqlite_vector(
     user_id: i64,
 ) -> Result<Vec<super::types::VectorHit>> {
     if let Some(index) = db.vector_index.as_ref() {
-        match index.search(embedding, candidate_target).await {
-            Ok(hits) => Ok(hits
-                .into_iter()
-                .map(|hit| super::types::VectorHit {
-                    memory_id: hit.memory_id,
-                    distance: hit.distance,
-                    rank: hit.rank,
-                    matching_chunk_text: None,
-                })
-                .collect()),
+        // Finding [87]: the centroid index carries no tenant identity, so in
+        // shared/monolith mode foreign users' vectors would consume candidate
+        // slots and only be discarded later at hydration -- recall starvation.
+        // Over-collect (bounded), then keep the caller's own visible memories
+        // up to the original target, mirroring chunk_vector_search.
+        let collect_target = candidate_target
+            .saturating_mul(4)
+            .clamp(candidate_target, 1024);
+        match index.search(embedding, collect_target).await {
+            Ok(hits) => {
+                let ids: Vec<i64> = hits.iter().map(|h| h.memory_id).collect();
+                let owned = super::vector::filter_owned_visible(db, &ids, user_id).await?;
+                let mut out: Vec<super::types::VectorHit> = Vec::with_capacity(candidate_target);
+                for hit in hits {
+                    if !owned.contains(&hit.memory_id) {
+                        continue;
+                    }
+                    // Re-rank over the surviving hits so downstream RRF sees a
+                    // dense ranking, not the sparse pre-filter one.
+                    out.push(super::types::VectorHit {
+                        memory_id: hit.memory_id,
+                        distance: hit.distance,
+                        rank: out.len(),
+                        matching_chunk_text: None,
+                    });
+                    if out.len() >= candidate_target {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
             Err(e) => {
                 warn!(
                     "LanceDB vector search failed, falling back to SQLite vectors: {}",

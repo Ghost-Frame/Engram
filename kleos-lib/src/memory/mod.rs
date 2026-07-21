@@ -76,8 +76,10 @@ fn parse_tags_json(tags: &Option<String>) -> Vec<String> {
 }
 
 /// Clamp user-provided importance into the supported memory range.
+/// Delegates to the shared validation helper so every write path (store,
+/// update, inbox edit_and_approve) agrees on the range.
 fn clamp_importance(value: i32) -> i32 {
-    value.clamp(1, 10)
+    crate::validation::clamp_importance_i64(value as i64) as i32
 }
 
 /// Record a failed LanceDB write into the vector_sync_pending table so a
@@ -152,6 +154,9 @@ pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<
                 "LanceDB chunk vector batch insert failed for memory {}: {}",
                 memory_id, e
             );
+            // Finding [30]: ledger the failure so the replay sweeper can
+            // re-derive the batch from the memory_chunks rows written above.
+            record_vector_sync_failure(db, memory_id, 0, "chunk-insert", &e.to_string()).await;
         }
     }
 }
@@ -232,6 +237,10 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
                 "LanceDB chunk carry-forward batch insert failed for memory {}: {}",
                 new_memory_id, e
             );
+            // Finding [30]: same replay path as write_chunks -- the chunk rows
+            // were already copied to new_memory_id, so 'chunk-insert' can
+            // rebuild the vectors from them.
+            record_vector_sync_failure(db, new_memory_id, 0, "chunk-insert", &e.to_string()).await;
         }
 
         // Clean up old memory's chunk vectors
@@ -444,6 +453,52 @@ pub async fn store_with_chunks(
         }
     }
     store(db, req, None, false).await
+}
+
+/// Embedder-aware wrapper around [`update`], mirroring [`store_with_chunks`].
+///
+/// Finding [31]: `update` carries the old row's embedding forward when the
+/// caller supplies none, so a content edit without a client-side embedding
+/// left a stale vector attached to the new text. When content is being
+/// changed and no embedding was supplied, compute a fresh content embedding
+/// (and chunk embeddings) here. Embedding failure degrades to the previous
+/// carry-forward behavior with a warning rather than failing the update.
+pub async fn update_with_chunks(
+    db: &Database,
+    embedder: &dyn crate::embeddings::EmbeddingProvider,
+    id: i64,
+    mut req: UpdateRequest,
+    user_id: i64,
+    update_counters: bool,
+) -> Result<Memory> {
+    if let Some(content) = req.content.as_deref().map(str::trim) {
+        if !content.is_empty() {
+            if req.embedding.is_none() {
+                match embedder.embed(content).await {
+                    Ok(emb) => req.embedding = Some(emb),
+                    Err(e) => tracing::warn!("embedding failed in update_with_chunks: {}", e),
+                }
+            }
+            if req.chunk_embeddings.is_none() {
+                match crate::embeddings::chunking::chunk_and_embed(
+                    embedder,
+                    content,
+                    db.embedding_chunk_max_chars,
+                    db.embedding_chunk_overlap,
+                    db.embedding_chunk_max_chunks,
+                )
+                .await
+                {
+                    Ok(pairs) if !pairs.is_empty() => req.chunk_embeddings = Some(pairs),
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("chunk embedding failed in update_with_chunks: {}", e)
+                    }
+                }
+            }
+        }
+    }
+    update(db, id, req, user_id, update_counters).await
 }
 
 /// Store a single memory entry, enforcing content constraints and optional tenant quota.

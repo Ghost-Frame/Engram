@@ -360,6 +360,7 @@ pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Ski
                     failure_count = 0, \
                     execution_count = 0, \
                     avg_duration_ms = NULL, \
+                    duration_sample_count = 0, \
                     trust_score = 0.0, \
                     updated_at = datetime('now') \
                  WHERE id = ?1",
@@ -434,11 +435,19 @@ pub async fn record_execution(
             )?;
         }
 
-        // Update avg_duration_ms
+        // Update avg_duration_ms. Finding [51]: the running average divides by
+        // duration_sample_count (executions that actually reported a duration),
+        // not execution_count -- otherwise duration-less executions inflate the
+        // denominator and drag the average toward zero. The sample counter is
+        // incremented in the same statement so numerator and denominator move
+        // together.
         if let Some(dur) = duration_ms {
             conn.execute(
-                "UPDATE skill_records SET avg_duration_ms = \
-                 COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), \
+                "UPDATE skill_records SET \
+                 avg_duration_ms = COALESCE( \
+                     (avg_duration_ms * duration_sample_count + ?1) / (duration_sample_count + 1), \
+                     ?1), \
+                 duration_sample_count = duration_sample_count + 1, \
                  updated_at = datetime('now') WHERE id = ?2",
                 params![dur, skill_id],
             )?;

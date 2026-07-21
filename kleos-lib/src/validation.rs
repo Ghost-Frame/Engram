@@ -30,6 +30,11 @@ pub const RERANKER_TOP_K: usize = 24;
 /// Token budget ceiling for context assembly.
 pub const MAX_TOKEN_BUDGET: usize = 64_000;
 
+/// Maximum static memories injected verbatim into a context assembly.
+/// Bounds per-assembly cost when a user accumulates a large static corpus;
+/// selection is top-N by importance and the token budget trims further.
+pub const MAX_STATIC_CONTEXT_MEMORIES: usize = 200;
+
 /// Maximum chars kept per entry when building context.
 pub const MAX_CONTEXT_CHARS: usize = 4_000;
 
@@ -242,6 +247,41 @@ pub fn validate_content(content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Lower bound of the supported memory importance range.
+pub const MIN_IMPORTANCE: i64 = 1;
+
+/// Upper bound of the supported memory importance range.
+pub const MAX_IMPORTANCE: i64 = 10;
+
+/// Clamp user-provided importance into the supported memory range.
+///
+/// Shared by `memory::store`/`memory::update` (via the i32 wrapper there) and
+/// `inbox::edit_and_approve` so every write path agrees on the range.
+pub fn clamp_importance_i64(value: i64) -> i64 {
+    value.clamp(MIN_IMPORTANCE, MAX_IMPORTANCE)
+}
+
+/// Parse and normalize a caller-supplied JSON tag array into the canonical
+/// stored form: trimmed, lowercased, empties dropped, serialized as a JSON
+/// array. Returns `Ok(None)` when no usable tags remain after normalization
+/// (callers should store NULL), and `Err` when the input is not a JSON array
+/// of strings -- the memories.tags column must never hold non-JSON text.
+pub fn normalize_tags_json(raw: &str) -> Result<Option<String>> {
+    let parsed: Vec<String> = serde_json::from_str(raw)
+        .map_err(|_| EngError::InvalidInput("tags must be a JSON array of strings".to_string()))?;
+    let normalized: Vec<String> = parsed
+        .iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        Ok(None)
+    } else {
+        // Vec<String> serialization cannot fail.
+        Ok(Some(serde_json::to_string(&normalized).unwrap()))
+    }
+}
+
 /// Clamp a user-supplied limit to [1, MAX_SEARCH_LIMIT], defaulting to DEFAULT_SEARCH_LIMIT.
 pub fn clamp_limit(limit: Option<usize>) -> usize {
     limit
@@ -287,10 +327,13 @@ pub fn validate_batch_size(n: usize) -> Result<()> {
     Ok(())
 }
 
+/// Tests for content/limit/tag validation and clamping helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies empty/whitespace-only content is rejected and oversized
+    /// content is rejected, while valid content passes.
     #[test]
     fn validate_content_rejects_empty_and_too_large() {
         assert!(validate_content("").is_err());
@@ -300,6 +343,8 @@ mod tests {
         assert!(validate_content(&big).is_err());
     }
 
+    /// Verifies clamp_limit defaults when unset, floors at 1, and caps at
+    /// MAX_SEARCH_LIMIT.
     #[test]
     fn clamp_limit_stays_in_range() {
         assert_eq!(clamp_limit(None), DEFAULT_SEARCH_LIMIT);
@@ -308,6 +353,8 @@ mod tests {
         assert_eq!(clamp_limit(Some(999)), MAX_SEARCH_LIMIT);
     }
 
+    /// Verifies clamp_signed_limit maps non-positive values to the default
+    /// and caps values above `max`.
     #[test]
     fn clamp_signed_limit_rejects_negative_and_caps() {
         assert_eq!(clamp_signed_limit(-1, 20, 100), 20);
@@ -318,6 +365,8 @@ mod tests {
         assert_eq!(clamp_signed_limit(1, 20, 100), 1);
     }
 
+    /// Verifies truncate_on_char_boundary never splits multibyte characters
+    /// (snowman, emoji) across ASCII and non-ASCII inputs.
     #[test]
     fn truncate_on_char_boundary_never_panics() {
         // ASCII: straightforward
@@ -336,6 +385,8 @@ mod tests {
         assert_eq!(truncate_on_char_boundary(e, 5), "x\u{1F600}");
     }
 
+    /// Verifies case-insensitive ASCII matching and that returned offsets
+    /// remain valid UTF-8 char boundaries even with a multibyte prefix.
     #[test]
     fn find_ascii_case_insensitive_matches_and_yields_boundaries() {
         // Case-insensitive ASCII match.
@@ -353,12 +404,43 @@ mod tests {
         assert!(s.is_char_boundary(pos + "<title".len()));
     }
 
+    /// Verifies validate_string_len passes under the cap and errors over it.
     #[test]
     fn validate_string_len_enforces_cap() {
         assert!(validate_string_len("x", "hi", 10).is_ok());
         assert!(validate_string_len("x", "abcdefghijk", 10).is_err());
     }
 
+    /// Verifies clamp_importance_i64 clamps to [MIN_IMPORTANCE, MAX_IMPORTANCE].
+    #[test]
+    fn clamp_importance_i64_bounds() {
+        assert_eq!(clamp_importance_i64(0), 1);
+        assert_eq!(clamp_importance_i64(-5), 1);
+        assert_eq!(clamp_importance_i64(5), 5);
+        assert_eq!(clamp_importance_i64(11), 10);
+        assert_eq!(clamp_importance_i64(i64::MAX), 10);
+    }
+
+    /// Verifies tag normalization trims/lowercases/drops empties, all-empty
+    /// input yields None, and non-JSON-array-of-strings input errors.
+    #[test]
+    fn normalize_tags_json_normalizes_and_rejects() {
+        // Canonical normalization: trim, lowercase, drop empties.
+        assert_eq!(
+            normalize_tags_json(r#"[" Foo ", "BAR", ""]"#).unwrap(),
+            Some(r#"["foo","bar"]"#.to_string())
+        );
+        // All-empty input stores NULL.
+        assert_eq!(normalize_tags_json(r#"["", "  "]"#).unwrap(), None);
+        assert_eq!(normalize_tags_json("[]").unwrap(), None);
+        // Non-array and non-string-element inputs are rejected.
+        assert!(normalize_tags_json("not json").is_err());
+        assert!(normalize_tags_json(r#"{"a":1}"#).is_err());
+        assert!(normalize_tags_json("[1,2]").is_err());
+    }
+
+    /// Verifies validate_batch_size rejects zero and over-cap counts while
+    /// accepting the full [1, MAX_BATCH_OPS] range.
     #[test]
     fn validate_batch_size_range() {
         assert!(validate_batch_size(0).is_err());

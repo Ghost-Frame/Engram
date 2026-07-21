@@ -949,12 +949,27 @@ async fn restore_memory(
 /// PUT /memory/{id} -- update fields on an existing memory.
 #[tracing::instrument(skip_all)]
 async fn update_memory(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.effective_user_id(), false).await?;
+    // Finding [31]: without an embedder-aware path, a content edit carried the
+    // old version's embedding forward, leaving a stale vector on the new text.
+    let updated = if let Some(embedder) = state.current_embedder().await {
+        memory::update_with_chunks(
+            &db,
+            embedder.as_ref(),
+            id,
+            req,
+            auth.effective_user_id(),
+            false,
+        )
+        .await?
+    } else {
+        memory::update(&db, id, req, auth.effective_user_id(), false).await?
+    };
     Ok(Json(memory_to_json(&updated)))
 }
 
