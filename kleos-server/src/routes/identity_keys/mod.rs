@@ -19,7 +19,7 @@ use kleos_lib::auth::Scope;
 use kleos_lib::auth_piv;
 
 mod types;
-use types::{CreateInviteBody, EnrollBody, ListParams, RevokeBody};
+use types::{EnrollBody, ListParams, RevokeBody};
 
 /// Registers all identity key management routes.
 pub fn router() -> Router<AppState> {
@@ -32,7 +32,6 @@ pub fn router() -> Router<AppState> {
         .route("/identity-keys", get(list_handler))
         .route("/identity-keys/mine", get(list_mine_handler))
         .route("/identity-keys/{id}/revoke", post(revoke_handler))
-        .route("/identity-keys/invite", post(create_invite_handler))
 }
 
 /// Lifetime of an enrollment challenge nonce in seconds.
@@ -333,94 +332,14 @@ async fn revoke_handler(
     }
 }
 
-/// Generates a one-time enrollment invite token for the given user.
-/// The raw token is returned to the caller exactly once -- only the
-/// SHA-256 hash is persisted. Tokens expire 24 hours after creation.
-async fn create_invite_handler(
-    Auth(auth): Auth,
-    State(state): State<AppState>,
-    Json(body): Json<CreateInviteBody>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
-    if !auth.has_scope(&Scope::Admin) {
-        return Err(AppError(kleos_lib::EngError::Auth(
-            "admin scope required to create enrollment invites".into(),
-        )));
-    }
-
-    // Generate 32 bytes of cryptographic randomness, then URL-safe
-    // base64-encode them so the token is safe to paste into a CLI.
-    use rand::rngs::OsRng;
-    use rand::TryRngCore;
-    let mut raw_bytes = [0u8; 32];
-    OsRng
-        .try_fill_bytes(&mut raw_bytes)
-        .expect("OS CSPRNG must be available");
-    use base64::Engine;
-    let raw_token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_bytes);
-
-    // Store only the hash -- if the DB leaks, the tokens are useless.
-    let token_hash = hex::encode(Sha256::digest(raw_token.as_bytes()));
-
-    let user_id = body.user_id;
-    let method = body.method.clone();
-    let hash_clone = token_hash.clone();
-    let method_clone = method.clone();
-
-    // Verify the target user exists and is active before creating an invite.
-    let (invite_id, expires_at) = state
-        .db
-        .write(move |conn| {
-            let user_active: bool = conn
-                .query_row(
-                    "SELECT is_active FROM users WHERE id = ?1",
-                    params![user_id],
-                    |row| row.get(0),
-                )
-                .map_err(|_| {
-                    kleos_lib::EngError::NotFound(format!("user_id {} not found", user_id))
-                })?;
-
-            if !user_active {
-                return Err(kleos_lib::EngError::InvalidInput(
-                    "target user is deactivated".into(),
-                ));
-            }
-
-            // 24-hour expiry window gives the admin time to hand the
-            // token to the coworker without being too permissive.
-            // datetime('now') is already UTC; adding a 'utc' modifier here
-            // would re-interpret it as localtime and skew the expiry by the
-            // host's UTC offset (the migration-99 bug class).
-            conn.execute(
-                "INSERT INTO enrollment_invites (user_id, token_hash, method, expires_at)
-                 VALUES (?1, ?2, ?3, datetime('now', '+24 hours'))",
-                params![user_id, hash_clone, method_clone],
-            )?;
-
-            let id = conn.last_insert_rowid();
-
-            // Read back the server-computed expires_at timestamp.
-            let exp: String = conn.query_row(
-                "SELECT expires_at FROM enrollment_invites WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )?;
-
-            Ok((id, exp))
-        })
-        .await?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "id": invite_id,
-            "token": raw_token,
-            "user_id": user_id,
-            "method": method,
-            "expires_at": expires_at,
-        })),
-    ))
-}
+// Finding [44]: the enrollment-invite endpoint was removed. Invite tokens were
+// minted and stored (hash-only) but no enrollment path ever consumed them, so
+// the feature was dead surface: every issued token was unusable and the table
+// only accumulated rows. Enrollment continues through the bootstrap and
+// challenge-nonce flows above. If invite-based onboarding returns, it needs a
+// deliberate design pass (token consumption inside enroll, expiry checks, and
+// rate limits), not a resurrection of this handler. The enrollment_invites
+// table is dropped by migration v101.
 
 /// Extracts the raw DER bytes from a PEM-encoded public key string.
 fn pem_to_der(pem: &str) -> Result<Vec<u8>, AppError> {

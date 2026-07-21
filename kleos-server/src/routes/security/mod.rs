@@ -14,6 +14,7 @@ use crate::{error::AppError, extractors::Auth, state::AppState};
 mod types;
 use types::{CreateApiKeyBody, RecordUsageBody};
 
+/// Build the security route family (API keys, rate-limit status, quota).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -29,6 +30,8 @@ pub fn router() -> Router<AppState> {
         .route("/usage", post(record_usage_handler))
 }
 
+/// POST /security/api-keys -- mint a key with validated, deduped scopes;
+/// '*' maps to admin ([95]) and non-admins cannot grant scopes they lack.
 async fn create_api_key_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -89,10 +92,32 @@ async fn create_api_key_handler(
     };
     let rate_limit = max_limit.max(1);
     let key_name = body.name.as_deref().unwrap_or("api-key").trim().to_string();
-    let scopes_vec: Vec<Scope> = requested
-        .iter()
-        .filter_map(|s| s.parse::<Scope>().ok())
-        .collect();
+    // Finding [95]: '*' passes the accepted-token check above but does not
+    // parse as a Scope, so filter_map silently dropped it and a caller who
+    // requested '*' (and held admin) received a key with NO scopes. Map it to
+    // admin explicitly and dedupe so '*,read' does not double-insert.
+    let mut scopes_vec: Vec<Scope> = Vec::with_capacity(requested.len());
+    for s in &requested {
+        let scope = if s == "*" {
+            Scope::Admin
+        } else {
+            match s.parse::<Scope>() {
+                Ok(sc) => sc,
+                // Unreachable: the token allowlist above already rejected
+                // anything else. Kept as a hard error rather than a silent
+                // skip so a future allowlist/parser drift fails loudly.
+                Err(_) => {
+                    return Err(AppError::from(kleos_lib::EngError::InvalidInput(format!(
+                        "unknown scope: {}",
+                        s
+                    ))));
+                }
+            }
+        };
+        if !scopes_vec.contains(&scope) {
+            scopes_vec.push(scope);
+        }
+    }
     let (key_record, full_key) = auth::create_key(
         &state.db,
         auth.user_id,
@@ -107,6 +132,7 @@ async fn create_api_key_handler(
     ))
 }
 
+/// GET /security/api-keys -- list the caller's keys (admin sees all).
 async fn list_api_keys_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -115,6 +141,7 @@ async fn list_api_keys_handler(
     Ok(Json(json!({ "keys": keys })))
 }
 
+/// DELETE /security/api-keys/{id} -- revoke a key.
 async fn delete_api_key_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -129,6 +156,7 @@ async fn delete_api_key_handler(
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
+/// GET /security/rate-limit -- current window usage for the caller's key.
 async fn rate_limit_status_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -148,6 +176,7 @@ async fn rate_limit_status_handler(
     ))
 }
 
+/// GET /security/quota -- storage quota and usage for the caller.
 async fn get_quota_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -156,6 +185,7 @@ async fn get_quota_handler(
     Ok(Json(json!(status)))
 }
 
+/// POST /security/usage -- record a usage sample against the caller's quota.
 async fn record_usage_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,

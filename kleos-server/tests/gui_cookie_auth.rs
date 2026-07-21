@@ -68,7 +68,8 @@ async fn gui_app() -> axum::Router {
         background_tasks: Arc::new(Mutex::new(JoinSet::new())),
         fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
-        audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        // Detached audit channel: no worker in tests, events are dropped.
+        audit_tx: tokio::sync::mpsc::channel(64).0,
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),
@@ -147,6 +148,7 @@ async fn gui_login_full(app: &axum::Router, api_key: &str) -> (String, String) {
 }
 
 #[tokio::test]
+/// A valid GUI session cookie authenticates a safe GET.
 async fn gui_cookie_authenticates_safe_get() {
     let app = gui_app().await;
     let admin = bootstrap_admin_key(&app).await;
@@ -173,6 +175,7 @@ async fn gui_cookie_authenticates_safe_get() {
 }
 
 #[tokio::test]
+/// A cookie alone (no CSRF token) must not authorize a write.
 async fn gui_cookie_cannot_write() {
     let app = gui_app().await;
     let admin = bootstrap_admin_key(&app).await;
@@ -207,6 +210,7 @@ async fn gui_cookie_cannot_write() {
 }
 
 #[tokio::test]
+/// Cookie + matching CSRF token authorizes a write.
 async fn gui_cookie_with_valid_csrf_can_write() {
     let app = gui_app().await;
     let admin = bootstrap_admin_key(&app).await;
@@ -238,6 +242,7 @@ async fn gui_cookie_with_valid_csrf_can_write() {
 }
 
 #[tokio::test]
+/// Cookie + WRONG CSRF token is rejected.
 async fn gui_cookie_write_rejected_with_wrong_csrf() {
     let app = gui_app().await;
     let admin = bootstrap_admin_key(&app).await;
@@ -272,6 +277,7 @@ async fn gui_cookie_write_rejected_with_wrong_csrf() {
 }
 
 #[tokio::test]
+/// Requests with neither bearer nor cookie are rejected.
 async fn no_auth_is_rejected() {
     let app = gui_app().await;
     let _admin = bootstrap_admin_key(&app).await;

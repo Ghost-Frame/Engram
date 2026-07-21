@@ -123,6 +123,7 @@ async fn persist_pagerank_for_tenant(db: &Database, scores: Vec<(i64, f64)>) -> 
     .await
 }
 
+/// Count latest, unforgotten memories in the shard (refresh trigger input).
 async fn get_memory_count(db: &Database) -> Result<i64> {
     db.read(|conn| {
         Ok(conn.query_row(
@@ -134,6 +135,7 @@ async fn get_memory_count(db: &Database) -> Result<i64> {
     .await
 }
 
+/// Count memories that already carry a pagerank score in the shard.
 async fn get_pagerank_count(db: &Database) -> Result<i64> {
     db.read(
         |conn| Ok(conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))?),
@@ -141,6 +143,7 @@ async fn get_pagerank_count(db: &Database) -> Result<i64> {
     .await
 }
 
+/// True when the shard's unscored-memory delta exceeds `threshold`.
 async fn needs_refresh(db: &Database, threshold: u32) -> Result<bool> {
     let memory_count = get_memory_count(db).await?;
     let pagerank_count = get_pagerank_count(db).await?;
@@ -166,6 +169,8 @@ async fn needs_refresh(db: &Database, threshold: u32) -> Result<bool> {
     Ok(dirty >= threshold as i64)
 }
 
+/// Recompute + persist pagerank for one tenant shard if it needs it;
+/// returns whether a refresh actually ran.
 async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32) -> bool {
     let db = &handle.db;
 
@@ -209,6 +214,8 @@ async fn refresh_tenant(handle: Arc<crate::tenant::TenantHandle>, threshold: u32
     }
 }
 
+/// One refresh cycle: iterate active tenants, refresh dirty shards under a
+/// concurrency cap, and return how many refreshed.
 async fn run_once(registry: &Arc<TenantRegistry>, config: &Config) -> Result<usize> {
     let tenants = registry.list()?;
     if tenants.is_empty() {
@@ -259,15 +266,17 @@ async fn run_once(registry: &Arc<TenantRegistry>, config: &Config) -> Result<usi
     Ok(refreshed)
 }
 
+/// Spawn the per-shard pagerank refresh loop; returns the cancellation token
+/// and join handle so the supervisor can respawn it after a panic ([5]).
 pub fn start_pagerank_refresh_job_tenant(
     registry: Arc<TenantRegistry>,
     config: Arc<Config>,
-) -> CancellationToken {
+) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
     let interval = std::time::Duration::from_secs(config.pagerank_refresh_interval_secs.max(10));
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         info!(
             interval_secs = config.pagerank_refresh_interval_secs,
             "pagerank tenant refresh job started"
@@ -289,14 +298,16 @@ pub fn start_pagerank_refresh_job_tenant(
         }
     });
 
-    token
+    (token, handle)
 }
 
 #[cfg(test)]
+/// Unit tests for the per-shard compute/persist/refresh-trigger helpers.
 mod tests {
     use super::*;
 
     #[tokio::test]
+    /// An empty shard computes an empty score set without erroring.
     async fn test_compute_pagerank_empty() {
         let db = Database::open_tenant_memory().await.unwrap();
         let scores = compute_pagerank_for_tenant(&db).await.unwrap();
@@ -304,6 +315,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// A single memory receives a valid (teleport-only) pagerank score.
     async fn test_compute_pagerank_single_memory() {
         let db = Database::open_tenant_memory().await.unwrap();
 
@@ -323,6 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Persisted scores land in the memories rows they belong to.
     async fn test_persist_pagerank() {
         let db = Database::open_tenant_memory().await.unwrap();
 
@@ -354,6 +367,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// The unscored-delta trigger flips exactly at the threshold.
     async fn test_needs_refresh() {
         let db = Database::open_tenant_memory().await.unwrap();
 

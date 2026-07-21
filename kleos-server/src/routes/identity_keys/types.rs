@@ -30,19 +30,3 @@ pub struct RevokeBody {
 pub struct ListParams {
     pub active_only: Option<bool>,
 }
-
-/// Body for POST /identity-keys/invite -- generates a one-time enrollment
-/// token for a target user so they can register a FIDO2 security key.
-#[derive(Deserialize)]
-pub struct CreateInviteBody {
-    /// The user who will consume this invite to enroll their key.
-    pub user_id: i64,
-    /// Auth method the invite is valid for (currently only "fido2").
-    #[serde(default = "default_method")]
-    pub method: String,
-}
-
-/// Defaults the invite method to FIDO2 when the caller omits it.
-fn default_method() -> String {
-    "fido2".into()
-}

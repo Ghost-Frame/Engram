@@ -352,7 +352,6 @@ async fn main() {
     }
     let fact_extract_sem = bg_sem("FACT_EXTRACT", 64);
     let brain_absorb_sem = bg_sem("BRAIN_ABSORB", 64);
-    let audit_log_sem = bg_sem("AUDIT_LOG", 64);
     let ingest_sem = bg_sem("INGEST", 64);
     let background_tasks = Arc::new(tokio::sync::Mutex::new(JoinSet::<()>::new()));
 
@@ -368,7 +367,8 @@ async fn main() {
     }
 
     let state = AppState {
-        db: db_arc,
+        // Cloned (not moved) so the audit-worker spawn below can also borrow it.
+        db: Arc::clone(&db_arc),
         encryption_key,
         credd: Arc::new(CreddClient::from_config(&config)),
         config: Arc::new(config),
@@ -389,8 +389,12 @@ async fn main() {
         background_tasks: Arc::clone(&background_tasks),
         fact_extract_sem,
         brain_absorb_sem,
-        audit_log_sem,
         ingest_sem,
+        // Dedicated audit worker ([57]): middleware try_sends, worker writes.
+        audit_tx: kleos_server::middleware::audit::spawn_audit_worker(
+            Arc::clone(&db_arc),
+            shutdown.clone(),
+        ),
         replay_guard: Arc::new(kleos_lib::auth_piv::ReplayGuard::new()),
         session_manager: Arc::new(
             kleos_lib::auth_piv::SessionManager::from_env_or_generate()
@@ -420,6 +424,21 @@ async fn main() {
             start_pagerank_refresh_job(Arc::clone(&db), Arc::clone(&cfg))
         }));
         tracing::info!("background pagerank refresh job started");
+
+        // Finding [5]: tenant shards hold their own graphs, so the monolith
+        // refresh above never touches them. Mirror the community-detection
+        // pattern and run the per-shard refresh whenever a registry exists.
+        if let Some(ref registry) = state.tenant_registry {
+            let registry = Arc::clone(registry);
+            let cfg = Arc::clone(&state.config);
+            supervised.push(Supervised::spawn("pagerank-refresh-tenant", move || {
+                kleos_lib::jobs::pagerank_refresh_tenant::start_pagerank_refresh_job_tenant(
+                    Arc::clone(&registry),
+                    Arc::clone(&cfg),
+                )
+            }));
+            tracing::info!("background tenant pagerank refresh job started");
+        }
     } else {
         tracing::info!("pagerank disabled -- skipping refresh job");
     }

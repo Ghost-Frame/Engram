@@ -90,27 +90,28 @@ fn tool_error_to_app(e: agent_forge::tools::ToolError) -> AppError {
     }
 }
 
-/// Open a throwaway in-memory `agent_forge::db::Database` for compute calls
-/// that accept a `&Database` argument but do not use it (all `_db` params).
+/// Open a throwaway `agent_forge::db::Database` for compute calls that accept
+/// a `&Database` argument but do not use it (all `_db` params).
 ///
-/// The database is written to a fresh temp file so `Database::open` succeeds.
-/// It is dropped immediately after the tool call returns.
-fn throwaway_db() -> Result<agent_forge::db::Database, AppError> {
+/// The database lives in a fresh temp file. Finding [42] residual: the old
+/// version dropped the NamedTempFile guard (deleting the file) and then let
+/// `Database::open` recreate a plain file at the freed path -- which nothing
+/// ever deleted, so every compute call leaked a SQLite file into the temp dir
+/// until reboot. Returning a `TempPath` guard keeps deletion tied to the
+/// request: the caller holds it for the duration of the tool call and the
+/// file is removed when both values drop. `into_temp_path` closes the write
+/// handle first, so rusqlite is the only writer on the path.
+fn throwaway_db() -> Result<(agent_forge::db::Database, tempfile::TempPath), AppError> {
     let tmp = NamedTempFile::new().map_err(|e| {
         tracing::error!("failed to create temp db: {}", e);
         AppError(EngError::Internal("failed to create throwaway db".into()))
     })?;
-    // Keep the temp file path before persisting; `Database::open` creates the
-    // SQLite file at that path. We intentionally let the temp file be removed
-    // by the OS after the request: the database is never read back.
-    let path = tmp.path().to_path_buf();
-    // Release the NamedTempFile guard so the path is writable by rusqlite on
-    // Linux (two writers on the same path would be a conflict on some FS).
-    drop(tmp);
-    agent_forge::db::Database::open(&path).map_err(|e| {
+    let path = tmp.into_temp_path();
+    let db = agent_forge::db::Database::open(&path).map_err(|e| {
         tracing::error!("failed to open throwaway db: {}", e);
         AppError(EngError::Internal("failed to open throwaway db".into()))
-    })
+    })?;
+    Ok((db, path))
 }
 
 /// Resolve a caller-supplied `path` through the FS roots allow-list, or write
@@ -174,7 +175,7 @@ async fn think_handler(
     Auth(_auth): Auth,
     Json(body): Json<ThinkBody>,
 ) -> Result<Json<Value>, AppError> {
-    let db = throwaway_db()?;
+    let (db, _db_file) = throwaway_db()?;
     let input = agent_forge::tools::think::ThinkInput {
         problem: body.problem,
         constraints: body.constraints,
@@ -196,7 +197,7 @@ async fn declare_unknowns_handler(
     Auth(_auth): Auth,
     Json(body): Json<DeclareUnknownsBody>,
 ) -> Result<Json<Value>, AppError> {
-    let db = throwaway_db()?;
+    let (db, _db_file) = throwaway_db()?;
     // Convert the request body unknowns to the agent_forge type.
     let unknowns: Option<Vec<agent_forge::tools::think::UnknownItem>> =
         body.unknowns.map(|items| {
@@ -230,7 +231,7 @@ async fn comment_check_handler(
     Auth(_auth): Auth,
     Json(body): Json<FileOrContentBody>,
 ) -> Result<Json<Value>, AppError> {
-    let db = throwaway_db()?;
+    let (db, _db_file) = throwaway_db()?;
     let (file_path, _tmp) = resolve_path_or_content(body.path, body.content, body.extension)?;
     let input = agent_forge::tools::comments::CommentCheckInput {
         file_path: Some(file_path),
@@ -253,7 +254,7 @@ async fn challenge_code_handler(
     Auth(_auth): Auth,
     Json(body): Json<FileOrContentBody>,
 ) -> Result<Json<Value>, AppError> {
-    let db = throwaway_db()?;
+    let (db, _db_file) = throwaway_db()?;
     let (file_path, _tmp) = resolve_path_or_content(body.path, body.content, body.extension)?;
     let input = agent_forge::tools::verify::ChallengeCodeInput {
         file_path: Some(file_path),
@@ -278,7 +279,7 @@ async fn repo_map_handler(
     Auth(_auth): Auth,
     Json(body): Json<RepoMapBody>,
 ) -> Result<Json<Value>, AppError> {
-    let db = throwaway_db()?;
+    let (db, _db_file) = throwaway_db()?;
     let canonical = fsroots::resolve_within_roots(&body.path).ok_or_else(|| {
         AppError(EngError::InvalidInput(
             "repo-map requires a path under KLEOS_FORGE_FS_ROOTS (mount the tree or run locally)"
@@ -308,7 +309,7 @@ async fn search_code_handler(
     Auth(_auth): Auth,
     Json(body): Json<SearchCodeBody>,
 ) -> Result<Json<Value>, AppError> {
-    let db = throwaway_db()?;
+    let (db, _db_file) = throwaway_db()?;
     let canonical = fsroots::resolve_within_roots(&body.path).ok_or_else(|| {
         AppError(EngError::InvalidInput(
             "search-code requires a path under KLEOS_FORGE_FS_ROOTS (mount the tree or run locally)"

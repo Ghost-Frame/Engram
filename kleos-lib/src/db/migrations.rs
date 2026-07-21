@@ -550,6 +550,16 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_skill_duration_sample_count,
         tx
     ),
+    // v101: drop enrollment_invites ([44]). The invite endpoint minted tokens
+    // that no enrollment path ever consumed -- dead auth surface. The endpoint
+    // is removed; the table follows. Rows are hash-only tokens with 24h expiry
+    // (all long expired or unusable), so this is not a data-loss migration.
+    migration!(
+        101,
+        "drop_enrollment_invites",
+        run_migration_drop_enrollment_invites,
+        tx
+    ),
 ];
 
 // --- Version constants ---
@@ -4677,6 +4687,14 @@ fn run_migration_fts_unicode61(conn: &rusqlite::Connection) -> Result<()> {
 fn run_migration_add_memory_lang(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute("ALTER TABLE memories ADD COLUMN lang TEXT", [])?;
     info!("Migration 95 complete: memories.lang column added");
+    Ok(())
+}
+
+/// v101: drop the enrollment_invites table -- the invite feature was dead
+/// surface (tokens were minted but never consumable) and its endpoint is gone.
+fn run_migration_drop_enrollment_invites(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute("DROP TABLE IF EXISTS enrollment_invites", [])?;
+    info!("Migration 101 complete: enrollment_invites dropped");
     Ok(())
 }
 

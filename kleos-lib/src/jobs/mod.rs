@@ -19,7 +19,10 @@ pub mod community_detection;
 pub mod deprovision;
 pub mod disk_sampler;
 pub mod pagerank_refresh;
-#[cfg(feature = "tenant-sharding")]
+// Ungated ([5]): TenantRegistry itself is not feature-gated and the server
+// builds without `tenant-sharding`, so the gate compiled this job out of the
+// binary that actually needed it -- sharded deployments got no pagerank
+// refresh at all.
 pub mod pagerank_refresh_tenant;
 pub mod types;
 pub use types::*;

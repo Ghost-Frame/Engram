@@ -283,7 +283,9 @@ async fn decompose_handler(
     ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let child_ids = decompose(&db, memory_id, auth.user_id).await?;
+    // Finding [91]: use effective_user_id like every other handler in this
+    // file so admin-on-behalf-of requests scope to the acting identity.
+    let child_ids = decompose(&db, memory_id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
@@ -633,7 +635,8 @@ async fn predictive_sequences_handler(
     Json(body): Json<SequencesBody>,
 ) -> Result<Json<Value>, AppError> {
     let window_mins = body.window_mins.unwrap_or(60).clamp(1, 24 * 60);
-    let patterns = detect_sequence_patterns(&db, auth.user_id, window_mins).await?;
+    // Finding [91]: effective_user_id, matching the rest of the file.
+    let patterns = detect_sequence_patterns(&db, auth.effective_user_id(), window_mins).await?;
     Ok(Json(
         json!({ "patterns": patterns, "window_mins": window_mins, "count": patterns.len() }),
     ))

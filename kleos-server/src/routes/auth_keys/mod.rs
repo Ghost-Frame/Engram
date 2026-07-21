@@ -316,6 +316,21 @@ async fn create_space(
     let (id, created_at) = state
         .db
         .write(move |conn| {
+            // Finding [41]: unbounded space creation let one caller grow the
+            // spaces table without limit. Count-capped per user, checked in
+            // the same write closure as the INSERT so concurrent creates
+            // cannot race past the cap.
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )?;
+            if count >= kleos_lib::validation::MAX_SPACES_PER_USER {
+                return Err(kleos_lib::EngError::Forbidden(format!(
+                    "space limit reached ({} max)",
+                    kleos_lib::validation::MAX_SPACES_PER_USER
+                )));
+            }
             Ok(conn.query_row(
                 "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id, created_at",
                 params![user_id, name_clone, description],

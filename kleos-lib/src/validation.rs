@@ -161,6 +161,12 @@ pub const MAX_ACTIVITY_ACTION_LEN: usize = 100;
 /// Maximum length of activity report summary field.
 pub const MAX_ACTIVITY_SUMMARY_LEN: usize = 10_000;
 
+// --- Spaces ---
+
+/// Maximum spaces one user may own. Growth bound for the spaces table in
+/// shared-monolith mode ([41]); generous relative to real usage.
+pub const MAX_SPACES_PER_USER: i64 = 100;
+
 // --- Batch endpoint ---
 
 /// Maximum ops in a single batch request.

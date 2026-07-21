@@ -97,8 +97,11 @@ pub struct AppState {
     /// Default: 64 permits each; override via KLEOS_BG_SEM_<NAME>=N.
     pub fact_extract_sem: Arc<Semaphore>,
     pub brain_absorb_sem: Arc<Semaphore>,
-    pub audit_log_sem: Arc<Semaphore>,
     pub ingest_sem: Arc<Semaphore>,
+    /// Bounded channel into the dedicated audit-log worker ([57]): the
+    /// middleware try_sends events here so the response path never awaits
+    /// a permit or lock for audit persistence.
+    pub audit_tx: tokio::sync::mpsc::Sender<crate::middleware::audit::AuditEvent>,
     pub replay_guard: Arc<kleos_lib::auth_piv::ReplayGuard>,
     pub session_manager: Arc<kleos_lib::auth_piv::SessionManager>,
     /// Broadcast channel for real-time Axon event delivery to SSE subscribers.
