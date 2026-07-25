@@ -352,6 +352,120 @@ fn gate_fail_closed() -> bool {
         .unwrap_or(false)
 }
 
+/// Maximum number of characters of upstream error text carried into a deny
+/// reason. Long bodies (HTML error pages, stack traces) add no diagnostic value
+/// at the point of denial and would flood the agent's context.
+const GATE_FAILURE_DETAIL_MAX: usize = 300;
+
+/// Turns a raw client error into an operator-actionable one-line explanation
+/// for a fail-closed deny.
+///
+/// The gate previously reported every failure class as "gate unreachable",
+/// which conflated three very different situations and made the denial
+/// impossible to diagnose from the agent side. `post_with_timeout` returns
+/// `Err` for any non-2xx status, so a rate-limited, unauthorised, or
+/// erroring-but-perfectly-reachable server looked identical to a severed
+/// network. This distinguishes them and names the likely remedy.
+///
+/// Note the caller is a *deny* path: every genuine gate decision comes back as
+/// HTTP 201 with its own reason, so anything reaching here is a transport or
+/// status fault rather than a policy block.
+fn describe_gate_failure(err: &str) -> String {
+    let detail = redact_secrets(err);
+    let detail = truncate_detail(&detail);
+
+    // The client formats status failures as "HTTP <code>: <body>"; anything
+    // else came from the transport layer (connect, DNS, TLS, timeout).
+    let status = err
+        .strip_prefix("HTTP ")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|code| code.parse::<u16>().ok());
+
+    match status {
+        Some(429) => format!(
+            "server is reachable but rate-limited this request (HTTP 429); \
+             retry after the window resets. Detail: {detail}"
+        ),
+        Some(401) | Some(403) => format!(
+            "server is reachable but rejected this agent's credentials \
+             (HTTP {}); check the API key or signer identity. Detail: {detail}",
+            status.unwrap_or_default()
+        ),
+        Some(413) => format!(
+            "server is reachable but the gate payload exceeded its body limit \
+             (HTTP 413). Detail: {detail}"
+        ),
+        Some(code) if (500..=599).contains(&code) => format!(
+            "server is reachable but returned a server error (HTTP {code}); \
+             this is a Kleos-side fault, not a network outage. Detail: {detail}"
+        ),
+        Some(code) => format!(
+            "server is reachable but rejected the gate request (HTTP {code}). \
+             Detail: {detail}"
+        ),
+        None => format!(
+            "could not complete the gate request (transport failure or timeout); \
+             check KLEOS_URL reachability. Detail: {detail}"
+        ),
+    }
+}
+
+/// Truncates error detail on a character boundary so multibyte upstream text
+/// cannot panic the slice.
+fn truncate_detail(s: &str) -> String {
+    if s.chars().count() <= GATE_FAILURE_DETAIL_MAX {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(GATE_FAILURE_DETAIL_MAX).collect();
+    format!("{kept}... (truncated)")
+}
+
+/// Strips credential-shaped material from text that is about to be surfaced to
+/// the agent.
+///
+/// The deny reason is echoed straight into the model's context, so a bearer
+/// token or signed-URL query parameter that appeared in an upstream error
+/// string must not ride along. Kleos policy is to keep credentials and signed
+/// URLs out of logs, CLI output, and MCP output alike.
+fn redact_secrets(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    // A scheme keyword such as `Bearer` carries its secret in the *following*
+    // whitespace-separated token, so redacting the keyword alone would leave the
+    // credential in place. This flag consumes that trailing value too.
+    let mut redact_next_value = false;
+
+    for token in s.split_inclusive(char::is_whitespace) {
+        let trimmed = token.trim_end();
+        let had_trailing_space = token.len() > trimmed.len();
+        let lower = trimmed.to_ascii_lowercase();
+
+        // Keywords whose secret lives in the next token.
+        let is_scheme_keyword = lower == "bearer" || lower == "authorization:" || lower == "token";
+        // Tokens that embed the secret inline, typically `key=value` pairs.
+        let is_inline_secret = lower.starts_with("bearer")
+            || lower.contains("api_key=")
+            || lower.contains("apikey=")
+            || lower.contains("access_token=")
+            || lower.contains("token=")
+            || lower.contains("signature=")
+            || lower.contains("x-kleos-session");
+
+        if redact_next_value || is_scheme_keyword || is_inline_secret {
+            out.push_str("[redacted]");
+            if had_trailing_space {
+                out.push(' ');
+            }
+            // A scheme keyword defers to the next token; an inline `key=value`
+            // already swallowed its own secret and defers to nothing.
+            redact_next_value = is_scheme_keyword;
+        } else {
+            out.push_str(token);
+            redact_next_value = false;
+        }
+    }
+    out
+}
+
 /// Builds a hook response that denies the current tool use with a reason.
 fn build_deny_output(event: &str, reason: &str) -> Value {
     json!({
@@ -625,10 +739,13 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
             if gate_fail_closed() {
                 emit(&build_deny_output(
                     "PreToolUse",
-                    "kleos gate unreachable and KLEOS_HOOK_GATE_FAIL_CLOSED is set",
+                    &format!(
+                        "kleos gate check failed and KLEOS_HOOK_GATE_FAIL_CLOSED is set: {}",
+                        describe_gate_failure(&e)
+                    ),
                 ));
             } else {
-                eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
+                eprintln!("kleos hook pre-tool: gate check failed ({}), allowing", e);
             }
             return;
         }
@@ -734,6 +851,64 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rate-limited server is reachable; saying "unreachable" sent operators
+    /// hunting a network fault that did not exist.
+    #[test]
+    fn gate_failure_names_rate_limiting_as_reachable() {
+        let d = describe_gate_failure(
+            r#"HTTP 429 Too Many Requests: {"error":"Rate limit exceeded."}"#,
+        );
+        assert!(d.contains("reachable"), "{d}");
+        assert!(d.contains("429"), "{d}");
+        assert!(!d.contains("unreachable"), "{d}");
+    }
+
+    /// Auth rejections point at the signer/API key, not the network.
+    #[test]
+    fn gate_failure_names_auth_rejection() {
+        let d = describe_gate_failure("HTTP 401 Unauthorized: bad signature");
+        assert!(d.contains("credentials"), "{d}");
+        assert!(!d.contains("unreachable"), "{d}");
+    }
+
+    /// A 5xx is a Kleos-side fault and must be attributed as such.
+    #[test]
+    fn gate_failure_names_server_error_as_kleos_side() {
+        let d = describe_gate_failure("HTTP 500 Internal Server Error: boom");
+        assert!(d.contains("500"), "{d}");
+        assert!(d.contains("Kleos-side"), "{d}");
+    }
+
+    /// Only a genuine transport fault should implicate reachability.
+    #[test]
+    fn gate_failure_names_transport_failure() {
+        let d = describe_gate_failure(
+            "POST http://kleos.example:4200/gate/check failed (tcp connect error)",
+        );
+        assert!(d.contains("transport failure or timeout"), "{d}");
+        assert!(d.contains("KLEOS_URL"), "{d}");
+    }
+
+    /// The reason string is echoed into the agent's context, so credential-shaped
+    /// material in upstream error text must never survive into it.
+    #[test]
+    fn gate_failure_redacts_credentials() {
+        let d = describe_gate_failure(
+            "HTTP 403 Forbidden: rejected Bearer sk-live-abcdef123456 for api_key=deadbeef",
+        );
+        assert!(!d.contains("sk-live-abcdef123456"), "{d}");
+        assert!(!d.contains("deadbeef"), "{d}");
+        assert!(d.contains("[redacted]"), "{d}");
+    }
+
+    /// Long upstream bodies are capped, and multibyte text must not panic the cut.
+    #[test]
+    fn gate_failure_truncates_multibyte_detail_without_panic() {
+        let long = format!("HTTP 500: {}", "é".repeat(GATE_FAILURE_DETAIL_MAX * 2));
+        let d = describe_gate_failure(&long);
+        assert!(d.contains("truncated"), "{d}");
+    }
 
     #[test]
     /// Verifies the bootstrap query derives from cwd and falls back when absent.
