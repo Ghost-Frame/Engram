@@ -55,10 +55,8 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   };
 });
 
-// The memory graph is a WebGL / 3d-force-graph component that cannot render
-// meaningfully in jsdom (no canvas 2D/WebGL context). The Memory hub test only
-// needs to confirm the tab mounts, so the heavy graph is stubbed here. The
-// graph itself is verified visually against real data.
+// The Memory hub test only needs to confirm graph-tab routing; the dedicated
+// Atlas tests cover its canvas rendering contract, controls, and search flow.
 vi.mock('./Graph', () => ({
   Graph: () => <div data-testid="graph-stub">memory graph</div>
 }));

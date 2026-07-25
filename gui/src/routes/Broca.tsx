@@ -1,4 +1,5 @@
 import { getFeed } from '$lib/api/broca';
+import { displayServiceName } from '$lib/display';
 import { useLive } from '$lib/realtime';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
@@ -27,7 +28,7 @@ export function Broca() {
             {feed.data.map((entry) => (
               <article className="feed-row" key={entry.id}>
                 <time>{entry.created_at.slice(11, 19)}</time>
-                <Badge label={entry.service} />
+                <Badge label={displayServiceName(entry.service)} />
                 <span>{entry.agent}</span>
                 <strong>{entry.action}</strong>
                 {entry.narrative ? <p>{entry.narrative}</p> : null}

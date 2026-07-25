@@ -12,6 +12,22 @@ const liveStats = vi.hoisted(() => ({
   thymus: { agent_count: 4, by_rubric: [], evaluations: 11, metrics: 2, rubrics: 6 }
 }));
 
+// Task fixture used by the decision-oriented Mission Control queue.
+const activeTask = {
+  agent: 'codex',
+  assigned: true,
+  created_at: '2026-07-25T12:00:00Z',
+  guardrail_retries: 0,
+  heartbeat_interval: 30,
+  id: 17,
+  last_heartbeat: '2026-07-25T12:01:00Z',
+  project: 'Kleos',
+  status: 'active',
+  title: 'Rebuild operator GUI',
+  updated_at: '2026-07-25T12:01:00Z',
+  user_id: 1
+};
+
 // AppShell resolves the caller's scopes via getMe; stub it as a non-admin so
 // no real request is made and the admin nav stays hidden.
 vi.mock('$lib/api/admin', () => ({
@@ -27,11 +43,17 @@ vi.mock('$lib/realtime', async () => {
     RealtimeProvider: ({ children }: { children: ReactNode }) => (
       <rq.QueryClientProvider client={client}>{children}</rq.QueryClientProvider>
     ),
-    useLive: (_key: unknown, _fetcher: unknown, channel: keyof typeof liveStats) => ({
-      data: liveStats[channel],
-      isError: false,
-      isLoading: false
-    }),
+    useLive: (key: unknown, _fetcher: unknown, channel: keyof typeof liveStats) => {
+      const parts = key as string[];
+      const data = parts[1] === 'tasks'
+        ? [activeTask]
+        : parts[1] === 'actions'
+          ? []
+          : parts[1] === 'agents'
+            ? []
+            : liveStats[channel];
+      return { data, isError: false, isLoading: false };
+    },
     useStreamStatus: () => 'live'
   };
 });
@@ -42,14 +64,15 @@ describe('App shell', () => {
     window.history.pushState({}, '', '/');
   });
 
-  it('renders mission control with service navigation and live stats', async () => {
+  it('renders mission control with intent-based navigation and live stats', async () => {
     render(<App />);
 
     expect(screen.getByRole('heading', { name: 'Mission Control' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Chiasm' })).toHaveAttribute('href', '/chiasm');
-    expect(screen.getByRole('link', { name: 'Memory' })).toHaveAttribute('href', '/memory');
+    expect(screen.getByRole('link', { name: /Work Coordinated tasks/ })).toHaveAttribute('href', '/chiasm');
+    expect(screen.getByRole('link', { name: /Stream Actions and events/ })).toHaveAttribute('href', '/stream');
+    expect(screen.getByRole('link', { name: /Memory Recall and curation/ })).toHaveAttribute('href', '/memory');
     expect(screen.getAllByText('live').length).toBeGreaterThan(0);
-    expect(screen.getByText('42')).toBeInTheDocument();
+    expect(screen.getByText('Rebuild operator GUI')).toBeInTheDocument();
     expect(screen.getByText('120')).toBeInTheDocument();
     expect(screen.getByText('88')).toBeInTheDocument();
   });
@@ -59,7 +82,7 @@ describe('App shell', () => {
     // the nav links to the working graph under Memory instead.
     render(<App />);
 
-    expect(screen.getByRole('link', { name: 'Graph' })).toHaveAttribute('href', '/memory/graph');
+    expect(screen.getByRole('link', { name: /Graph Relationship atlas/ })).toHaveAttribute('href', '/memory/graph');
   });
 
   it('logs in via the cookie endpoint and never persists the raw key', async () => {
@@ -74,7 +97,6 @@ describe('App shell', () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'API Key' }));
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'abc123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 

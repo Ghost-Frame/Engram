@@ -5,10 +5,9 @@ import type { GraphData } from '$lib/types';
 // that only need a flat node list).
 export const getGraph = (max = 1500) => request<GraphData>(`/graph?max=${max}`);
 
-// Fetch the memory graph with relationship depth -- this is the form the
-// living-organism 3D graph uses. `depth` controls how far edge traversal walks
-// from seed nodes; without it the backend collapses most edges, which is why
-// the rebuilt graph rendered 0 edges. Mirrors the old GUI's getGraph(3, 1500).
+// Fetch the memory graph with relationship depth for the bounded relationship
+// atlas. `depth` controls how far edge traversal walks from seed nodes; without
+// it the backend collapses most edges.
 //
 // `minComponent` asks the backend to drop connected components smaller than N
 // nodes. The default of 2 prunes singleton "dust" -- unlinked memories (the bulk
@@ -31,8 +30,7 @@ export interface CommunitiesResponse {
   count: number;
 }
 
-// Fetch community/cluster assignments used to color nodes and seed the
-// Fibonacci-sphere clustering forces.
+// Fetch community assignments used to group related nodes.
 export const getCommunities = () =>
   request<CommunitiesResponse>('/communities').catch(
     () => ({ communities: [], count: 0 }) as CommunitiesResponse
@@ -52,7 +50,7 @@ export interface GraphStats {
   };
 }
 
-// Fetch instance stats (db size + per-category counts) for the header/legend.
+// Fetch instance stats with database size and per-category counts.
 export const getStats = () => request<GraphStats>('/stats').catch(() => null);
 
 // A single linked-memory entry shown in the detail panel.

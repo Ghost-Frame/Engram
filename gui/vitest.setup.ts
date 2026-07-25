@@ -1,4 +1,12 @@
 import '@testing-library/jest-dom/vitest';
+import { vi } from 'vitest';
+
+// jsdom has no canvas renderer; returning null exercises the production
+// fallback without emitting a not-implemented exception for every app test.
+HTMLCanvasElement.prototype.getContext = vi.fn(() => null);
+
+// jsdom has no media transport; player cleanup only needs a harmless pause.
+HTMLMediaElement.prototype.pause = vi.fn();
 
 // jsdom does not implement window.matchMedia -- provide a minimal stub so
 // components that read media queries do not throw in the test environment.
