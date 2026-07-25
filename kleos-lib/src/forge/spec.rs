@@ -355,6 +355,56 @@ pub async fn get_spec(db: &Database, user_id: i64, spec_id: String) -> crate::Re
     .await
 }
 
+/// Splits a path into comparable components, unifying separators and dropping
+/// empty and `.` segments.
+///
+/// This makes `kleos-cli/src/hook.rs`, `./kleos-cli//src/hook.rs`, and
+/// `kleos-cli\src\hook.rs` all reduce to the same component sequence. `..` is
+/// deliberately left as an ordinary component: resolving it would require
+/// touching the filesystem, which this query must not do.
+fn path_components(path: &str) -> Vec<&str> {
+    path.split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect()
+}
+
+/// Returns true when a `files_to_touch` entry covers the path the gate is
+/// asking about.
+///
+/// Coverage previously used raw string equality, which made the declaration
+/// unreachable in practice: the gate supplies `tool_input.file_path`, which
+/// agents and editors give as an absolute path, while agents declare
+/// repo-relative paths (this module's own fixtures use `src/lib.rs`). The two
+/// forms are never equal, so a correctly declared file still read as
+/// uncovered.
+///
+/// Matching is therefore done on path-component boundaries, and in either
+/// direction so that a relative path from the gate also matches an absolute
+/// declaration. Anchoring on components is what keeps `ok.rs` from covering
+/// `notok.rs`; a plain string suffix test would not.
+///
+/// The deliberate trade-off is that a bare filename declaration such as
+/// `mod.rs` covers that filename in any directory. That is accepted: this gate
+/// enforces the discipline of declaring work up front, not an authorization
+/// boundary against an adversary (an agent that wanted to bypass it could
+/// simply declare the file). Being slightly permissive is strictly better than
+/// never matching at all.
+fn declared_path_covers(declared: &str, target: &str) -> bool {
+    let declared = path_components(declared);
+    let target = path_components(target);
+
+    // An empty or separator-only declaration must not cover everything.
+    if declared.is_empty() || target.is_empty() {
+        return false;
+    }
+
+    if declared.len() <= target.len() {
+        target.ends_with(&declared[..])
+    } else {
+        declared.ends_with(&target[..])
+    }
+}
+
 /// Return true if there is an active spec for `(user_id, session_id)` that
 /// covers `file_path`.
 ///
@@ -365,7 +415,9 @@ pub async fn get_spec(db: &Database, user_id: i64, spec_id: String) -> crate::Re
 ///     the agent declared the task without enumerating touched files, which is
 ///     valid for exploratory tasks).
 ///   - If an active spec exists AND `files_to_touch` is a non-empty JSON array:
-///     returns true only if `file_path` appears in that array.
+///     returns true only if some entry covers `file_path`, compared on path
+///     components rather than raw strings (see `declared_path_covers`) so that
+///     a repo-relative declaration matches the absolute path the gate sends.
 ///
 /// This is the primary gate query used by `kleos-lib::gate` to block Write/Edit
 /// calls when no spec covers the target file.
@@ -404,7 +456,7 @@ pub async fn spec_covers(
                 Some(json) => {
                     // Parse the JSON array and check membership.
                     serde_json::from_str::<Vec<String>>(json)
-                        .map(|arr| arr.iter().any(|f| f == &file_path))
+                        .map(|arr| arr.iter().any(|f| declared_path_covers(f, &file_path)))
                         .unwrap_or(false)
                 }
             };
@@ -419,6 +471,7 @@ pub async fn spec_covers(
     .await
 }
 
+/// Unit tests for spec creation, lifecycle, and gate coverage matching.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +612,140 @@ mod tests {
             !covered,
             "spec_covers must be false for undeclared file src/other.rs"
         );
+    }
+
+    /// The regression this fix targets: a spec declaring a repo-relative path
+    /// must cover the absolute path the gate actually sends. Under raw string
+    /// equality this returned false, so correctly declared work was reported as
+    /// unspecced.
+    #[tokio::test]
+    async fn spec_covers_relative_declaration_matches_absolute_gate_path() {
+        let db = setup_db().await;
+
+        make_spec(
+            &db,
+            1,
+            Some("S1"),
+            Some(vec!["kleos-cli/src/hook.rs".to_string()]),
+        )
+        .await;
+
+        let covered = spec_covers(&db, 1, "S1", "/srv/checkout/kleos-cli/src/hook.rs")
+            .await
+            .expect("spec_covers should not error");
+
+        assert!(
+            covered,
+            "a repo-relative declaration must cover the absolute path the gate sends"
+        );
+    }
+
+    /// The reverse direction: an absolute declaration must still cover the same
+    /// absolute path, so existing specs do not regress.
+    #[tokio::test]
+    async fn spec_covers_absolute_declaration_still_matches() {
+        let db = setup_db().await;
+
+        make_spec(
+            &db,
+            1,
+            Some("S1"),
+            Some(vec!["/srv/checkout/kleos-cli/src/hook.rs".to_string()]),
+        )
+        .await;
+
+        let covered = spec_covers(&db, 1, "S1", "/srv/checkout/kleos-cli/src/hook.rs")
+            .await
+            .expect("spec_covers should not error");
+
+        assert!(covered, "an absolute declaration must still match exactly");
+    }
+
+    /// Symmetry: a gate that supplies a relative path must match an absolute
+    /// declaration too.
+    #[tokio::test]
+    async fn spec_covers_absolute_declaration_matches_relative_gate_path() {
+        let db = setup_db().await;
+
+        make_spec(
+            &db,
+            1,
+            Some("S1"),
+            Some(vec!["/srv/checkout/kleos-cli/src/hook.rs".to_string()]),
+        )
+        .await;
+
+        let covered = spec_covers(&db, 1, "S1", "kleos-cli/src/hook.rs")
+            .await
+            .expect("spec_covers should not error");
+
+        assert!(
+            covered,
+            "an absolute declaration must cover a relative gate path"
+        );
+    }
+
+    /// Matching is anchored on path components, so a shared trailing substring
+    /// must not count as coverage. A plain string suffix test would wrongly
+    /// allow this.
+    #[tokio::test]
+    async fn spec_covers_does_not_match_partial_final_component() {
+        let db = setup_db().await;
+
+        make_spec(&db, 1, Some("S1"), Some(vec!["ok.rs".to_string()])).await;
+
+        let covered = spec_covers(&db, 1, "S1", "/srv/checkout/src/notok.rs")
+            .await
+            .expect("spec_covers should not error");
+
+        assert!(
+            !covered,
+            "ok.rs must not cover notok.rs -- matching is component-anchored"
+        );
+    }
+
+    /// A declared path that is only separators must not become a wildcard.
+    /// `files_to_touch: []` already means "covers everything"; a junk entry
+    /// must not silently mean the same thing.
+    #[tokio::test]
+    async fn spec_covers_blank_declaration_is_not_a_wildcard() {
+        let db = setup_db().await;
+
+        make_spec(&db, 1, Some("S1"), Some(vec!["/".to_string()])).await;
+
+        let covered = spec_covers(&db, 1, "S1", "/srv/checkout/src/lib.rs")
+            .await
+            .expect("spec_covers should not error");
+
+        assert!(
+            !covered,
+            "a separator-only declaration must not cover files"
+        );
+    }
+
+    /// Redundant separators, `./` prefixes, and Windows separators normalise to
+    /// the same component sequence.
+    #[test]
+    fn declared_path_covers_normalises_separators_and_dot_segments() {
+        assert!(declared_path_covers(
+            "./kleos-cli//src/hook.rs",
+            "/srv/checkout/kleos-cli/src/hook.rs"
+        ));
+        assert!(declared_path_covers(
+            "kleos-cli\\src\\hook.rs",
+            "/srv/checkout/kleos-cli/src/hook.rs"
+        ));
+        assert!(!declared_path_covers("", "/srv/checkout/src/lib.rs"));
+        assert!(!declared_path_covers("src/lib.rs", ""));
+    }
+
+    /// A partial directory component must not match either.
+    #[test]
+    fn declared_path_covers_anchors_directory_components() {
+        assert!(!declared_path_covers(
+            "cli/src/hook.rs",
+            "/srv/checkout/kleos-cli/src/hook.rs"
+        ));
     }
 
     /// TEST 1e: spec_covers returns false when session_id does not match.
