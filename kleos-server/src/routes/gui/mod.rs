@@ -27,8 +27,12 @@ use types::{BulkArchiveBody, CreateMemoryBody, LoginForm, UpdateMemoryBody};
 /// HMAC-SHA256 signer used for GUI session cookies.
 type HmacSha256 = Hmac<Sha256>;
 
-const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60; // 24 hours
-const COOKIE_NAME: &str = "engram_auth";
+/// GUI session lifetime in seconds.
+const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60;
+/// Canonical Kleos GUI session cookie name.
+const COOKIE_NAME: &str = "kleos_auth";
+/// Pre-rename cookie name accepted during the compatibility window.
+const LEGACY_COOKIE_NAME: &str = "engram_auth";
 
 /// Readable (non-HttpOnly) cookie carrying the CSRF token for the GUI session,
 /// and the header the SPA echoes it in on mutating requests.
@@ -105,7 +109,7 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
         if secret.len() < 32 {
             tracing::error!(
                 len = secret.len(),
-                "ENGRAM_HMAC_SECRET is too short (minimum 32 characters); ignoring"
+                "KLEOS_HMAC_SECRET is too short (minimum 32 characters); ignoring"
             );
         } else {
             return SecretString::new(secret);
@@ -405,17 +409,18 @@ fn verify_cookie(cookie: &str, secret: &SecretString) -> Option<GuiSession> {
     })
 }
 
-/// Extract the kleos_auth cookie from headers
+/// Extract the canonical or legacy GUI authentication cookie from headers.
 fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .map(|s| s.trim())
-        .find(|s| s.starts_with(&format!("{}=", COOKIE_NAME)))?
-        .strip_prefix(&format!("{}=", COOKIE_NAME))
-        .map(|s| s.to_string())
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    extract_named_cookie(raw, COOKIE_NAME).or_else(|| extract_named_cookie(raw, LEGACY_COOKIE_NAME))
+}
+
+/// Extract one exact cookie value from a raw Cookie header.
+fn extract_named_cookie(raw: &str, name: &str) -> Option<String> {
+    raw.split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.strip_prefix(&format!("{name}=")))
+        .map(str::to_string)
 }
 
 /// Resolve the GUI session (user_id + scopes) from the cookie, if any.
@@ -477,7 +482,7 @@ pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool
 /// Determine cookie attributes based on config, not client-supplied headers.
 ///
 /// SECURITY (SEC-MED-6): X-Forwarded-Proto is trivially spoofable when no
-/// trusted reverse proxy strips it. Use the `ENGRAM_SECURE_COOKIES` env var
+/// trusted reverse proxy strips it. Use the `KLEOS_SECURE_COOKIES` env var
 /// (set to "1" or "true") when the server is behind TLS.
 fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
     static SECURE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -487,7 +492,7 @@ fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
             .unwrap_or(false)
     });
 
-    // L-R3-005: prefer SameSite=Strict regardless of ENGRAM_SECURE_COOKIES.
+    // L-R3-005: prefer SameSite=Strict regardless of KLEOS_SECURE_COOKIES.
     // The previous default (Lax in non-secure mode) let any cross-site
     // top-level GET (including links to /gui/logout) carry the cookie,
     // which made forced-logout CSRF trivially exploitable.
@@ -523,8 +528,8 @@ async fn gui_auth(
 ) -> Response {
     // SECURITY (SEC-MED-7): gui_enabled controls whether the GUI is reachable.
     // It does NOT gate a password prompt -- actual authentication uses the API
-    // key submitted in the form. Set KLEOS_GUI_PASSWORD or the legacy
-    // ENGRAM_GUI_PASSWORD to any non-empty value to enable the GUI.
+    // key submitted in the form. Set KLEOS_GUI_PASSWORD to any non-empty
+    // value to enable the GUI; legacy configuration remains accepted.
     if !state.config.gui_enabled {
         return (StatusCode::FORBIDDEN, "GUI authentication not configured").into_response();
     }
@@ -587,6 +592,7 @@ async fn gui_auth(
 async fn gui_logout(headers: HeaderMap) -> Response {
     let attrs = cookie_attributes(&headers);
     let cookie = format!("{}=; Max-Age=0; {}", COOKIE_NAME, attrs);
+    let legacy_cookie = format!("{}=; Max-Age=0; {}", LEGACY_COOKIE_NAME, attrs);
     let csrf_clear = format!(
         "{}=; Max-Age=0; {}",
         CSRF_COOKIE_NAME,
@@ -596,6 +602,7 @@ async fn gui_logout(headers: HeaderMap) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::SET_COOKIE, cookie)
+        .header(header::SET_COOKIE, legacy_cookie)
         .header(header::SET_COOKIE, csrf_clear)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(r#"{"ok":true}"#))
@@ -1200,6 +1207,7 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
 
+    // Verify that music filenames become readable labels in the GUI.
     #[test]
     fn prettify_track_name_humanizes_filenames() {
         assert_eq!(prettify_track_name("moonlit-dreams.mp3"), "Moonlit Dreams");
@@ -1225,6 +1233,21 @@ mod tests {
         assert!(LOGIN_JS.contains("try {"));
         assert!(LOGIN_JS.contains("catch"));
         assert!(LOGIN_JS.contains("Unable to reach Kleos"));
+    }
+
+    /// The canonical cookie must win when both names are present, while a
+    /// pre-rename cookie remains readable during migration.
+    #[test]
+    fn auth_cookie_prefers_kleos_and_accepts_legacy_name() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            "engram_auth=legacy; kleos_auth=current".parse().unwrap(),
+        );
+        assert_eq!(get_auth_cookie(&headers).as_deref(), Some("current"));
+
+        headers.insert(header::COOKIE, "engram_auth=legacy".parse().unwrap());
+        assert_eq!(get_auth_cookie(&headers).as_deref(), Some("legacy"));
     }
 
     // The CSRF token must be deterministic per session, bound to both the

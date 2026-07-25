@@ -154,6 +154,8 @@ describe('service routes', () => {
 
     expect(screen.getByRole('heading', { name: 'Broca' })).toBeInTheDocument();
     expect(screen.getByText('Phase slice committed')).toBeInTheDocument();
+    expect(screen.getByText('Kleos')).toBeInTheDocument();
+    expect(screen.queryByText('engram')).not.toBeInTheDocument();
   });
 
   it('renders the Soma agent table', () => {

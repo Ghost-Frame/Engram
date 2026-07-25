@@ -1,503 +1,516 @@
-/* Memory Galaxy interface chrome frames the live graph as a cosmic instrument panel. */
-
-.memgraph-root {
-  --mg-void: #05060d;
-  --mg-panel: rgba(5, 9, 20, 0.83);
-  --mg-panel-solid: rgba(5, 8, 17, 0.94);
-  --mg-cyan: #00d7ff;
-  --mg-blue: #1463ff;
-  --mg-green: #22e87a;
-  --mg-orange: #ff7a1a;
-  --mg-muted: #758398;
-  --mg-border: rgba(0, 215, 255, 0.24);
-  background:
-    radial-gradient(circle at 52% 46%, rgba(20, 99, 255, 0.11), transparent 36%),
-    radial-gradient(circle at 28% 72%, rgba(124, 77, 255, 0.08), transparent 28%),
-    var(--mg-void);
-  color: #dceeff;
-  font-family: var(--font-mono);
-  isolation: isolate;
-}
-
-.memgraph-root::before,
-.memgraph-root::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-}
-
-.memgraph-root::before {
-  background-image: radial-gradient(rgba(0, 215, 255, 0.17) 0.75px, transparent 0.75px);
-  background-size: 24px 24px;
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.38), transparent 72%);
-  opacity: 0.22;
-}
-
-.memgraph-root::after {
-  background: repeating-linear-gradient(
-    to bottom,
-    transparent 0,
-    transparent 3px,
-    rgba(126, 222, 255, 0.018) 4px
-  );
-  mix-blend-mode: screen;
-}
-
-.memgraph-canvas {
-  position: relative;
-  z-index: 0;
-}
-
-.memgraph-topbar {
-  min-height: 64px;
-  padding: 10px clamp(14px, 2.2vw, 32px);
-  border-bottom: 1px solid var(--mg-border);
-  background: linear-gradient(180deg, rgba(3, 7, 16, 0.94), rgba(3, 7, 16, 0.68));
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28), 0 1px 22px rgba(0, 215, 255, 0.06);
-  backdrop-filter: blur(18px);
-}
-
-.memgraph-back {
-  width: 34px;
-  height: 34px;
-  justify-content: center;
-  border: 1px solid rgba(0, 215, 255, 0.2);
-  color: #6f8097;
-}
-
-.memgraph-back:hover,
-.memgraph-back:focus-visible {
-  border-color: rgba(0, 215, 255, 0.62);
-  color: var(--mg-cyan);
-  outline: none;
-}
-
-.memgraph-brand {
+.atlas-page {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 226px;
+  flex-direction: column;
+  gap: var(--sp-4);
 }
 
-.memgraph-brand__name {
-  color: var(--mg-cyan);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-  text-shadow: 0 0 16px rgba(0, 215, 255, 0.58);
+.atlas-header {
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: var(--sp-5);
+  justify-content: space-between;
+  padding-bottom: var(--sp-4);
 }
 
-.memgraph-brand__mode {
-  color: #8292a8;
-  font-size: 9px;
-  letter-spacing: 0.2em;
+.atlas-header h1 {
+  color: var(--text-bright);
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  letter-spacing: -0.04em;
 }
 
-.memgraph-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border: 1px solid rgba(34, 232, 122, 0.26);
-  color: var(--mg-green);
-  font-size: 8px;
-  letter-spacing: 0.16em;
-}
-
-.memgraph-live i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--mg-green);
-  box-shadow: 0 0 8px var(--mg-green);
-  animation: memgraph-pulse 2s ease-in-out infinite;
-}
-
-.memgraph-search {
-  margin-inline: auto;
-}
-
-.memgraph-search__input {
-  border: 1px solid rgba(0, 215, 255, 0.15);
-  border-radius: 0;
-  background: rgba(7, 13, 26, 0.78);
-  color: #dceeff;
-  font-family: var(--font-mono);
+.atlas-header p {
+  color: var(--text-dim);
   font-size: 11px;
-  letter-spacing: 0.02em;
+  margin-top: var(--sp-2);
 }
 
-.memgraph-search__input::placeholder {
-  color: #526074;
+.atlas-report {
+  display: grid;
+  gap: 3px;
+  grid-template-columns: repeat(2, minmax(126px, 1fr));
 }
 
-.memgraph-search__input:focus {
-  border-color: rgba(0, 215, 255, 0.66);
-  box-shadow: 0 0 0 1px rgba(0, 215, 255, 0.12), 0 0 24px rgba(0, 215, 255, 0.08);
-}
-
-.memgraph-search__icon {
-  color: #526c82;
-}
-
-.memgraph-metrics {
-  color: #64748a;
-  font-size: 9px;
-  letter-spacing: 0.08em;
+.atlas-report span {
+  border-left: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 8px;
+  padding: 3px var(--sp-3);
   text-transform: uppercase;
 }
 
-.memgraph-metrics span {
-  white-space: nowrap;
+.atlas-report strong {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
 }
 
-.memgraph-metrics strong {
-  color: #a7c9de;
+.atlas-search {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  margin-left: auto;
+  max-width: 680px;
+  width: 100%;
+}
+
+.atlas-search label {
+  align-self: center;
+  color: var(--text-faint);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  padding-right: var(--sp-2);
+  text-transform: uppercase;
+}
+
+.atlas-search__error {
+  color: var(--danger);
+  font-size: 10px;
+  grid-column: 2 / -1;
+}
+
+.atlas-search input,
+.atlas-search button,
+.atlas-controls select,
+.atlas-controls__fit {
+  border-radius: var(--radius);
+  min-height: 44px;
+}
+
+.atlas-search input,
+.atlas-controls select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  width: 100%;
+}
+
+.atlas-search button,
+.atlas-controls__fit {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #180b03;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 16px;
+}
+
+.atlas-workbench {
+  display: grid;
+  grid-template-columns: 196px minmax(360px, 1fr) 310px;
+  min-height: 660px;
+}
+
+.atlas-controls,
+.atlas-inspector {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.atlas-controls {
+  border-radius: var(--radius) 0 0 var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-4);
+}
+
+.atlas-controls section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.atlas-controls h2,
+.atlas-detail__links h2 {
+  color: var(--text-faint);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.atlas-controls label {
+  color: var(--text-dim);
+  display: block;
+  font-size: 9px;
+  position: relative;
+}
+
+.atlas-controls select,
+.atlas-controls input[type="range"] {
+  margin-top: var(--sp-2);
+}
+
+.atlas-controls input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.atlas-controls__value {
+  color: var(--accent);
+  float: right;
+}
+
+.atlas-toggle {
+  align-items: center;
+  cursor: pointer;
+  display: grid !important;
+  gap: var(--sp-2);
+  grid-template-columns: 30px 1fr;
+  min-height: 38px;
+}
+
+.atlas-toggle input {
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
+.atlas-toggle span {
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  height: 16px;
+  position: relative;
+  width: 30px;
+}
+
+.atlas-toggle span::after {
+  background: var(--text-faint);
+  border-radius: 50%;
+  content: "";
+  height: 10px;
+  left: 2px;
+  position: absolute;
+  top: 2px;
+  transition: transform var(--dur-fast) var(--ease-default);
+  width: 10px;
+}
+
+.atlas-toggle input:checked + span {
+  background: var(--accent-faint);
+  border-color: var(--accent);
+}
+
+.atlas-toggle input:checked + span::after {
+  background: var(--accent);
+  transform: translateX(14px);
+}
+
+.atlas-controls__fit {
+  margin-top: var(--sp-2);
+  width: 100%;
+}
+
+.atlas-legend {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-4);
+}
+
+.atlas-legend__row {
+  align-items: center;
+  color: var(--text-dim);
+  display: grid;
+  font-size: 8px;
+  gap: var(--sp-2);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  text-transform: uppercase;
+}
+
+.atlas-legend__row i {
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
+.atlas-legend__row strong {
+  color: var(--text-faint);
   font-weight: 500;
 }
 
-.memgraph-glass-panel,
-.memgraph-glass-panel-light,
-.memgraph-glass-panel-solid {
-  border: 1px solid var(--mg-border);
-  border-radius: 0;
-  background: var(--mg-panel);
-  box-shadow: inset 0 0 28px rgba(0, 111, 180, 0.04), 0 18px 54px rgba(0, 0, 0, 0.25);
-  backdrop-filter: blur(20px);
+.atlas-surface {
+  background: #0a0b09;
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  min-height: 660px;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
 }
 
-.memgraph-glass-panel-solid {
-  border-width: 0 0 0 1px;
-  background: var(--mg-panel-solid);
-  backdrop-filter: blur(30px);
+.atlas-surface canvas {
+  cursor: grab;
+  display: block;
+  height: 100%;
+  touch-action: none;
+  width: 100%;
 }
 
-.memgraph-glass-panel-light {
-  background: rgba(5, 9, 20, 0.68);
+.atlas-surface canvas:active {
+  cursor: grabbing;
 }
 
-.memgraph-instruments {
-  bottom: 22px;
-  left: 22px;
-  width: 176px;
+.atlas-state {
+  align-items: center;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: absolute;
 }
 
-.memgraph-category-ledger {
-  bottom: 222px;
-  left: 22px;
-  width: 176px;
-}
-
-.memgraph-panel-heading {
-  color: var(--mg-cyan);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  text-shadow: 0 0 12px rgba(0, 215, 255, 0.32);
-}
-
-.memgraph-control-label,
-.memgraph-control-value,
-.memgraph-toggle {
-  color: #68778b;
-}
-
-.memgraph-toggle {
-  width: fit-content;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  font-family: var(--font-mono);
-  text-transform: none;
-}
-
-.memgraph-toggle:hover,
-.memgraph-toggle:focus-visible {
-  background: transparent;
-  color: #b4c7d9;
-  outline: none;
-}
-
-.memgraph-switch {
-  border: 1px solid rgba(132, 151, 172, 0.3);
-  background: #111827;
-}
-
-.memgraph-switch__thumb {
-  background: #738096;
-}
-
-.memgraph-switch.is-on {
-  border-color: rgba(0, 215, 255, 0.45);
-  background: rgba(0, 215, 255, 0.16);
-}
-
-.memgraph-switch.is-on .memgraph-switch__thumb {
-  transform: translateX(12px);
-  background: var(--mg-cyan);
-  box-shadow: 0 0 8px rgba(0, 215, 255, 0.72);
-}
-
-.memgraph-fit,
-.memgraph-return {
-  border: 1px solid rgba(0, 215, 255, 0.24);
-  border-radius: 0;
-  background: rgba(0, 215, 255, 0.04);
-  color: #8cb2c7;
-  font-family: var(--font-mono);
-  letter-spacing: 0.08em;
-}
-
-.memgraph-fit:hover,
-.memgraph-fit:focus-visible,
-.memgraph-return:hover,
-.memgraph-return:focus-visible {
-  border-color: rgba(0, 215, 255, 0.65);
-  background: rgba(0, 215, 255, 0.09);
-  color: var(--mg-cyan);
-  outline: none;
-}
-
-.memgraph-ledger-row {
-  color: #77889d;
-  min-height: 18px;
-  text-transform: uppercase;
-}
-
-.memgraph-ledger-row span:last-child {
-  color: #4f6075;
-}
-
-.memgraph-ledger-dot {
-  box-shadow: 0 0 8px currentColor;
-}
-
-.memgraph-gesture-hint {
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
-  color: rgba(120, 143, 164, 0.58);
+.atlas-gesture {
+  bottom: var(--sp-3);
+  color: var(--text-faint);
   font-size: 8px;
-  letter-spacing: 0.18em;
+  left: 50%;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  position: absolute;
+  text-transform: uppercase;
+  transform: translateX(-50%);
   white-space: nowrap;
 }
 
-.memgraph-gesture-hint span {
-  color: rgba(0, 215, 255, 0.55);
-  margin-inline: 6px;
+.atlas-inspector {
+  border-radius: 0 var(--radius) var(--radius) 0;
+  max-height: 660px;
+  overflow-y: auto;
 }
 
-.memgraph-inspector {
-  padding-top: 64px;
-  box-shadow: -24px 0 70px rgba(0, 0, 0, 0.36), -1px 0 22px rgba(0, 215, 255, 0.06);
+.atlas-inspector__empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
 }
 
-.memgraph-side-panel {
-  animation: memgraph-slide-in 0.26s ease-out;
+.atlas-inspector__empty span,
+.atlas-detail > header span,
+.atlas-results > header span {
+  color: var(--accent);
+  font-size: 8px;
+  letter-spacing: 0.12em;
 }
 
-.memgraph-side-panel::-webkit-scrollbar {
-  width: 4px;
+.atlas-inspector__empty strong {
+  color: var(--text-bright);
+  font-family: var(--font-display);
+  font-size: var(--step-2);
 }
 
-.memgraph-side-panel::-webkit-scrollbar-track {
+.atlas-inspector__empty p {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.atlas-detail,
+.atlas-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+}
+
+.atlas-detail > header,
+.atlas-results > header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: var(--sp-3);
+}
+
+.atlas-detail > header button {
   background: transparent;
-}
-
-.memgraph-side-panel::-webkit-scrollbar-thumb {
-  border-radius: 2px;
-  background: rgba(0, 215, 255, 0.16);
-}
-
-.memgraph-range-slider {
-  appearance: none;
-  height: 3px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, rgba(0, 215, 255, 0.46), rgba(20, 99, 255, 0.18));
-  outline: none;
-}
-
-.memgraph-range-slider::-webkit-slider-thumb {
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  border-radius: 50%;
-  background: var(--mg-cyan);
-  box-shadow: 0 0 10px rgba(0, 215, 255, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
   cursor: pointer;
+  font-size: 18px;
+  height: 34px;
+  width: 34px;
 }
 
-.memgraph-range-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  border-radius: 50%;
-  background: var(--mg-cyan);
-  box-shadow: 0 0 10px rgba(0, 215, 255, 0.7);
-  cursor: pointer;
-}
-
-.memgraph-state {
-  background:
-    radial-gradient(circle at center, rgba(0, 114, 184, 0.14), transparent 40%),
-    var(--mg-void);
-}
-
-.memgraph-state__card {
-  min-width: min(88vw, 340px);
-  padding: 28px;
-  border: 1px solid rgba(0, 215, 255, 0.22);
-  background: rgba(5, 9, 20, 0.72);
-}
-
-.memgraph-state__card--error {
-  border-color: rgba(255, 94, 122, 0.36);
-}
-
-.memgraph-kicker {
-  margin-bottom: 8px;
-  color: var(--mg-cyan);
+.atlas-detail__category {
   font-size: 9px;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
-.memgraph-loader {
-  border: 2px solid rgba(0, 215, 255, 0.16);
-  border-top-color: var(--mg-cyan);
-  box-shadow: 0 0 18px rgba(0, 215, 255, 0.18);
-  animation: memgraph-spin 0.9s linear infinite;
+.atlas-detail > p {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
-@keyframes memgraph-slide-in {
-  from {
-    transform: translateX(100%);
-    opacity: 0;
+.atlas-detail dl {
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+.atlas-detail dl div {
+  display: flex;
+  font-size: 9px;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 9px 0;
+}
+
+.atlas-detail dt {
+  color: var(--text-faint);
+}
+
+.atlas-detail dd {
+  color: var(--text-dim);
+  margin: 0;
+  max-width: 62%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.atlas-detail__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.atlas-detail__tags span {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 8px;
+  padding: 3px 8px;
+}
+
+.atlas-detail__links,
+.atlas-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.atlas-detail__links button,
+.atlas-results button {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  min-height: 58px;
+  padding: var(--sp-2);
+  text-align: left;
+}
+
+.atlas-detail__links button:disabled,
+.atlas-results button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.atlas-detail__links button span,
+.atlas-detail__links button strong,
+.atlas-results button span,
+.atlas-results button strong,
+.atlas-results button small {
+  display: block;
+}
+
+.atlas-detail__links button span,
+.atlas-results button span,
+.atlas-results button small {
+  color: var(--text-faint);
+  font-size: 8px;
+}
+
+.atlas-detail__links button strong,
+.atlas-results button strong {
+  display: -webkit-box;
+  font-size: 10px;
+  font-weight: 500;
+  line-clamp: 2;
+  margin-top: 3px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.atlas-results button small {
+  color: var(--accent);
+  margin-top: 5px;
+  text-transform: uppercase;
+}
+
+@media (max-width: 1220px) {
+  .atlas-workbench {
+    grid-template-columns: 176px minmax(340px, 1fr);
   }
-  to {
-    transform: translateX(0);
-    opacity: 1;
+
+  .atlas-inspector {
+    border-radius: 0 0 var(--radius) var(--radius);
+    grid-column: 1 / -1;
+    max-height: 420px;
   }
 }
 
-@keyframes memgraph-spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes memgraph-pulse {
-  50% { opacity: 0.38; }
-}
-
-@media (max-width: 960px) {
-  .memgraph-brand {
-    min-width: 0;
+@media (max-width: 760px) {
+  .atlas-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
-  .memgraph-brand__mode,
-  .memgraph-metrics span:nth-child(3) {
-    display: none;
-  }
-
-  .memgraph-category-ledger {
-    bottom: 216px;
-  }
-}
-
-@media (max-width: 700px) {
-  .memgraph-topbar {
-    min-height: 112px;
-    flex-wrap: wrap;
-    gap: 8px 10px;
-    padding: 10px 12px;
-  }
-
-  .memgraph-back {
-    width: 30px;
-    height: 30px;
-  }
-
-  .memgraph-live {
-    margin-left: auto;
-  }
-
-  .memgraph-search {
-    order: 4;
-    flex-basis: 100%;
-    max-width: none;
-  }
-
-  .memgraph-metrics {
-    order: 3;
-    margin-left: auto;
-    gap: 9px;
-  }
-
-  .memgraph-instruments {
-    bottom: 12px;
-    left: 12px;
-    width: 154px;
-    padding: 12px;
-  }
-
-  .memgraph-category-ledger {
-    bottom: 12px;
-    right: 12px;
-    left: auto;
-    width: 150px;
-    max-height: 194px;
-    overflow: hidden;
-  }
-
-  .memgraph-gesture-hint {
-    display: none;
-  }
-
-  .memgraph-inspector {
-    top: auto;
+  .atlas-report {
+    grid-template-columns: repeat(2, minmax(110px, 1fr));
     width: 100%;
-    height: min(70vh, 620px);
-    padding-top: 0;
-    border-width: 1px 0 0;
-    box-shadow: 0 -24px 70px rgba(0, 0, 0, 0.48);
   }
 
-  .memgraph-side-panel {
-    animation-name: memgraph-sheet-in;
-  }
-}
-
-@keyframes memgraph-sheet-in {
-  from {
-    transform: translateY(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-@media (max-width: 430px) {
-  .memgraph-metrics {
-    font-size: 8px;
+  .atlas-search {
+    grid-template-columns: 1fr auto;
   }
 
-  .memgraph-instruments {
-    width: 148px;
+  .atlas-search label {
+    grid-column: 1 / -1;
   }
 
-  .memgraph-category-ledger {
-    width: 140px;
+  .atlas-workbench {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .atlas-controls {
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+
+  .atlas-controls > section:first-child {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .atlas-controls h2,
+  .atlas-controls__fit {
+    grid-column: 1 / -1;
+  }
+
+  .atlas-legend {
+    display: none !important;
+  }
+
+  .atlas-surface {
+    min-height: 500px;
+  }
+
+  .atlas-inspector {
+    border-radius: 0 0 var(--radius) var(--radius);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .memgraph-live i,
-  .memgraph-loader,
-  .memgraph-side-panel {
-    animation: none;
+  .atlas-toggle span::after {
+    transition: none;
   }
 }

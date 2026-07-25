@@ -1,4 +1,4 @@
-// Connectivity-preserving edge selection for the 3D memory graph.
+// Connectivity-preserving edge selection for the memory relationship atlas.
 //
 // A browser can't draw tens of thousands of edges smoothly, so past a threshold
 // the graph renders only a subset. The naive subset -- "keep the top-N edges by

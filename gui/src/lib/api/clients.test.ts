@@ -80,10 +80,10 @@ describe('service API clients', () => {
     const spy = ok({ edge_count: 0, edges: [], node_count: 0, nodes: [] });
     vi.stubGlobal('fetch', spy);
 
-    // Default min_component prunes singleton dust (2); the 3D graph relies on it.
-    await graph.getMemoryGraph(3, 50000);
+    // Default min_component prunes singleton dust from the bounded atlas.
+    await graph.getMemoryGraph(3, 800);
 
     const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit?]>;
-    expect(calls[0][0]).toBe('/graph?depth=3&max=50000&min_component=2');
+    expect(calls[0][0]).toBe('/graph?depth=3&max=800&min_component=2');
   });
 });

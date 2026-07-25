@@ -135,7 +135,7 @@ async fn gui_login_full(app: &axum::Router, api_key: &str) -> (String, String) {
     let mut csrf_kv = None;
     for hv in res.headers().get_all("set-cookie") {
         let kv = hv.to_str().unwrap().split(';').next().unwrap().to_string();
-        if kv.starts_with("engram_auth=") {
+        if kv.starts_with("kleos_auth=") {
             session = Some(kv);
         } else if kv.starts_with("kleos_csrf=") {
             csrf_kv = Some(kv);
