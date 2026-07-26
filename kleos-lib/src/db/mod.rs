@@ -430,16 +430,28 @@ async fn open_vector_indices(
     (None, None)
 }
 
+/// Boot-path guarantees for the declarative schema converger: whatever the
+/// manifest adds on top of the migrated schema must settle after one pass, so
+/// a running server does not repeat schema work on every start.
 #[cfg(test)]
 mod converge_boot_tests {
     use super::*;
 
-    /// Keystone invariant: against a fully-migrated DB, converge of the real
-    /// SCHEMA_MANIFEST must take ZERO actions. If a manifest entry contradicts
-    /// the migrated schema (e.g. someone added a numbered structural migration
-    /// without updating the manifest, or vice versa), this fails.
+    /// Keystone invariant: converge must be idempotent. Boot already migrates
+    /// and then converges, so a converge run immediately afterwards must find
+    /// nothing left to do. That catches a manifest entry the converge pass
+    /// cannot actually satisfy -- a column spec that does not match what got
+    /// created, an index the manifest keeps trying to add -- which would
+    /// otherwise show up as work repeated on every single boot.
+    ///
+    /// Idempotence, not emptiness-on-the-first-pass, is the property that
+    /// survives a non-empty manifest: asserting the first converge takes zero
+    /// actions would forbid the manifest from ever owning a table, which is
+    /// the entire point of the mechanism.
     #[tokio::test]
-    async fn schema_manifest_matches_migrated_schema() -> Result<()> {
+    async fn global_converge_is_idempotent() -> Result<()> {
+        // connect_memory runs migrations and then converges, so this is the
+        // second pass.
         let db = Database::connect_memory().await?;
         let actions = db
             .read(|conn| {
@@ -449,20 +461,33 @@ mod converge_boot_tests {
                 )
             })
             .await?;
-        assert!(actions.is_empty(), "global manifest drifted: {actions:?}");
+        assert!(
+            actions.is_empty(),
+            "global converge not idempotent: {actions:?}"
+        );
         Ok(())
     }
 
     /// Same invariant for the tenant manifest against a freshly-migrated shard.
+    /// The first converge is allowed to act -- that is how a manifest-owned
+    /// table gets created on a shard whose migration chain never had one.
     #[test]
-    fn tenant_manifest_matches_migrated_schema() {
+    fn tenant_converge_is_idempotent() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::tenant_migrations::run_tenant_migrations(&conn, None).unwrap();
-        let actions = crate::db::converge::converge_schema(
+        crate::db::converge::converge_schema(
             &conn,
             crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
         )
         .unwrap();
-        assert!(actions.is_empty(), "tenant manifest drifted: {actions:?}");
+        let second = crate::db::converge::converge_schema(
+            &conn,
+            crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+        )
+        .unwrap();
+        assert!(
+            second.is_empty(),
+            "tenant converge not idempotent: {second:?}"
+        );
     }
 }
