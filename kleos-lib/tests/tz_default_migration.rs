@@ -22,25 +22,33 @@
 //! conversion on Windows.
 #![cfg(unix)]
 
+use std::process::Command;
+
 use rusqlite::Connection;
 
-extern "C" {
-    /// libc tzset(3): refreshes the process-global timezone state from the TZ
-    /// environment variable. Declared directly because SQLite's
-    /// 'localtime'/'utc' modifiers resolve through localtime_r, which is not
-    /// guaranteed to re-read TZ on its own after std::env::set_var.
-    fn tzset();
-}
+/// Re-runs one test in a child whose timezone is fixed before process startup.
+///
+/// SQLite and libc may cache timezone state before a test mutates `TZ`, which
+/// made in-process environment mutation nondeterministic on non-UTC hosts.
+/// The marker prevents recursion: the parent waits for the exact child test,
+/// while the child returns `false` and executes the test body.
+fn rerun_under_berlin(test_name: &str) -> bool {
+    const CHILD_MARKER: &str = "KLEOS_TZ_TEST_CHILD";
+    if std::env::var(CHILD_MARKER).as_deref() == Ok(test_name) {
+        return false;
+    }
 
-/// Pins the process timezone to Europe/Berlin (CEST +2 in summer, CET +1 in
-/// winter) and forces libc to re-read it. Called at the top of every test:
-/// `tzset()` is idempotent, and all tests in this file want the same zone, so
-/// parallel test threads cannot race each other into different offsets.
-fn use_berlin_tz() {
-    std::env::set_var("TZ", "Europe/Berlin");
-    // SAFETY: tzset() only refreshes libc's global timezone state from the
-    // environment; it takes no pointers and has no invariants to uphold.
-    unsafe { tzset() };
+    let status = Command::new(std::env::current_exe().expect("resolve integration-test binary"))
+        .env("TZ", "Europe/Berlin")
+        .env(CHILD_MARKER, test_name)
+        .args(["--exact", test_name, "--nocapture"])
+        .status()
+        .expect("run timezone-pinned child test");
+    assert!(
+        status.success(),
+        "timezone-pinned child test {test_name} failed with {status}"
+    );
+    true
 }
 
 /// Restores the buggy pre-fix global `handoffs` table (and its FTS triggers)
@@ -61,7 +69,7 @@ fn defix_global_handoffs(conn: &Connection) {
              branch TEXT,
              directory TEXT,
              agent TEXT DEFAULT 'unknown',
-             type TEXT DEFAULT 'manual',
+             [type] TEXT DEFAULT 'manual',
              content TEXT NOT NULL,
              metadata TEXT,
              session_id TEXT,
@@ -203,7 +211,9 @@ fn buggy_default_count(conn: &Connection) -> i64 {
 /// the live schema.
 #[test]
 fn global_v99_backfills_skewed_rows_dst_aware() {
-    use_berlin_tz();
+    if rerun_under_berlin("global_v99_backfills_skewed_rows_dst_aware") {
+        return;
+    }
     let conn = Connection::open_in_memory().unwrap();
     kleos_lib::db::migrations::run_migrations_to(&conn, 98).unwrap();
 
@@ -217,8 +227,16 @@ fn global_v99_backfills_skewed_rows_dst_aware() {
              VALUES (42, 'p', 'summer row', '2026-07-01 10:00:00');
          INSERT INTO handoffs (id, project, content, created_at)
              VALUES (43, 'p', 'winter row', '2026-01-15 10:00:00');
-         INSERT INTO handoffs (id, project, content)
-             VALUES (44, 'p', 'live default row');
+         -- SQLite 3.46+ recognizes 'now' as UTC and makes a following 'utc'
+         -- modifier a no-op. Recreate the legacy engine's stored value
+         -- explicitly: UTC minus the local offset at the current instant.
+         INSERT INTO handoffs (id, project, content, created_at)
+             VALUES (
+                 44,
+                 'p',
+                 'live default row',
+                 datetime(2 * julianday('now') - julianday('now', 'localtime'))
+             );
          INSERT INTO handoff_atoms
              (id, atom_id, handoff_id, project, atom_type, content, canonical_form,
               created_at, last_seen_at, seen_count)
@@ -316,7 +334,9 @@ fn global_v99_backfills_skewed_rows_dst_aware() {
 /// working AFTER INSERT trigger and a true-UTC default for new rows.
 #[test]
 fn global_v99_preserves_fts_ids_and_installs_correct_default() {
-    use_berlin_tz();
+    if rerun_under_berlin("global_v99_preserves_fts_ids_and_installs_correct_default") {
+        return;
+    }
     let conn = Connection::open_in_memory().unwrap();
     kleos_lib::db::migrations::run_migrations_to(&conn, 98).unwrap();
 
@@ -366,7 +386,9 @@ fn global_v99_preserves_fts_ids_and_installs_correct_default() {
 /// on a non-UTC host.
 #[test]
 fn fresh_db_has_correct_defaults_after_full_migration() {
-    use_berlin_tz();
+    if rerun_under_berlin("fresh_db_has_correct_defaults_after_full_migration") {
+        return;
+    }
     let conn = Connection::open_in_memory().unwrap();
     kleos_lib::db::migrations::run_migrations(&conn).unwrap();
 
@@ -392,7 +414,9 @@ fn fresh_db_has_correct_defaults_after_full_migration() {
 /// its ON DELETE CASCADE relationship intact.
 #[test]
 fn tenant_v82_backfills_skewed_rows_and_preserves_cascade() {
-    use_berlin_tz();
+    if rerun_under_berlin("tenant_v82_backfills_skewed_rows_and_preserves_cascade") {
+        return;
+    }
     let conn = Connection::open_in_memory().unwrap();
     kleos_lib::db::tenant_migrations::run_tenant_migrations_to(&conn, Some(1), 81).unwrap();
 
