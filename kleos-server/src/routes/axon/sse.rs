@@ -15,6 +15,7 @@ use futures::stream::Stream;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
@@ -22,6 +23,18 @@ use crate::state::AppState;
 use kleos_lib::services::axon::query_events;
 
 use super::types::SseStreamParams;
+
+/// Receives the next broadcast event unless server termination begins first.
+async fn recv_until_cancelled(
+    rx: &mut broadcast::Receiver<serde_json::Value>,
+    cancel: &CancellationToken,
+) -> Option<Result<serde_json::Value, broadcast::error::RecvError>> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => None,
+        result = rx.recv() => Some(result),
+    }
+}
 
 /// SSE stream handler. Delivers Axon events in real-time via broadcast channel.
 /// On connect, replays missed events since last_event_id, then streams live.
@@ -53,6 +66,7 @@ pub async fn stream_handler(
     // published during the DB round-trip. The ev_id <= last_id guard in the
     // stream loop deduplicates overlap.
     let mut rx = state.axon_broadcast.subscribe();
+    let cancel = state.shutdown_token.clone();
 
     // Catch-up: replay missed events from DB
     let catchup_events = if last_id > 0 {
@@ -99,7 +113,10 @@ pub async fn stream_handler(
 
         // Phase 2: Real-time broadcast delivery
         loop {
-            match rx.recv().await {
+            let Some(result) = recv_until_cancelled(&mut rx, &cancel).await else {
+                break;
+            };
+            match result {
                 Ok(event_json) => {
                     // Extract fields for filtering
                     let ev_channel = event_json.get("channel")
@@ -161,4 +178,61 @@ pub async fn stream_handler(
             .interval(Duration::from_secs(30))
             .text("keep-alive"),
     ))
+}
+
+/// Regression tests for cancellation-aware Axon SSE broadcast waits.
+#[cfg(test)]
+mod tests {
+    use super::recv_until_cancelled;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+    use tokio_util::sync::CancellationToken;
+
+    /// Confirms an idle SSE receiver exits promptly after cancellation.
+    #[tokio::test]
+    async fn idle_receiver_exits_after_cancellation() {
+        let (tx, mut rx) = broadcast::channel(1);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            recv_until_cancelled(&mut rx, &cancel),
+        )
+        .await
+        .expect("cancelled receiver should not remain pending");
+
+        assert!(result.is_none());
+        drop(tx);
+    }
+
+    /// Confirms cancellation wins even when a broadcast event is already queued.
+    #[tokio::test]
+    async fn cancellation_preempts_queued_event() {
+        let (tx, mut rx) = broadcast::channel(1);
+        let cancel = CancellationToken::new();
+        tx.send(serde_json::json!({"id": 1}))
+            .expect("receiver is subscribed");
+        cancel.cancel();
+
+        let result = recv_until_cancelled(&mut rx, &cancel).await;
+
+        assert!(result.is_none());
+    }
+
+    /// Confirms normal broadcast delivery remains available before cancellation.
+    #[tokio::test]
+    async fn receiver_delivers_event_before_cancellation() {
+        let (tx, mut rx) = broadcast::channel(1);
+        let cancel = CancellationToken::new();
+        let event = serde_json::json!({"id": 1});
+        tx.send(event.clone()).expect("receiver is subscribed");
+
+        let result = recv_until_cancelled(&mut rx, &cancel)
+            .await
+            .expect("cancellation has not started")
+            .expect("broadcast remains open");
+
+        assert_eq!(result, event);
+    }
 }
