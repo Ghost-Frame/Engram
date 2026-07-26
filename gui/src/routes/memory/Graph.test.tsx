@@ -1,10 +1,104 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
+import { getMemoryGraph } from '$lib/api/graph';
 import { Graph } from './Graph';
 
-// Deterministic graph fixture used to exercise the Atlas interface.
+// Captured ForceGraph instances expose configuration calls for regression assertions.
+const graphRuntime = vi.hoisted(() => ({
+  instances: [] as Array<{
+    calls: Array<{ args: unknown[]; name: string }>;
+    data: { links: unknown[]; nodes: unknown[] };
+  }>
+}));
+
+vi.mock('3d-force-graph', () => {
+  // TestForceGraph models the fluent surface used by the Memory Galaxy without creating WebGL.
+  class TestForceGraph {
+    calls: Array<{ args: unknown[]; name: string }> = [];
+    data = { links: [] as unknown[], nodes: [] as unknown[] };
+    private readonly canvas = document.createElement('canvas');
+    private readonly sceneValue = {
+      add: vi.fn(),
+      remove: vi.fn()
+    };
+
+    // Build a proxy that records fluent configuration while preserving explicit runtime methods.
+    constructor(_container: HTMLElement) {
+      const proxy = new Proxy(this, {
+        get: (target, property, receiver) => {
+          if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
+          return (...args: unknown[]) => {
+            target.calls.push({ args, name: String(property) });
+            return receiver;
+          };
+        }
+      });
+      graphRuntime.instances.push(proxy);
+      return proxy;
+    }
+
+    // Store graph data on setter calls and return it on getter calls.
+    graphData(value?: { links: unknown[]; nodes: unknown[] }) {
+      if (value) {
+        this.data = value;
+        this.calls.push({ args: [value], name: 'graphData' });
+        return this;
+      }
+      return this.data;
+    }
+
+    // Expose the canvas expected by the graph initialization path.
+    renderer() {
+      return { domElement: this.canvas };
+    }
+
+    // Expose a minimal scene that accepts and removes decorative objects.
+    scene() {
+      return this.sceneValue;
+    }
+
+    // Return a fluent force stub for lookups and the graph instance for force assignments.
+    d3Force(_name: string, value?: unknown) {
+      if (arguments.length > 1) {
+        this.calls.push({ args: [_name, value], name: 'd3Force' });
+        return this;
+      }
+      const force = new Proxy({}, {
+        get: (_target, property, receiver) => (...args: unknown[]) => {
+          this.calls.push({ args, name: `force.${String(property)}` });
+          return receiver;
+        }
+      });
+      return force;
+    }
+
+    // Return stable camera values so fit-to-galaxy can calculate a position.
+    camera() {
+      return { aspect: 16 / 9, fov: 50, position: { x: 0, y: 0, z: 1000 } };
+    }
+
+    // Record camera movement requested by fit and search controls.
+    cameraPosition(...args: unknown[]) {
+      this.calls.push({ args, name: 'cameraPosition' });
+      return this;
+    }
+
+    // Record simulation reheats requested when cluster pinning changes.
+    d3ReheatSimulation() {
+      this.calls.push({ args: [], name: 'd3ReheatSimulation' });
+      return this;
+    }
+
+    // Record disposal so tests cover cleanup of the imperative renderer.
+    _destructor() {
+      this.calls.push({ args: [], name: '_destructor' });
+    }
+  }
+
+  return { default: TestForceGraph };
+});
+
+// Deterministic graph fixture used to exercise the Memory Galaxy interface.
 const graphFixture = {
   edge_count: 1,
   edges: [{ source: 'm1', target: 'm2', type: 'association' as const, weight: 0.84 }],
@@ -36,6 +130,7 @@ const graphFixture = {
 };
 
 vi.mock('$lib/api/graph', () => ({
+  getCommunities: vi.fn(async () => ({ communities: [] })),
   getMemoryDetail: vi.fn(async (id: number) => ({
     access_count: 0,
     category: id === 1 ? 'decision' : 'task',
@@ -54,36 +149,21 @@ vi.mock('$lib/api/graph', () => ({
     version: 1
   })),
   getMemoryGraph: vi.fn(async () => graphFixture),
+  getStats: vi.fn(async () => ({ db_size_mb: 12.5 })),
   searchGraph: vi.fn(async () => ({
     results: [{ category: 'decision', content: 'Keep the operator surface bounded.', id: 1, score: 0.98 }]
   }))
 }));
 
-// ResizeObserver stub keeps the component contract without a browser layout engine.
-class TestResizeObserver {
-  // Accept the production callback even though the test uses initial dimensions.
-  constructor(_callback: ResizeObserverCallback) {}
-
-  // Observation is inert because jsdom has no layout box.
-  observe() {}
-
-  // Disconnect is inert because the observer never registered resources.
-  disconnect() {}
-}
-
-// Render children under the query provider required by the graph route.
-function QueryHarness({ children }: { children: ReactNode }) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-}
-
-describe('Memory Atlas', () => {
+describe('Memory Galaxy', () => {
   beforeEach(() => {
-    vi.stubGlobal('ResizeObserver', TestResizeObserver);
+    graphRuntime.instances.length = 0;
+    const gradient = { addColorStop: vi.fn() };
     const context = {
       arc: vi.fn(),
       beginPath: vi.fn(),
       clearRect: vi.fn(),
+      createRadialGradient: vi.fn(() => gradient),
       fill: vi.fn(),
       fillRect: vi.fn(),
       fillText: vi.fn(),
@@ -101,26 +181,71 @@ describe('Memory Atlas', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reports bounded connectivity and exposes the essential navigation controls', async () => {
-    render(<Graph />, { wrapper: QueryHarness });
+  it('restores the interactive 3D galaxy with bounded simulation work', async () => {
+    render(<Graph />);
 
-    expect(screen.getByRole('heading', { name: 'Memory Atlas' })).toBeInTheDocument();
-    const connectivityReport = await screen.findByLabelText('Graph connectivity report');
-    await waitFor(() => expect(connectivityReport).toHaveTextContent('2 loaded nodes'));
-    expect(connectivityReport).toHaveTextContent('1 loaded links');
-    expect(screen.getByRole('button', { name: 'Fit all nodes' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Density' })).toHaveValue('800');
-    expect(screen.getByRole('checkbox', { name: 'Show relationships' })).toBeChecked();
+    expect(await screen.findByText('MEMORY GALAXY')).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Interactive memory galaxy with 2 memories and 1 links/)
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Graph statistics')).toHaveTextContent('2 memories');
+    expect(screen.getByLabelText('Graph statistics')).toHaveTextContent('1 links');
+    expect(screen.getByLabelText('Galaxy controls')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'FIT GALAXY' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Labels' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Clusters' })).toHaveAttribute('aria-pressed', 'true');
+
+    await waitFor(() => expect(graphRuntime.instances).toHaveLength(1));
+    const instance = graphRuntime.instances[0];
+    expect(instance.data.nodes).toHaveLength(2);
+    expect(instance.data.links).toHaveLength(1);
+    expect(instance.calls).toContainEqual({ args: [0], name: 'warmupTicks' });
+    expect(instance.calls).toContainEqual({ args: [120], name: 'cooldownTicks' });
   });
 
-  it('returns loaded search results to the inspector without changing density', async () => {
-    render(<Graph />, { wrapper: QueryHarness });
-    await screen.findByLabelText('Graph connectivity report');
+  it('returns loaded search results without replacing the spatial controls', async () => {
+    render(<Graph />);
+    await screen.findByText('MEMORY GALAXY');
 
-    fireEvent.change(screen.getByLabelText('Find a memory'), { target: { value: 'bounded' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'bounded' } });
+    fireEvent.submit(screen.getByRole('search'));
 
-    expect(await screen.findByText('Open in atlas')).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Density' })).toHaveValue('800');
+    expect(await screen.findByRole('heading', { name: 'Search Results' })).toBeInTheDocument();
+    expect(screen.getByText('Keep the operator surface bounded.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Galaxy controls')).toBeInTheDocument();
+  });
+
+  it('uses the point-cloud path and bounded edge budget for large graphs', async () => {
+    const largeNodes = Array.from({ length: 2501 }, (_, index) => ({
+      category: index % 2 === 0 ? 'decision' : 'task',
+      content: `Memory ${index + 1}`,
+      created_at: '2026-07-25T12:00:00Z',
+      id: `m${index + 1}`,
+      importance: 5,
+      is_static: false,
+      label: `Memory ${index + 1}`,
+      size: 2,
+      source: 'test'
+    }));
+    const largeEdges = Array.from({ length: 15000 }, (_, index) => ({
+      source: `m${(index % 2501) + 1}`,
+      target: `m${((index * 17 + 1) % 2501) + 1}`,
+      type: 'association' as const,
+      weight: 0.5 + (index % 50) / 100
+    }));
+    vi.mocked(getMemoryGraph).mockResolvedValueOnce({
+      edge_count: largeEdges.length,
+      edges: largeEdges,
+      node_count: largeNodes.length,
+      nodes: largeNodes
+    });
+
+    render(<Graph />);
+
+    await screen.findByLabelText(/Interactive memory galaxy with 2,501 memories and 14,000 links/);
+    const instance = graphRuntime.instances[0];
+    expect(instance.data.nodes).toHaveLength(2501);
+    expect(instance.data.links).toHaveLength(14000);
+    expect(instance.calls).toContainEqual({ args: [36], name: 'cooldownTicks' });
   });
 });

@@ -22,10 +22,9 @@ export function onUnauthorized(cb: () => void) {
   };
 }
 
-// Build the API URL for production same-origin or local Vite proxy mode.
-export function buildUrl(path: string, port?: string): string {
-  const resolvedPort = port ?? (typeof window !== 'undefined' ? window.location.port : '');
-  return `${resolvedPort === '4200' ? '' : '/api'}${path}`;
+// Build an API URL for the embedded server or the local Vite development proxy.
+export function buildUrl(path: string, useDevProxy = import.meta.env.MODE === 'development'): string {
+  return `${useDevProxy ? '/api' : ''}${path}`;
 }
 
 // Describes options accepted by the shared request helper.
@@ -33,7 +32,7 @@ export interface RequestOpts {
   method?: string;
   body?: unknown;
   token?: string;
-  port?: string;
+  useDevProxy?: boolean;
   signal?: AbortSignal;
 }
 
@@ -60,7 +59,7 @@ export async function request<T>(path: string, opts: RequestOpts = {}): Promise<
     }
   }
 
-  const res = await fetch(buildUrl(path, opts.port), {
+  const res = await fetch(buildUrl(path, opts.useDevProxy), {
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     credentials: 'same-origin',
     headers,
