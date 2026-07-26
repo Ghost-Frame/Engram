@@ -1,8 +1,10 @@
 pub mod backup;
+pub mod converge;
 pub mod migrations;
 pub mod pitr;
 pub mod pool;
 pub mod schema;
+pub mod schema_manifest;
 pub mod schema_sql;
 pub mod tenant_migrations;
 pub mod types;
@@ -89,6 +91,19 @@ impl Database {
                 EngError::DatabaseMessage(format!("writer pool migration failed: {e}"))
             })??;
 
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("writer pool converge failed: {e}"))
+            })??;
+
         let encrypted_label = if encryption_key.is_some() {
             " (encrypted)"
         } else {
@@ -130,6 +145,19 @@ impl Database {
             .interact(|conn| migrations::run_migrations(conn))
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("migration failed: {e}")))??;
+
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("writer pool converge failed: {e}"))
+            })??;
 
         Ok(Self {
             db_path: ":memory:".to_string(),
@@ -183,6 +211,17 @@ impl Database {
                 EngError::DatabaseMessage(format!("tenant pool migration failed: {e}"))
             })??;
 
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant converge failed: {e}")))??;
+
         let encrypted_label = if encryption_key.is_some() {
             " (encrypted)"
         } else {
@@ -227,6 +266,17 @@ impl Database {
             .interact(|conn| tenant_migrations::run_tenant_migrations(conn, None))
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("tenant migration failed: {e}")))??;
+
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant converge failed: {e}")))??;
 
         Ok(Self {
             db_path: uri,
@@ -378,4 +428,66 @@ async fn open_vector_indices(
         );
     }
     (None, None)
+}
+
+/// Boot-path guarantees for the declarative schema converger: whatever the
+/// manifest adds on top of the migrated schema must settle after one pass, so
+/// a running server does not repeat schema work on every start.
+#[cfg(test)]
+mod converge_boot_tests {
+    use super::*;
+
+    /// Keystone invariant: converge must be idempotent. Boot already migrates
+    /// and then converges, so a converge run immediately afterwards must find
+    /// nothing left to do. That catches a manifest entry the converge pass
+    /// cannot actually satisfy -- a column spec that does not match what got
+    /// created, an index the manifest keeps trying to add -- which would
+    /// otherwise show up as work repeated on every single boot.
+    ///
+    /// Idempotence, not emptiness-on-the-first-pass, is the property that
+    /// survives a non-empty manifest: asserting the first converge takes zero
+    /// actions would forbid the manifest from ever owning a table, which is
+    /// the entire point of the mechanism.
+    #[tokio::test]
+    async fn global_converge_is_idempotent() -> Result<()> {
+        // connect_memory runs migrations and then converges, so this is the
+        // second pass.
+        let db = Database::connect_memory().await?;
+        let actions = db
+            .read(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::SCHEMA_MANIFEST,
+                )
+            })
+            .await?;
+        assert!(
+            actions.is_empty(),
+            "global converge not idempotent: {actions:?}"
+        );
+        Ok(())
+    }
+
+    /// Same invariant for the tenant manifest against a freshly-migrated shard.
+    /// The first converge is allowed to act -- that is how a manifest-owned
+    /// table gets created on a shard whose migration chain never had one.
+    #[test]
+    fn tenant_converge_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::tenant_migrations::run_tenant_migrations(&conn, None).unwrap();
+        crate::db::converge::converge_schema(
+            &conn,
+            crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+        )
+        .unwrap();
+        let second = crate::db::converge::converge_schema(
+            &conn,
+            crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+        )
+        .unwrap();
+        assert!(
+            second.is_empty(),
+            "tenant converge not idempotent: {second:?}"
+        );
+    }
 }
