@@ -1,4 +1,4 @@
-import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
+import { Navigate, NavLink, Route, Routes } from 'react-router';
 import { Entities } from './Entities';
 import { Graph } from './Graph';
 import { Inbox } from './Inbox';

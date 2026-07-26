@@ -9,6 +9,8 @@ import {
   type FormEvent,
   // Types canvas pointer gestures without importing a runtime symbol.
   type PointerEvent as ReactPointerEvent,
+  // Types keyboard navigation on the focusable canvas.
+  type KeyboardEvent as ReactKeyboardEvent,
   // Types canvas wheel gestures without importing a runtime symbol.
   type WheelEvent
 } from 'react';
@@ -78,6 +80,9 @@ interface PanGesture {
   startY: number;
 }
 
+// Transforms the latest queued atlas viewport before the next animation frame.
+type ViewUpdater = (current: AtlasView) => AtlasView;
+
 // Render a bounded, deterministic 2D map of memory relationships.
 export function Graph() {
   const [density, setDensity] = useState(800);
@@ -95,6 +100,10 @@ export function Graph() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<PanGesture | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const pendingViewRef = useRef<AtlasView | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const graph = useQuery({
     queryFn: () => getMemoryGraph(3, density, 2),
     queryKey: ['memory', 'atlas', density],
@@ -112,6 +121,17 @@ export function Graph() {
   const selectedNeighbors = useMemo(
     () => selectedId ? layout.neighbors.get(selectedId) ?? EMPTY_NEIGHBORS : EMPTY_NEIGHBORS,
     [layout.neighbors, selectedId]
+  );
+  const labelCandidates = useMemo(
+    () => showLabels
+      ? new Set(
+          [...layout.nodes]
+            .sort((left, right) => right.importance - left.importance || right.degree - left.degree)
+            .slice(0, 32)
+            .map((node) => node.id)
+        )
+      : EMPTY_NEIGHBORS,
+    [layout.nodes, showLabels]
   );
   const selectedMemoryId = memoryIdFromNode(selectedNode);
   const detail = useQuery({
@@ -138,6 +158,13 @@ export function Graph() {
     return () => observer.disconnect();
   }, []);
 
+  // Cancel a queued viewport update when the atlas unmounts.
+  useEffect(() => () => {
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+    }
+  }, []);
+
   // Fit the newly loaded layout exactly once per density selection.
   useEffect(() => {
     if (!layout.nodes.length || !size.width || !size.height || viewReady) return;
@@ -149,14 +176,39 @@ export function Graph() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    drawAtlas(canvas, size, view, layout, showEdges ? renderEdges : [], showLabels, selectedId, selectedNeighbors);
-  }, [layout, renderEdges, selectedId, selectedNeighbors, showEdges, showLabels, size, view]);
+    drawAtlas(
+      canvas,
+      size,
+      view,
+      layout,
+      showEdges ? renderEdges : [],
+      labelCandidates,
+      selectedId,
+      selectedNeighbors
+    );
+  }, [labelCandidates, layout, renderEdges, selectedId, selectedNeighbors, showEdges, size, view]);
+
+  // Coalesce pointer, wheel, and keyboard viewport changes to one React update per frame.
+  const scheduleView = useCallback((update: ViewUpdater) => {
+    const current = pendingViewRef.current ?? viewRef.current;
+    pendingViewRef.current = update(current);
+    if (frameRef.current !== null) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      const next = pendingViewRef.current;
+      pendingViewRef.current = null;
+      if (!next) return;
+      viewRef.current = next;
+      setView(next);
+    });
+  }, []);
 
   // Reset the viewport so every loaded node is visible.
   const fitView = useCallback(() => {
-    setView(fitAtlasView(layout.bounds, size.width, size.height, 58));
+    const fitted = fitAtlasView(layout.bounds, size.width, size.height, 58);
+    scheduleView(() => fitted);
     setViewReady(true);
-  }, [layout.bounds, size]);
+  }, [layout.bounds, scheduleView, size]);
 
   // Resolve and select a node from either canvas interaction or search.
   const selectNode = useCallback((nodeId: string) => {
@@ -164,12 +216,12 @@ export function Graph() {
     if (!node) return;
     setSelectedId(nodeId);
     setSearchResults([]);
-    setView((current) => ({
+    scheduleView((current) => ({
       ...current,
       offsetX: size.width / 2 - node.x * current.scale,
       offsetY: size.height / 2 - node.y * current.scale
     }));
-  }, [layout.nodeById, size.height, size.width]);
+  }, [layout.nodeById, scheduleView, size.height, size.width]);
 
   // Submit a relationship-expanding server search and expose linked local hits.
   const handleSearch = async (event: FormEvent) => {
@@ -215,7 +267,7 @@ export function Graph() {
     const dx = event.clientX - gesture.startX;
     const dy = event.clientY - gesture.startY;
     if (Math.abs(dx) + Math.abs(dy) > 3) gesture.moved = true;
-    setView((current) => ({
+    scheduleView((current) => ({
       ...current,
       offsetX: gesture.startOffsetX + dx,
       offsetY: gesture.startOffsetY + dy
@@ -252,15 +304,49 @@ export function Graph() {
     const cursorX = event.clientX - rect.left;
     const cursorY = event.clientY - rect.top;
     const factor = event.deltaY < 0 ? 1.14 : 1 / 1.14;
-    setView((current) => {
-      const nextScale = Math.min(5, Math.max(0.08, current.scale * factor));
-      const appliedFactor = nextScale / current.scale;
-      return {
-        offsetX: cursorX - (cursorX - current.offsetX) * appliedFactor,
-        offsetY: cursorY - (cursorY - current.offsetY) * appliedFactor,
-        scale: nextScale
-      };
-    });
+    scheduleView((current) => zoomViewAt(current, cursorX, cursorY, factor));
+  };
+
+  // Navigate the focused atlas without requiring a pointing device.
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
+    const panStep = event.shiftKey ? 120 : 56;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+      || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      scheduleView((current) => ({
+        ...current,
+        offsetX: current.offsetX + (event.key === 'ArrowLeft' ? panStep : event.key === 'ArrowRight' ? -panStep : 0),
+        offsetY: current.offsetY + (event.key === 'ArrowUp' ? panStep : event.key === 'ArrowDown' ? -panStep : 0)
+      }));
+      return;
+    }
+    if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      scheduleView((current) => zoomViewAt(current, size.width / 2, size.height / 2, 1.18));
+      return;
+    }
+    if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      scheduleView((current) => zoomViewAt(current, size.width / 2, size.height / 2, 1 / 1.18));
+      return;
+    }
+    if (event.key === 'Home' || event.key === '0') {
+      event.preventDefault();
+      fitView();
+      return;
+    }
+    if (event.key === 'Escape') {
+      setSelectedId(null);
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const current = viewRef.current;
+      const worldX = (size.width / 2 - current.offsetX) / current.scale;
+      const worldY = (size.height / 2 - current.offsetY) / current.scale;
+      const nearest = nearestAtlasNode(layout.nodes, worldX, worldY);
+      if (nearest) selectNode(nearest.id);
+    }
   };
 
   return (
@@ -318,6 +404,23 @@ export function Graph() {
             </label>
             <ToggleControl checked={showEdges} label="Show relationships" onChange={setShowEdges} />
             <ToggleControl checked={showLabels} label="Priority labels" onChange={setShowLabels} />
+            <label>
+              Focus memory
+              <select
+                aria-label="Select loaded memory"
+                onChange={(event) => {
+                  if (event.target.value) selectNode(event.target.value);
+                }}
+                value={selectedId ?? ''}
+              >
+                <option value="">Choose a loaded node</option>
+                {layout.nodes.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.id.replace(/^m/, '#')} · {node.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button className="atlas-controls__fit" onClick={fitView} type="button">Fit all nodes</button>
           </section>
           <CategoryLegend nodes={layout.nodes} />
@@ -332,16 +435,26 @@ export function Graph() {
             <div className="atlas-state"><EmptyState message="No connected memories were returned." /></div>
           ) : (
             <canvas
+              aria-describedby="atlas-keyboard-help"
               aria-label="Interactive memory relationship atlas"
+              onKeyDown={handleKeyDown}
               onPointerCancel={handlePointerCancel}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onWheel={handleWheel}
               ref={canvasRef}
+              role="application"
+              tabIndex={0}
             />
           )}
-          <div aria-hidden="true" className="atlas-gesture">Drag to pan · scroll to zoom · click to inspect</div>
+          <p className="atlas-sr-only" id="atlas-keyboard-help">
+            Use arrow keys to pan, plus and minus to zoom, Home to fit all nodes,
+            Enter to select the node nearest the center, and Escape to clear selection.
+          </p>
+          <div aria-hidden="true" className="atlas-gesture">
+            Drag or arrows to pan · scroll or +/− to zoom · click or Enter to inspect
+          </div>
         </div>
 
         <aside aria-label="Memory inspector" className="atlas-inspector">
@@ -518,6 +631,36 @@ function categoryColor(category: string): string {
   return CATEGORY_COLORS[category] ?? CATEGORY_COLORS.general;
 }
 
+// Zoom a viewport around a fixed screen-space point while enforcing usable bounds.
+function zoomViewAt(
+  view: AtlasView,
+  screenX: number,
+  screenY: number,
+  factor: number
+): AtlasView {
+  const nextScale = Math.min(5, Math.max(0.08, view.scale * factor));
+  const appliedFactor = nextScale / view.scale;
+  return {
+    offsetX: screenX - (screenX - view.offsetX) * appliedFactor,
+    offsetY: screenY - (screenY - view.offsetY) * appliedFactor,
+    scale: nextScale
+  };
+}
+
+// Find the graph node closest to a world-space point for keyboard selection.
+function nearestAtlasNode(nodes: AtlasNode[], worldX: number, worldY: number): AtlasNode | null {
+  let nearest: AtlasNode | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const node of nodes) {
+    const distance = (node.x - worldX) ** 2 + (node.y - worldY) ** 2;
+    if (distance < nearestDistance) {
+      nearest = node;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
 // Draw the entire atlas once for the current state.
 function drawAtlas(
   canvas: HTMLCanvasElement,
@@ -525,13 +668,17 @@ function drawAtlas(
   view: AtlasView,
   layout: AtlasLayout,
   edges: GraphEdge[],
-  showLabels: boolean,
+  labelCandidates: Set<string>,
   selectedId: string | null,
   selectedNeighbors: Set<string>
 ) {
   const ratio = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(size.width * ratio);
-  canvas.height = Math.round(size.height * ratio);
+  const backingWidth = Math.round(size.width * ratio);
+  const backingHeight = Math.round(size.height * ratio);
+  if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+    canvas.width = backingWidth;
+    canvas.height = backingHeight;
+  }
   const context = canvas.getContext('2d');
   if (!context) return;
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -539,8 +686,16 @@ function drawAtlas(
   context.fillStyle = '#0a0b09';
   context.fillRect(0, 0, size.width, size.height);
   drawGrid(context, size, view);
-  drawEdges(context, layout, edges, view, selectedId, selectedNeighbors);
-  drawNodes(context, layout.nodes, view, showLabels, selectedId, selectedNeighbors);
+  drawEdges(context, layout, edges, view, size, selectedId, selectedNeighbors);
+  drawNodes(
+    context,
+    layout.nodes,
+    view,
+    size,
+    labelCandidates,
+    selectedId,
+    selectedNeighbors
+  );
 }
 
 // Draw a world-anchored reference grid that makes panning legible.
@@ -568,21 +723,53 @@ function drawEdges(
   layout: AtlasLayout,
   edges: GraphEdge[],
   view: AtlasView,
+  size: CanvasSize,
   selectedId: string | null,
   selectedNeighbors: Set<string>
 ) {
+  const normalBuckets: Array<Array<[number, number, number, number]>> =
+    Array.from({ length: 4 }, () => []);
+  const selectedSegments: Array<[number, number, number, number]> = [];
   for (const edge of edges) {
     const source = layout.nodeById.get(edge.source);
     const target = layout.nodeById.get(edge.target);
     if (!source || !target) continue;
+    const sourceX = source.x * view.scale + view.offsetX;
+    const sourceY = source.y * view.scale + view.offsetY;
+    const targetX = target.x * view.scale + view.offsetX;
+    const targetY = target.y * view.scale + view.offsetY;
+    if (segmentOutsideViewport(sourceX, sourceY, targetX, targetY, size, 20)) continue;
     const isSelected = selectedId != null
       && (edge.source === selectedId || edge.target === selectedId)
       && (selectedNeighbors.has(edge.source) || selectedNeighbors.has(edge.target));
+    const segment: [number, number, number, number] = [sourceX, sourceY, targetX, targetY];
+    if (isSelected) {
+      selectedSegments.push(segment);
+    } else {
+      normalBuckets[Math.min(3, Math.floor(Math.max(0, edge.weight) * 4))].push(segment);
+    }
+  }
+
+  normalBuckets.forEach((segments, index) => {
+    if (segments.length === 0) return;
     context.beginPath();
-    context.moveTo(source.x * view.scale + view.offsetX, source.y * view.scale + view.offsetY);
-    context.lineTo(target.x * view.scale + view.offsetX, target.y * view.scale + view.offsetY);
-    context.strokeStyle = isSelected ? 'rgba(244, 119, 33, 0.72)' : `rgba(170, 166, 155, ${0.06 + edge.weight * 0.12})`;
-    context.lineWidth = isSelected ? 1.6 : 0.6;
+    for (const [sourceX, sourceY, targetX, targetY] of segments) {
+      context.moveTo(sourceX, sourceY);
+      context.lineTo(targetX, targetY);
+    }
+    context.strokeStyle = `rgba(170, 166, 155, ${0.075 + index * 0.03})`;
+    context.lineWidth = 0.6;
+    context.stroke();
+  });
+
+  if (selectedSegments.length > 0) {
+    context.beginPath();
+    for (const [sourceX, sourceY, targetX, targetY] of selectedSegments) {
+      context.moveTo(sourceX, sourceY);
+      context.lineTo(targetX, targetY);
+    }
+    context.strokeStyle = 'rgba(244, 119, 33, 0.72)';
+    context.lineWidth = 1.6;
     context.stroke();
   }
 }
@@ -592,22 +779,17 @@ function drawNodes(
   context: CanvasRenderingContext2D,
   nodes: AtlasNode[],
   view: AtlasView,
-  showLabels: boolean,
+  size: CanvasSize,
+  labelCandidates: Set<string>,
   selectedId: string | null,
   selectedNeighbors: Set<string>
 ) {
-  const labelCandidates = showLabels
-    ? new Set(
-        [...nodes]
-          .sort((left, right) => right.importance - left.importance || right.degree - left.degree)
-          .slice(0, 32)
-          .map((node) => node.id)
-      )
-    : new Set<string>();
-
   for (const node of nodes) {
     const screenX = node.x * view.scale + view.offsetX;
     const screenY = node.y * view.scale + view.offsetY;
+    if (screenX < -48 || screenX > size.width + 48 || screenY < -24 || screenY > size.height + 24) {
+      continue;
+    }
     const selected = node.id === selectedId;
     const neighbor = selectedNeighbors.has(node.id);
     const radius = Math.max(2.2, Math.min(7.5, 2 + node.importance * 0.34 + Math.sqrt(node.degree) * 0.18));
@@ -631,4 +813,19 @@ function drawNodes(
       context.fillText(node.label.slice(0, 34), screenX + radius + 5, screenY + 3);
     }
   }
+}
+
+// Reject line segments whose endpoints lie wholly beyond the same viewport edge.
+function segmentOutsideViewport(
+  sourceX: number,
+  sourceY: number,
+  targetX: number,
+  targetY: number,
+  size: CanvasSize,
+  margin: number
+): boolean {
+  return (sourceX < -margin && targetX < -margin)
+    || (sourceX > size.width + margin && targetX > size.width + margin)
+    || (sourceY < -margin && targetY < -margin)
+    || (sourceY > size.height + margin && targetY > size.height + margin);
 }

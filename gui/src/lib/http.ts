@@ -93,17 +93,32 @@ export function isAuthenticated(): boolean {
   return readCookie('kleos_csrf') !== '';
 }
 
+// Describes a cookie-login attempt without exposing the server response body.
+export interface LoginResult {
+  ok: boolean;
+  error?: string;
+}
+
 // Establish a GUI session by exchanging the API key for HttpOnly session +
 // readable CSRF cookies via the server's cookie-login endpoint. The raw key is
-// never persisted in localStorage. Returns true on success.
-export async function loginWithApiKey(apiKey: string): Promise<boolean> {
+// never persisted in localStorage.
+export async function loginWithApiKey(apiKey: string): Promise<LoginResult> {
   const res = await fetch('/gui/auth', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ api_key: apiKey }).toString()
   });
-  return res.ok;
+  if (res.ok) {
+    return { ok: true };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, error: 'That API key was rejected.' };
+  }
+  if (res.status === 429) {
+    return { ok: false, error: 'Too many attempts. Wait a moment and try again.' };
+  }
+  return { ok: false, error: 'Kleos could not start a session. Try again.' };
 }
 
 // Clear the GUI session cookies.

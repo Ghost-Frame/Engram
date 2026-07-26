@@ -15,7 +15,7 @@ use kleos_lib::graph::{
     },
     pagerank::update_pagerank_scores,
     search::{graph_search, neighborhood_filtered},
-    types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions},
+    types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions, GraphBuildResult},
 };
 use kleos_lib::validation::{
     MAX_ENTITY_RELATIONSHIPS, MAX_GRAPH_BUILD_NODES, MAX_GRAPH_NEIGHBORHOOD_DEPTH,
@@ -23,6 +23,7 @@ use kleos_lib::validation::{
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     error::AppError,
@@ -497,7 +498,7 @@ async fn create_relationship_handler(
     Ok((StatusCode::CREATED, Json(relationship)))
 }
 
-// --- GET /graph  (accepts ?limit=N or ?max=N for GUI compat, ?depth= is accepted but unused) ---
+// --- GET /graph ---
 
 #[tracing::instrument(skip_all)]
 async fn graph_handler(
@@ -521,7 +522,11 @@ async fn graph_handler(
         limit: Some(cap),
         min_component: params.min_component.unwrap_or(1),
     };
-    let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
+    let mut result = build_graph_data(&db, &opts).await.map_err(AppError)?;
+    if let Some(requested_depth) = params.depth {
+        let depth = requested_depth.clamp(1, i64::from(MAX_GRAPH_NEIGHBORHOOD_DEPTH)) as usize;
+        result = limit_graph_to_depth(result, depth);
+    }
     let node_count = result.nodes.len();
     let edge_count = result.edges.len();
     Ok(Json(json!({
@@ -530,6 +535,70 @@ async fn graph_handler(
         "node_count": node_count,
         "edge_count": edge_count,
     })))
+}
+
+/// Keep each connected component within `depth` hops of its highest-ranked node.
+///
+/// Graph nodes arrive in score order from `build_graph_data`, so the first node
+/// encountered in a component is its stable seed. This gives the GUI a bounded,
+/// meaningful depth control without allowing traversal to exceed the existing
+/// node cap or cross the caller-scoped graph returned by the builder.
+fn limit_graph_to_depth(mut graph: GraphBuildResult, depth: usize) -> GraphBuildResult {
+    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &graph.edges {
+        adjacency
+            .entry(edge.source.clone())
+            .or_default()
+            .push(edge.target.clone());
+        adjacency
+            .entry(edge.target.clone())
+            .or_default()
+            .push(edge.source.clone());
+    }
+
+    let mut assigned_components = HashSet::new();
+    let mut keep = HashSet::new();
+    for node in &graph.nodes {
+        if assigned_components.contains(&node.id) {
+            continue;
+        }
+
+        let mut component_queue = VecDeque::from([node.id.clone()]);
+        while let Some(current) = component_queue.pop_front() {
+            if !assigned_components.insert(current.clone()) {
+                continue;
+            }
+            if let Some(neighbors) = adjacency.get(&current) {
+                component_queue.extend(neighbors.iter().cloned());
+            }
+        }
+
+        let mut depth_queue = VecDeque::from([(node.id.clone(), 0_usize)]);
+        let mut depth_seen = HashSet::new();
+        while let Some((current, distance)) = depth_queue.pop_front() {
+            if !depth_seen.insert(current.clone()) {
+                continue;
+            }
+            keep.insert(current.clone());
+            if distance >= depth {
+                continue;
+            }
+            if let Some(neighbors) = adjacency.get(&current) {
+                depth_queue.extend(
+                    neighbors
+                        .iter()
+                        .cloned()
+                        .map(|neighbor| (neighbor, distance + 1)),
+                );
+            }
+        }
+    }
+
+    graph.nodes.retain(|node| keep.contains(&node.id));
+    graph
+        .edges
+        .retain(|edge| keep.contains(&edge.source) && keep.contains(&edge.target));
+    graph
 }
 
 // --- GET /graph/raw ---
@@ -939,4 +1008,70 @@ fn row_to_relationship_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> 
         "evidence_count": evidence_count,
         "created_at": created_at,
     }))
+}
+
+/// Regression tests for route-local graph shaping behavior.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kleos_lib::graph::types::{GraphEdge, GraphNode, LinkType};
+
+    /// Build a minimal memory node for graph-depth tests.
+    fn memory_node(id: i64) -> GraphNode {
+        GraphNode {
+            id: format!("m{id}"),
+            label: format!("memory {id}"),
+            weight: 1.0,
+            pagerank: None,
+            community: None,
+            metadata: None,
+            node_type: "memory".to_string(),
+            category: "general".to_string(),
+            importance: 5,
+            group: "general".to_string(),
+            size: 1.0,
+            source: "test".to_string(),
+            created_at: "2026-01-01".to_string(),
+            is_static: false,
+            content: format!("memory {id}"),
+            source_count: 1,
+            community_id: None,
+            decay_score: None,
+        }
+    }
+
+    /// Build an undirected test relationship represented by one stored edge.
+    fn graph_edge(source: i64, target: i64) -> GraphEdge {
+        GraphEdge {
+            source: format!("m{source}"),
+            target: format!("m{target}"),
+            link_type: LinkType::Cite,
+            weight: 0.8,
+        }
+    }
+
+    /// Depth bounds each component from its first, highest-ranked node.
+    #[test]
+    fn graph_depth_limits_long_components_and_preserves_small_ones() {
+        let graph = GraphBuildResult {
+            nodes: (1..=8).map(memory_node).collect(),
+            edges: vec![
+                graph_edge(1, 2),
+                graph_edge(2, 3),
+                graph_edge(3, 4),
+                graph_edge(4, 5),
+                graph_edge(6, 7),
+            ],
+        };
+
+        let limited = limit_graph_to_depth(graph, 2);
+        let ids: Vec<&str> = limited.nodes.iter().map(|node| node.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["m1", "m2", "m3", "m6", "m7", "m8"]);
+        assert_eq!(limited.edges.len(), 3);
+        assert!(limited
+            .edges
+            .iter()
+            .all(|edge| edge.source != "m4" && edge.target != "m4"));
+    }
 }

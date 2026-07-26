@@ -60,6 +60,7 @@ vi.mock('$lib/realtime', async () => {
 
 describe('App shell', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });
@@ -111,5 +112,28 @@ describe('App shell', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'API Key' })).not.toBeInTheDocument()
     );
+  });
+
+  it('keeps a required login open with the attempted key and an actionable error', async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response('invalid api key', {
+          headers: { 'content-type': 'text/plain' },
+          status: 401
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    render(<App />);
+
+    const input = screen.getByLabelText('API key');
+    fireEvent.change(input, { target: { value: 'wrong-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('That API key was rejected.');
+    expect(input).toHaveValue('wrong-key');
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'API Key' })).toBeInTheDocument();
+    expect(localStorage.getItem('kleos_api_key')).toBeNull();
   });
 });

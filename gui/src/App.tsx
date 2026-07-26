@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { RealtimeProvider } from '$lib/realtime';
 import { AppShell } from './app/AppShell';
 import { Spaces } from './routes/admin/Spaces';
@@ -14,7 +14,7 @@ import { Thymus } from './routes/Thymus';
 export default function App() {
   return (
     <RealtimeProvider>
-      <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <BrowserRouter>
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<Overview />} />

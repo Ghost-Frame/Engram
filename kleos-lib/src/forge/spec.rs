@@ -132,6 +132,7 @@ pub async fn update_spec(
         None
     };
     let spec_id_for_err = spec_id.clone();
+    let requested_status = status.clone();
 
     let rows = db
         .write(move |conn| {
@@ -150,7 +151,10 @@ pub async fn update_spec(
         )));
     }
 
-    Ok(serde_json::json!({ "message": format!("Spec marked as {}", rows) }))
+    Ok(serde_json::json!({
+        "message": format!("Spec marked as {requested_status}"),
+        "status": requested_status,
+    }))
 }
 
 /// Return specs for `user_id` ordered by creation time descending.
@@ -812,6 +816,26 @@ mod tests {
             .await
             .expect("spec_covers after completion");
         assert!(!after, "spec_covers must be false after spec is completed");
+    }
+
+    /// update_spec reports the requested lifecycle status instead of a row count.
+    #[tokio::test]
+    async fn update_spec_response_names_requested_status() {
+        let db = setup_db().await;
+        let spec_id = make_spec(&db, 1, Some("S1"), None).await;
+
+        let result = update_spec(
+            &db,
+            1,
+            spec_id,
+            "blocked".to_string(),
+            Some("waiting for operator".to_string()),
+        )
+        .await
+        .expect("update spec");
+
+        assert_eq!(result["status"], "blocked");
+        assert_eq!(result["message"], "Spec marked as blocked");
     }
 
     /// TEST 1h (empty-files fallback): a spec with empty files_to_touch covers any path.
