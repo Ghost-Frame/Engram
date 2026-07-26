@@ -37,6 +37,16 @@ pub struct TableDef {
     pub name: &'static str,
     pub columns: &'static [ColumnDef],
     pub indexes: &'static [IndexDef],
+    /// Table-level constraint clauses emitted verbatim inside `CREATE TABLE`
+    /// after the column list: composite primary keys, foreign keys, CHECK
+    /// constraints. Without these a manifest entry cannot faithfully describe
+    /// a table that has any of them, which would quietly relax the schema.
+    ///
+    /// These apply ONLY when converge creates the table. SQLite cannot add a
+    /// constraint to an existing table without rebuilding it, and converge
+    /// never rebuilds, so adding a constraint to an already-created table is a
+    /// numbered migration.
+    pub constraints: &'static [&'static str],
 }
 
 /// Global (system DB) structural manifest. Empty at introduction: the legacy

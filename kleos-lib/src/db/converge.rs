@@ -99,6 +99,7 @@ fn guard_add_column(table: &str, c: &ColumnDef) -> Result<()> {
     Ok(())
 }
 
+/// Whether a table of this name exists in the connected database.
 fn table_exists(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -108,6 +109,8 @@ fn table_exists(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
+/// Whether an index of this name exists. Index names are global in SQLite,
+/// so the owning table is not part of the lookup.
 fn index_exists(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
@@ -117,6 +120,8 @@ fn index_exists(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
+/// The set of column names currently on a table, used to decide which manifest
+/// columns are still missing.
 fn table_columns(
     conn: &rusqlite::Connection,
     table: &str,
@@ -130,6 +135,8 @@ fn table_columns(
     Ok(set)
 }
 
+/// Render one column definition as it appears inside CREATE TABLE or after
+/// ALTER TABLE ADD COLUMN.
 fn column_sql(c: &ColumnDef) -> String {
     let mut s = format!("{} {}", c.name, c.sql_type);
     if c.primary_key {
@@ -144,16 +151,17 @@ fn column_sql(c: &ColumnDef) -> String {
     s
 }
 
+/// Build the `CREATE TABLE` for a manifest entry. Table-level constraints are
+/// appended after the columns so composite primary keys, foreign keys, and
+/// CHECK clauses survive into the created table.
 fn create_table_sql(t: &TableDef) -> String {
-    let cols = t
-        .columns
-        .iter()
-        .map(column_sql)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("CREATE TABLE IF NOT EXISTS {} ({cols})", t.name)
+    let mut parts = t.columns.iter().map(column_sql).collect::<Vec<_>>();
+    parts.extend(t.constraints.iter().map(|c| (*c).to_string()));
+    let body = parts.join(", ");
+    format!("CREATE TABLE IF NOT EXISTS {} ({body})", t.name)
 }
 
+/// Render the CREATE INDEX for one manifest index.
 fn create_index_sql(table: &str, idx: &IndexDef) -> String {
     let unique = if idx.unique { "UNIQUE " } else { "" };
     format!(
@@ -163,10 +171,13 @@ fn create_index_sql(table: &str, idx: &IndexDef) -> String {
     )
 }
 
+/// Converge behaviour: what it creates, what it adds, what it refuses, and
+/// that repeating it is a no-op.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A throwaway in-memory database for a single converge test.
     fn mem() -> rusqlite::Connection {
         rusqlite::Connection::open_in_memory().expect("open memory db")
     }
@@ -194,8 +205,11 @@ mod tests {
             columns: &["label"],
             unique: false,
         }],
+        constraints: &[],
     }];
 
+    /// A manifest table absent from the database is created with every column
+    /// and index it declares, and converging again changes nothing.
     #[test]
     fn creates_missing_table_with_columns_and_index() -> Result<()> {
         let conn = mem();
@@ -218,6 +232,8 @@ mod tests {
         Ok(())
     }
 
+    /// A column present in the manifest but missing from an existing table is
+    /// added in place, without touching the rest of the table.
     #[test]
     fn adds_missing_column_to_existing_table() -> Result<()> {
         let conn = mem();
@@ -241,6 +257,7 @@ mod tests {
                 },
             ],
             indexes: &[],
+            constraints: &[],
         }];
         let actions = converge_schema(&conn, T)?;
         assert!(actions.iter().any(|a| a == "add column gadget.note"));
@@ -249,6 +266,9 @@ mod tests {
         Ok(())
     }
 
+    /// SQLite cannot ADD COLUMN a NOT NULL column with no default, so converge
+    /// must refuse rather than emit SQL the database will reject, and must
+    /// leave the table untouched when it does.
     #[test]
     fn refuses_not_null_without_default_on_existing_table() {
         let conn = mem();
@@ -273,11 +293,83 @@ mod tests {
                 },
             ],
             indexes: &[],
+            constraints: &[],
         }];
         let err = converge_schema(&conn, T).expect_err("must refuse unsafe ADD COLUMN");
         let msg = format!("{err}");
         assert!(msg.contains("NOT NULL without a default"), "got: {msg}");
         let cols = table_columns(&conn, "thing").unwrap();
         assert!(!cols.contains("required"));
+    }
+
+    /// A manifest entry carrying a composite primary key, a cascading foreign
+    /// key, and a CHECK constraint must produce a table that actually enforces
+    /// all three. Without table-level constraints the manifest could only
+    /// describe a laxer table than the one it is meant to replace, which would
+    /// silently drop referential integrity when a numbered migration is
+    /// retired in favour of a manifest entry.
+    #[test]
+    fn creates_table_with_composite_pk_foreign_key_and_check() -> Result<()> {
+        let conn = mem();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; CREATE TABLE space (id INTEGER PRIMARY KEY)",
+        )?;
+        static T: &[TableDef] = &[TableDef {
+            name: "grant_acl",
+            columns: &[
+                ColumnDef {
+                    name: "space_id",
+                    sql_type: "INTEGER",
+                    not_null: true,
+                    default: None,
+                    primary_key: false,
+                },
+                ColumnDef {
+                    name: "grantee_user_id",
+                    sql_type: "INTEGER",
+                    not_null: true,
+                    default: None,
+                    primary_key: false,
+                },
+                ColumnDef {
+                    name: "access",
+                    sql_type: "TEXT",
+                    not_null: true,
+                    default: None,
+                    primary_key: false,
+                },
+            ],
+            indexes: &[],
+            constraints: &[
+                "PRIMARY KEY (space_id, grantee_user_id)",
+                "FOREIGN KEY (space_id) REFERENCES space(id) ON DELETE CASCADE",
+                "CHECK (access IN ('read', 'write'))",
+            ],
+        }];
+        converge_schema(&conn, T)?;
+
+        conn.execute_batch("INSERT INTO space (id) VALUES (1)")?;
+        conn.execute_batch("INSERT INTO grant_acl VALUES (1, 7, 'read')")?;
+
+        // CHECK rejects an access level outside the allowed set.
+        assert!(
+            conn.execute_batch("INSERT INTO grant_acl VALUES (1, 8, 'admin')")
+                .is_err(),
+            "CHECK constraint must reject an unlisted access level"
+        );
+        // Composite PK rejects a duplicate (space, grantee) pair.
+        assert!(
+            conn.execute_batch("INSERT INTO grant_acl VALUES (1, 7, 'write')")
+                .is_err(),
+            "composite primary key must reject a duplicate grant"
+        );
+        // Cascading FK removes grants when the referenced space goes away.
+        conn.execute_batch("DELETE FROM space WHERE id = 1")?;
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM grant_acl", [], |r| r.get(0))?;
+        assert_eq!(remaining, 0, "ON DELETE CASCADE must drop the grant row");
+
+        let again = converge_schema(&conn, T)?;
+        assert!(again.is_empty(), "converge must be idempotent");
+        Ok(())
     }
 }
