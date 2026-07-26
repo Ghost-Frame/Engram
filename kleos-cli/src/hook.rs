@@ -357,6 +357,40 @@ fn gate_fail_closed() -> bool {
 /// at the point of denial and would flood the agent's context.
 const GATE_FAILURE_DETAIL_MAX: usize = 300;
 
+/// Extracts the leading HTTP status emitted by `kleos-client` errors.
+///
+/// Transport failures may contain status-like text later in their detail, so
+/// only the canonical `HTTP <code>` prefix is accepted.
+fn http_error_status(err: &str) -> Option<u16> {
+    err.strip_prefix("HTTP ")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|code| code.parse::<u16>().ok())
+}
+
+/// Returns whether a failed gate request should receive its one permitted retry.
+fn should_retry_gate_check(err: &str) -> bool {
+    http_error_status(err) == Some(401)
+}
+
+/// Posts a gate check and retries once after an authentication rejection.
+///
+/// `Client::post_with_timeout` clears its cached signing session before
+/// returning HTTP 401, so the second call signs afresh. Other failures are
+/// returned immediately, and a failed retry becomes the final gate error.
+async fn request_gate_check(client: &Client, gate_body: Value) -> Result<Value, String> {
+    match client
+        .post_with_timeout("/gate/check", gate_body.clone(), GATE_TIMEOUT)
+        .await
+    {
+        Err(err) if should_retry_gate_check(&err) => {
+            client
+                .post_with_timeout("/gate/check", gate_body, GATE_TIMEOUT)
+                .await
+        }
+        result => result,
+    }
+}
+
 /// Turns a raw client error into an operator-actionable one-line explanation
 /// for a fail-closed deny.
 ///
@@ -376,10 +410,7 @@ fn describe_gate_failure(err: &str) -> String {
 
     // The client formats status failures as "HTTP <code>: <body>"; anything
     // else came from the transport layer (connect, DNS, TLS, timeout).
-    let status = err
-        .strip_prefix("HTTP ")
-        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
-        .and_then(|code| code.parse::<u16>().ok());
+    let status = http_error_status(err);
 
     match status {
         Some(429) => format!(
@@ -725,17 +756,14 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
         "context": format!("tool_input: {}", serde_json::to_string(&tool_input).unwrap_or_default()),
     });
 
-    let result = match client
-        .post_with_timeout("/gate/check", gate_body, GATE_TIMEOUT)
-        .await
-    {
+    let result = match request_gate_check(client, gate_body).await {
         Ok(v) => v,
         Err(e) => {
-            // The gate is unreachable. By default this fails open (see module
-            // doc): the same hook bundle also drives context injection and
-            // activity reporting, so a Kleos outage must not hard-block every
-            // tool use. Operators who want a gate outage to deny instead set
-            // KLEOS_HOOK_GATE_FAIL_CLOSED=1.
+            // The gate check did not produce a decision. By default this fails
+            // open (see module doc): the same hook bundle also drives context
+            // injection and activity reporting, so a Kleos fault must not
+            // hard-block every tool use. Operators who want any gate-check
+            // failure to deny instead set KLEOS_HOOK_GATE_FAIL_CLOSED=1.
             if gate_fail_closed() {
                 emit(&build_deny_output(
                     "PreToolUse",
@@ -851,6 +879,41 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Starts a minimal HTTP server that emits the supplied gate statuses and
+    /// returns how many requests it served.
+    async fn gate_status_server(statuses: &[&str]) -> (Client, tokio::task::JoinHandle<usize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gate test server");
+        let address = listener.local_addr().expect("read gate test address");
+        let statuses: Vec<String> = statuses.iter().map(|status| status.to_string()).collect();
+        let server = tokio::spawn(async move {
+            let mut requests = 0;
+            for status in statuses {
+                let (mut stream, _) = listener.accept().await.expect("accept gate request");
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await.expect("read gate request");
+                let body = if status.starts_with("201") {
+                    r#"{"allowed":true}"#
+                } else {
+                    r#"{"error":"gate test error"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write gate response");
+                requests += 1;
+            }
+            requests
+        });
+        (Client::new(format!("http://{address}"), None, None), server)
+    }
 
     /// A rate-limited server is reachable; saying "unreachable" sent operators
     /// hunting a network fault that did not exist.
@@ -870,6 +933,62 @@ mod tests {
         let d = describe_gate_failure("HTTP 401 Unauthorized: bad signature");
         assert!(d.contains("credentials"), "{d}");
         assert!(!d.contains("unreachable"), "{d}");
+    }
+
+    /// Only an initial HTTP 401 should trigger the gate's one-shot retry.
+    #[test]
+    fn gate_retry_is_limited_to_http_401() {
+        assert!(should_retry_gate_check(
+            "HTTP 401 Unauthorized: stale session"
+        ));
+        assert!(!should_retry_gate_check(
+            "HTTP 403 Forbidden: insufficient role"
+        ));
+        assert!(!should_retry_gate_check(
+            "HTTP 429 Too Many Requests: slow down"
+        ));
+        assert!(!should_retry_gate_check(
+            "HTTP 500 Internal Server Error: boom"
+        ));
+        assert!(!should_retry_gate_check(
+            "POST http://kleos.example/gate/check failed (HTTP 401 in body)"
+        ));
+    }
+
+    /// A rejected first request is repeated once and can recover successfully.
+    #[tokio::test]
+    async fn gate_check_retries_once_after_http_401() {
+        let (client, server) = gate_status_server(&["401 Unauthorized", "201 Created"]).await;
+        let result = request_gate_check(&client, json!({"command": "test"}))
+            .await
+            .expect("second gate request should recover");
+
+        assert_eq!(result["allowed"], true);
+        assert_eq!(server.await.expect("join gate test server"), 2);
+    }
+
+    /// A second HTTP 401 is returned without making a third request.
+    #[tokio::test]
+    async fn gate_check_stops_after_one_retry() {
+        let (client, server) = gate_status_server(&["401 Unauthorized", "401 Unauthorized"]).await;
+        let error = request_gate_check(&client, json!({"command": "test"}))
+            .await
+            .expect_err("second authentication rejection must remain an error");
+
+        assert!(error.starts_with("HTTP 401"), "{error}");
+        assert_eq!(server.await.expect("join gate test server"), 2);
+    }
+
+    /// A non-authentication status is returned after the first request.
+    #[tokio::test]
+    async fn gate_check_does_not_retry_http_403() {
+        let (client, server) = gate_status_server(&["403 Forbidden"]).await;
+        let error = request_gate_check(&client, json!({"command": "test"}))
+            .await
+            .expect_err("authorization rejection must remain an error");
+
+        assert!(error.starts_with("HTTP 403"), "{error}");
+        assert_eq!(server.await.expect("join gate test server"), 1);
     }
 
     /// A 5xx is a Kleos-side fault and must be attributed as such.
