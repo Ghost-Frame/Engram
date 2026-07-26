@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { Memory } from './Memory';
 
@@ -66,7 +66,7 @@ describe('Memory routes', () => {
   // absolute tab links (/memory/<tab>) resolve to the nested routes.
   const renderMemory = (path: string) =>
     render(
-      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }} initialEntries={[path]}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/memory/*" element={<Memory />} />
         </Routes>

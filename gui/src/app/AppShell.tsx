@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router';
 import { getMe } from '$lib/api/admin';
 import { isAuthenticated, loginWithApiKey, onUnauthorized } from '$lib/http';
 import { activeOperatorItem, OPERATOR_NAV } from '$lib/services';
@@ -16,6 +16,7 @@ const ADMIN_NAV = [{ description: 'Tenancy and access', label: 'Spaces & Sharing
 
 // Render the persistent dashboard chrome around route content.
 export function AppShell() {
+  const [authRequired, setAuthRequired] = useState(() => !isAuthenticated());
   const [authOpen, setAuthOpen] = useState(() => !isAuthenticated());
   const [navOpen, setNavOpen] = useState(false);
   const location = useLocation();
@@ -25,16 +26,23 @@ export function AppShell() {
   const me = useQuery({ queryFn: getMe, queryKey: ['me'], retry: false });
   const isAdmin = me.data?.is_admin === true;
 
-  useEffect(() => onUnauthorized(() => setAuthOpen(true)), []);
+  useEffect(() => onUnauthorized(() => {
+    setAuthRequired(true);
+    setAuthOpen(true);
+  }), []);
   useEffect(() => setNavOpen(false), [location.pathname]);
 
   // Exchange the API key for a cookie session instead of persisting the raw
   // key in localStorage. Keep the modal open on failure so the user can retry.
-  const saveApiKey = async (value: string) => {
-    if (await loginWithApiKey(value)) {
-      setAuthOpen(false);
-      me.refetch();
+  const saveApiKey = async (value: string): Promise<string | null> => {
+    const result = await loginWithApiKey(value);
+    if (!result.ok) {
+      return result.error ?? 'Kleos could not start a session.';
     }
+    setAuthRequired(false);
+    setAuthOpen(false);
+    me.refetch();
+    return null;
   };
 
   return (
@@ -121,7 +129,14 @@ export function AppShell() {
         </main>
       </div>
       <KleosMusic />
-      <AuthModal onClose={() => setAuthOpen(false)} onSave={saveApiKey} open={authOpen} />
+      <AuthModal
+        dismissible={!authRequired}
+        onClose={() => {
+          if (!authRequired) setAuthOpen(false);
+        }}
+        onSave={saveApiKey}
+        open={authOpen}
+      />
     </div>
   );
 }

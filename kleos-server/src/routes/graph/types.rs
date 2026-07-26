@@ -52,7 +52,6 @@ pub(super) struct GraphQuery {
     pub limit: Option<i64>,
     pub max: Option<i64>,
     pub min_component: Option<usize>,
-    #[allow(dead_code)]
     pub depth: Option<i64>,
     #[allow(dead_code)]
     pub offset: Option<i64>,

@@ -35,7 +35,7 @@
 .atlas-report span {
   border-left: 1px solid var(--border);
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 10px;
   padding: 3px var(--sp-3);
   text-transform: uppercase;
 }
@@ -58,7 +58,7 @@
 .atlas-search label {
   align-self: center;
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 0.1em;
   padding-right: var(--sp-2);
   text-transform: uppercase;
@@ -127,7 +127,7 @@
 .atlas-controls h2,
 .atlas-detail__links h2 {
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
@@ -135,7 +135,7 @@
 .atlas-controls label {
   color: var(--text-dim);
   display: block;
-  font-size: 9px;
+  font-size: 11px;
   position: relative;
 }
 
@@ -160,7 +160,7 @@
   display: grid !important;
   gap: var(--sp-2);
   grid-template-columns: 30px 1fr;
-  min-height: 38px;
+  min-height: 44px;
 }
 
 .atlas-toggle input {
@@ -215,7 +215,7 @@
   align-items: center;
   color: var(--text-dim);
   display: grid;
-  font-size: 8px;
+  font-size: 10px;
   gap: var(--sp-2);
   grid-template-columns: auto minmax(0, 1fr) auto;
   text-transform: uppercase;
@@ -254,6 +254,21 @@
   cursor: grabbing;
 }
 
+.atlas-surface canvas:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  outline: none;
+}
+
+.atlas-sr-only {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 .atlas-state {
   align-items: center;
   display: flex;
@@ -265,7 +280,7 @@
 .atlas-gesture {
   bottom: var(--sp-3);
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 10px;
   left: 50%;
   letter-spacing: 0.08em;
   pointer-events: none;
@@ -292,7 +307,7 @@
 .atlas-detail > header span,
 .atlas-results > header span {
   color: var(--accent);
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 0.12em;
 }
 
@@ -331,12 +346,12 @@
   color: var(--text-dim);
   cursor: pointer;
   font-size: 18px;
-  height: 34px;
-  width: 34px;
+  height: 44px;
+  width: 44px;
 }
 
 .atlas-detail__category {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -384,7 +399,7 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-dim);
-  font-size: 8px;
+  font-size: 10px;
   padding: 3px 8px;
 }
 
@@ -425,7 +440,7 @@
 .atlas-results button span,
 .atlas-results button small {
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .atlas-detail__links button strong,

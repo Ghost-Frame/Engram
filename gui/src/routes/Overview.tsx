@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { getAxonStats } from '$lib/api/axon';
 import { getBrocaStats, getFeed } from '$lib/api/broca';
 import { getChiasmStats, listTasks } from '$lib/api/chiasm';

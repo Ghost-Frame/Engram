@@ -47,6 +47,8 @@ const POLICY_CACHE_TTL_SECS: u64 = 60;
 
 /// Timeout for /gate/check requests -- long because the gate may queue behind human review.
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
+/// Bounds the number of accumulated session gates closed during one stop hook.
+const MAX_GATE_COMPLETIONS_PER_STOP: usize = 64;
 /// Default timeout for best-effort server calls (activity, supervisor, coordination).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for sidecar /recall requests (memory retrieval before prompt processing).
@@ -713,6 +715,9 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
 
 /// Handles Stop by recording session end and notifying the optional sidecar.
 async fn handle_stop(client: &Client, input: &Value) {
+    let session_id = extract_session_id(input);
+    complete_session_gates(client, &session_id).await;
+
     let _ = client
         .post_with_timeout(
             "/activity",
@@ -725,13 +730,45 @@ async fn handle_stop(client: &Client, input: &Value) {
         )
         .await;
 
-    let session_id = extract_session_id(input);
     let _ = sidecar_post(
         "/end",
         &json!({ "session_id": session_id }),
         SIDECAR_END_TIMEOUT,
     )
     .await;
+}
+
+/// Close every eligible open gate at session end without spinning on a gate
+/// whose memory-store precondition has not yet been satisfied.
+async fn complete_session_gates(client: &Client, session_id: &str) {
+    for _ in 0..MAX_GATE_COMPLETIONS_PER_STOP {
+        let response = match client
+            .post_with_timeout(
+                "/gate/complete-latest",
+                json!({
+                    "session_id": session_id,
+                    "output": "session completed",
+                    "known_secrets": [],
+                }),
+                DEFAULT_TIMEOUT,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!("kleos hook stop: gate completion failed ({error})");
+                break;
+            }
+        };
+
+        if !response
+            .get("completed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            break;
+        }
+    }
 }
 
 /// Handles PreToolUse by asking the server gate whether the proposed tool use is allowed.
@@ -800,7 +837,7 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
     // else: no output = implicit allow
 }
 
-/// Handles PostToolUse by reporting completion and forwarding an optional observation.
+/// Handles PostToolUse by reporting activity and forwarding an optional observation.
 async fn handle_post_tool(client: &Client, input: &Value) {
     let tool_name = input
         .get("tool_name")
@@ -816,19 +853,6 @@ async fn handle_post_tool(client: &Client, input: &Value) {
                 "agent": resolve_agent(),
                 "action": "tool.completed",
                 "summary": format!("{} completed", tool_name),
-            }),
-            DEFAULT_TIMEOUT,
-        )
-        .await;
-
-    // Close latest open gate for this session (best-effort, idempotent)
-    let _ = client
-        .post_with_timeout(
-            "/gate/complete-latest",
-            json!({
-                "session_id": session_id,
-                "output": format!("{} completed", tool_name),
-                "known_secrets": [],
             }),
             DEFAULT_TIMEOUT,
         )
@@ -915,6 +939,37 @@ mod tests {
         (Client::new(format!("http://{address}"), None, None), server)
     }
 
+    /// Starts a minimal completion endpoint that returns each supplied JSON body.
+    async fn gate_completion_server(bodies: &[&str]) -> (Client, tokio::task::JoinHandle<usize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind completion test server");
+        let address = listener.local_addr().expect("read completion address");
+        let bodies: Vec<String> = bodies.iter().map(|body| body.to_string()).collect();
+        let server = tokio::spawn(async move {
+            let mut requests = 0;
+            for body in bodies {
+                let (mut stream, _) = listener.accept().await.expect("accept completion request");
+                let mut request = [0_u8; 4096];
+                let _ = stream
+                    .read(&mut request)
+                    .await
+                    .expect("read completion request");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write completion response");
+                requests += 1;
+            }
+            requests
+        });
+        (Client::new(format!("http://{address}"), None, None), server)
+    }
+
     /// A rate-limited server is reachable; saying "unreachable" sent operators
     /// hunting a network fault that did not exist.
     #[test]
@@ -989,6 +1044,21 @@ mod tests {
 
         assert!(error.starts_with("HTTP 403"), "{error}");
         assert_eq!(server.await.expect("join gate test server"), 1);
+    }
+
+    /// Stop-time completion drains eligible gates and stops at the first waiting state.
+    #[tokio::test]
+    async fn session_gate_completion_stops_when_no_gate_completed() {
+        let (client, server) = gate_completion_server(&[
+            r#"{"ok":true,"completed":true,"gate_id":3}"#,
+            r#"{"ok":true,"completed":true,"gate_id":2}"#,
+            r#"{"ok":true,"completed":false,"gate_id":1,"reason":"awaiting memory store"}"#,
+        ])
+        .await;
+
+        complete_session_gates(&client, "session-test").await;
+
+        assert_eq!(server.await.expect("join completion server"), 3);
     }
 
     /// A 5xx is a Kleos-side fault and must be attributed as such.
