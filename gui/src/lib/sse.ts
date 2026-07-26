@@ -30,10 +30,10 @@ export class AxonStream {
   private handlers = new Map<string, Set<Handler>>();
   private statusCbs = new Set<(status: StreamStatus) => void>();
 
-  // Create a stream for the given agent identity and optional explicit port.
+  // Create a stream for the given agent identity and optional development proxy override.
   constructor(
     private agent: string,
-    private port?: string
+    private useDevProxy?: boolean
   ) {}
 
   // Register a callback for events on one Axon channel or source key.
@@ -53,7 +53,7 @@ export class AxonStream {
   // Connect the EventSource and subscribe to default plus known action events.
   connect() {
     this.emitStatus('connecting');
-    const url = buildUrl(`/axon/stream?agent=${encodeURIComponent(this.agent)}`, this.port);
+    const url = buildUrl(`/axon/stream?agent=${encodeURIComponent(this.agent)}`, this.useDevProxy);
     const es = new EventSource(url, { withCredentials: true });
     this.es = es;
     es.onopen = () => this.emitStatus('live');
