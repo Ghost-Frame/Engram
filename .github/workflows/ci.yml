@@ -36,7 +36,7 @@ jobs:
           df -h /
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@1.94.0
@@ -103,7 +103,7 @@ jobs:
           df -h /
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@1.94.0
@@ -135,7 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@1.94.0
