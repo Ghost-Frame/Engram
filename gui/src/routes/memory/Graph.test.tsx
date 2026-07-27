@@ -12,7 +12,7 @@ const graphRuntime = vi.hoisted(() => ({
 }));
 
 vi.mock('3d-force-graph', () => {
-  // TestForceGraph models the fluent surface used by the Memory Galaxy without creating WebGL.
+  // TestForceGraph models the fluent surface used by the 3D memory graph without creating WebGL.
   class TestForceGraph {
     calls: Array<{ args: unknown[]; name: string }> = [];
     data = { links: [] as unknown[], nodes: [] as unknown[] };
@@ -52,7 +52,7 @@ vi.mock('3d-force-graph', () => {
       return { domElement: this.canvas };
     }
 
-    // Expose a minimal scene that accepts and removes decorative objects.
+    // Expose a minimal scene that accepts and removes graph objects.
     scene() {
       return this.sceneValue;
     }
@@ -72,7 +72,7 @@ vi.mock('3d-force-graph', () => {
       return force;
     }
 
-    // Return stable camera values so fit-to-galaxy can calculate a position.
+    // Return stable camera values so fit controls can calculate a position.
     camera() {
       return { aspect: 16 / 9, fov: 50, position: { x: 0, y: 0, z: 1000 } };
     }
@@ -98,7 +98,7 @@ vi.mock('3d-force-graph', () => {
   return { default: TestForceGraph };
 });
 
-// Deterministic graph fixture used to exercise the Memory Galaxy interface.
+// Deterministic graph fixture used to exercise the 3D memory graph interface.
 const graphFixture = {
   edge_count: 1,
   edges: [{ source: 'm1', target: 'm2', type: 'association' as const, weight: 0.84 }],
@@ -155,7 +155,7 @@ vi.mock('$lib/api/graph', () => ({
   }))
 }));
 
-describe('Memory Galaxy', () => {
+describe('3D memory graph', () => {
   beforeEach(() => {
     graphRuntime.instances.length = 0;
     const gradient = { addColorStop: vi.fn() };
@@ -181,38 +181,36 @@ describe('Memory Galaxy', () => {
     vi.unstubAllGlobals();
   });
 
-  it('restores the interactive 3D galaxy with bounded simulation work', async () => {
+  it('restores the direct force graph and its spatial controls', async () => {
     render(<Graph />);
 
-    expect(await screen.findByText('MEMORY GALAXY')).toBeInTheDocument();
-    expect(
-      screen.getByLabelText(/Interactive memory galaxy with 2 memories and 1 links/)
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('Graph statistics')).toHaveTextContent('2 memories');
-    expect(screen.getByLabelText('Graph statistics')).toHaveTextContent('1 links');
-    expect(screen.getByLabelText('Galaxy controls')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'FIT GALAXY' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Labels' })).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByRole('button', { name: 'Clusters' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText('KLEOS')).toBeInTheDocument();
+    expect(screen.getByText((_content, element) => element?.textContent === '2 nodes')).toBeInTheDocument();
+    expect(screen.getByText((_content, element) => element?.textContent === '1 edges')).toBeInTheDocument();
+    expect(screen.getByText('Edge Floor')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fit View' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Labels' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clusters' })).toBeInTheDocument();
 
     await waitFor(() => expect(graphRuntime.instances).toHaveLength(1));
     const instance = graphRuntime.instances[0];
     expect(instance.data.nodes).toHaveLength(2);
     expect(instance.data.links).toHaveLength(1);
-    expect(instance.calls).toContainEqual({ args: [0], name: 'warmupTicks' });
-    expect(instance.calls).toContainEqual({ args: [120], name: 'cooldownTicks' });
+    expect(instance.calls).toContainEqual({ args: [150], name: 'warmupTicks' });
+    expect(instance.calls).toContainEqual({ args: [400], name: 'cooldownTicks' });
   });
 
   it('returns loaded search results without replacing the spatial controls', async () => {
     render(<Graph />);
-    await screen.findByText('MEMORY GALAXY');
+    await screen.findByText('KLEOS');
 
-    fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'bounded' } });
-    fireEvent.submit(screen.getByRole('search'));
+    const searchInput = screen.getByPlaceholderText('Search memories...');
+    fireEvent.change(searchInput, { target: { value: 'bounded' } });
+    fireEvent.submit(searchInput.closest('form')!);
 
     expect(await screen.findByRole('heading', { name: 'Search Results' })).toBeInTheDocument();
     expect(screen.getByText('Keep the operator surface bounded.')).toBeInTheDocument();
-    expect(screen.getByLabelText('Galaxy controls')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fit View' })).toBeInTheDocument();
   });
 
   it('uses the point-cloud path and bounded edge budget for large graphs', async () => {
@@ -242,10 +240,11 @@ describe('Memory Galaxy', () => {
 
     render(<Graph />);
 
-    await screen.findByLabelText(/Interactive memory galaxy with 2,501 memories and 14,000 links/);
+    await screen.findByText((_content, element) => element?.textContent === '2501 nodes');
     const instance = graphRuntime.instances[0];
     expect(instance.data.nodes).toHaveLength(2501);
     expect(instance.data.links).toHaveLength(14000);
-    expect(instance.calls).toContainEqual({ args: [36], name: 'cooldownTicks' });
+    expect(instance.calls).toContainEqual({ args: [0], name: 'warmupTicks' });
+    expect(instance.calls).toContainEqual({ args: [45], name: 'cooldownTicks' });
   });
 });
