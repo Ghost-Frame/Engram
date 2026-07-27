@@ -475,10 +475,9 @@ export function Graph() {
         threeRef = THREE;
 
         const [graphData, commData, statsData] = await Promise.all([
-          // min_component=2 prunes singleton "dust" (unlinked memories, mostly
-          // session auto-captures) so the view shows connected structure rather
-          // than a starfield of disconnected points.
-          getMemoryGraph(3, 50000, 2),
+          // Keep the real paths among a bounded set of high-ranked memories.
+          // Server-side depth truncation turns those paths into isolated islands.
+          getMemoryGraph(1500, 2),
           getCommunities(),
           getStats()
         ]);

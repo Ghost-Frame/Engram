@@ -193,6 +193,7 @@ describe('3D memory graph', () => {
     expect(screen.getByRole('button', { name: 'Clusters' })).toBeInTheDocument();
 
     await waitFor(() => expect(graphRuntime.instances).toHaveLength(1));
+    expect(getMemoryGraph).toHaveBeenLastCalledWith(1500, 2);
     const instance = graphRuntime.instances[0];
     expect(instance.data.nodes).toHaveLength(2);
     expect(instance.data.links).toHaveLength(1);
