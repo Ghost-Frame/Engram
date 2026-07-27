@@ -76,14 +76,14 @@ describe('service API clients', () => {
     expect(calls[0][0]).toBe('/graph?max=1500');
   });
 
-  it('requests the memory graph with depth, cap, and min_component', async () => {
+  it('requests the bounded memory graph without depth truncation', async () => {
     const spy = ok({ edge_count: 0, edges: [], node_count: 0, nodes: [] });
     vi.stubGlobal('fetch', spy);
 
     // Default min_component prunes singleton dust from the bounded atlas.
-    await graph.getMemoryGraph(3, 800);
+    await graph.getMemoryGraph(800);
 
     const calls = spy.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit?]>;
-    expect(calls[0][0]).toBe('/graph?depth=3&max=800&min_component=2');
+    expect(calls[0][0]).toBe('/graph?max=800&min_component=2');
   });
 });

@@ -5,17 +5,17 @@ import type { GraphData } from '$lib/types';
 // that only need a flat node list).
 export const getGraph = (max = 1500) => request<GraphData>(`/graph?max=${max}`);
 
-// Fetch the memory graph with relationship depth for the bounded relationship
-// atlas. `depth` controls how far edge traversal walks from seed nodes; without
-// it the backend collapses most edges.
+// Fetch a bounded memory graph without server-side depth truncation.
+//
+// The backend's `depth` option keeps only a neighborhood around one seed in each
+// component. That is useful for targeted traversal, but it amputates the paths
+// that make the full force layout coherent. `max` bounds browser work while
+// preserving the real connectivity among the highest-ranked memories.
 //
 // `minComponent` asks the backend to drop connected components smaller than N
-// nodes. The default of 2 prunes singleton "dust" -- unlinked memories (the bulk
-// of which are `session` auto-captures) that otherwise scatter across the view
-// as disconnected points and bury the real semantic clusters. Pass 1 to keep
-// every node, including isolated ones.
-export const getMemoryGraph = (depth = 3, max = 1500, minComponent = 2) =>
-  request<GraphData>(`/graph?depth=${depth}&max=${max}&min_component=${minComponent}`);
+// nodes. The default of 2 prunes singleton "dust" without inventing links.
+export const getMemoryGraph = (max = 1500, minComponent = 2) =>
+  request<GraphData>(`/graph?max=${max}&min_component=${minComponent}`);
 
 // A detected memory community (cluster). `top_memories` lists representative
 // memory ids whose nodes inherit the community color/clustering force.
