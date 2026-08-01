@@ -71,6 +71,48 @@ describe('selectRenderEdges', () => {
     expect(coveredNodes(out).has('leaf')).toBe(true);
   });
 
+  it('uses local real forest segments when the overview budget is smaller than the skeleton', () => {
+    const edges = [
+      { source: 'a', target: 'b', weight: 0.8 },
+      { source: 'b', target: 'c', weight: 0.8 },
+      { source: 'c', target: 'd', weight: 0.8 },
+      { source: 'd', target: 'e', weight: 0.8 }
+    ];
+    const positions = new Map([
+      ['a', { x: 0, y: 0, z: 0 }],
+      ['b', { x: 1, y: 0, z: 0 }],
+      ['c', { x: 100, y: 0, z: 0 }],
+      ['d', { x: 101, y: 0, z: 0 }],
+      ['e', { x: 102, y: 0, z: 0 }]
+    ]);
+
+    const out = selectRenderEdges(edges, 2, positions);
+
+    expect(out).toHaveLength(2);
+    expect(out).not.toContain(edges[1]);
+    for (const edge of out) {
+      const source = positions.get(String(edge.source))!;
+      const target = positions.get(String(edge.target))!;
+      expect(Math.hypot(source.x - target.x, source.y - target.y, source.z - target.z)).toBe(1);
+    }
+  });
+
+  it('keeps a weak real bridge before spending budget on redundant strong edges', () => {
+    const edges = [
+      { source: 'A', target: 'B', weight: 0.99 },
+      { source: 'A', target: 'C', weight: 0.98 },
+      { source: 'B', target: 'C', weight: 0.97 },
+      { source: 'D', target: 'E', weight: 0.96 },
+      { source: 'D', target: 'F', weight: 0.95 },
+      { source: 'E', target: 'F', weight: 0.94 },
+      { source: 'C', target: 'D', weight: 0.1 }
+    ];
+
+    const out = selectRenderEdges(edges, 5);
+    expect(out).toContain(edges[6]);
+    expect(coveredNodes(out)).toEqual(new Set(['A', 'B', 'C', 'D', 'E', 'F']));
+  });
+
   it('treats missing/NaN weight as the weakest edge', () => {
     const edges: SelectableEdge[] = [
       { source: 'a', target: 'b' }, // undefined weight -> 0
