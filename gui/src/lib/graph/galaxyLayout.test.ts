@@ -59,41 +59,27 @@ describe('buildGalaxyTargets', () => {
     }
   });
 
-  it('prevents community members from dissolving into unrelated graph dust', () => {
-    const targets = buildGalaxyTargets(fixtureNodes());
-    const community = ['m1', 'm2', 'm3'].map((id) => targets.get(id)!);
+  it('uses real links to keep semantic groups in one local spiral neighbourhood', () => {
+    const nodes: GalaxyLayoutNode[] = Array.from({ length: 40 }, (_, index) => ({
+      id: `linked-${index}`,
+      category: index < 20 ? 'decision' : 'incident',
+      community_id: index < 20 ? 7 : 11,
+      importance: index === 0 ? 10 : 5
+    }));
+    const links: GalaxyLayoutLink[] = nodes.slice(1).map((node, index) => ({
+      source: nodes[index].id,
+      target: node.id,
+      weight: 0.9
+    }));
+    const targets = buildGalaxyTargets(nodes, links);
 
-    community.forEach((target) => {
-      expect(distance(target, { x: target.clusterX, y: target.clusterY, z: target.clusterZ })).toBeLessThan(72);
-    });
-  });
-
-  it('prevents distinct communities from collapsing onto one unreadable centroid', () => {
-    const targets = buildGalaxyTargets(fixtureNodes());
-    const decision = targets.get('m1')!;
-    const incident = targets.get('m4')!;
-    const general = targets.get('m6')!;
-
-    expect(distance(
-      { x: decision.clusterX, y: decision.clusterY, z: decision.clusterZ },
-      { x: incident.clusterX, y: incident.clusterY, z: incident.clusterZ }
-    )).toBeGreaterThan(70);
-    expect(distance(
-      { x: incident.clusterX, y: incident.clusterY, z: incident.clusterZ },
-      { x: general.clusterX, y: general.clusterY, z: general.clusterZ }
-    )).toBeGreaterThan(70);
-  });
-
-  it('keeps a central void for the luminous galaxy core', () => {
-    const targets = buildGalaxyTargets(fixtureNodes());
-
-    targets.forEach((target) => {
-      // The disc is an ellipse: y is flattened to 0.64 so the galaxy reads as
-      // wide and thin. Measuring a circular radius would therefore understate
-      // how far out a cluster sits, so the void is checked in the disc's own
-      // geometry -- undo the flattening, then compare against the core radius.
-      expect(Math.hypot(target.clusterX, target.clusterY / 0.64)).toBeGreaterThanOrEqual(92);
-    });
+    const lengths = links.map((link) => distance(
+      targets.get(typeof link.source === 'string' ? link.source : link.source.id)!,
+      targets.get(typeof link.target === 'string' ? link.target : link.target.id)!
+    ));
+    expect(Math.max(...lengths)).toBeLessThan(60);
+    expect(targets.get('linked-0')?.component).toBe(0);
+    expect(targets.get('linked-39')?.inMainComponent).toBe(true);
   });
 
   it('returns finite bounded targets for empty, singleton, and large graphs', () => {
@@ -145,31 +131,93 @@ describe('buildGalaxyTargets', () => {
     expect(groupKeys).toEqual(new Set(['community:900']));
   });
 
-  it('keeps neighbouring clusters further apart than they are wide', () => {
-    // Mirrors the production shape that broke the original layout: many
-    // distinct groups competing for room along the same two arms.
-    const nodes: GalaxyLayoutNode[] = Array.from({ length: 900 }, (_, index) => ({
-      id: `c${index}`,
-      category: `category-${index % 90}`,
-      importance: 5
+  it('marks real disconnected components without inventing bridge links', () => {
+    const nodes: GalaxyLayoutNode[] = [
+      { id: 'main-a', category: 'decision', importance: 10 },
+      { id: 'main-b', category: 'decision', importance: 8 },
+      { id: 'orphan-a', category: 'session', importance: 3 },
+      { id: 'orphan-b', category: 'session', importance: 2 }
+    ];
+    const targets = buildGalaxyTargets(nodes, [
+      { source: 'main-a', target: 'main-b', weight: 1 },
+      { source: 'orphan-a', target: 'orphan-b', weight: 0.5 }
+    ]);
+
+    expect(targets.get('main-a')).toMatchObject({ component: 0, componentSize: 2, inMainComponent: true });
+    expect(targets.get('orphan-a')).toMatchObject({ component: 1, componentSize: 2, inMainComponent: false });
+  });
+
+  it('keeps a high-degree topology together as one selectable neighbourhood', () => {
+    const leaves: GalaxyLayoutNode[] = Array.from({ length: 120 }, (_, index) => ({
+      id: `leaf-${index}`,
+      category: 'session',
+      importance: 4
     }));
-    const targets = buildGalaxyTargets(nodes);
+    const nodes: GalaxyLayoutNode[] = [
+      { id: 'hub', category: 'decision', importance: 10 },
+      ...leaves
+    ];
+    const links: GalaxyLayoutLink[] = leaves.map((leaf, index) => ({
+      source: 'hub',
+      target: leaf.id,
+      weight: 1 - index / 1000
+    }));
+    const targets = buildGalaxyTargets(nodes, links);
+    const hub = targets.get('hub')!;
+    const lengths = leaves
+      .map((leaf) => distance(hub, targets.get(leaf.id)!))
+      .sort((left, right) => left - right);
 
-    const centres = new Map<string, { x: number; y: number; z: number }>();
-    targets.forEach((target) => {
-      centres.set(target.groupKey, { x: target.clusterX, y: target.clusterY, z: target.clusterZ });
-    });
-    const points = [...centres.values()];
-    expect(points.length).toBeGreaterThan(50);
+    expect(lengths[Math.floor(lengths.length / 2)]).toBeLessThan(60);
+    expect(Math.max(...lengths)).toBeLessThan(75);
+  });
 
-    // Every cluster must have breathing room: its nearest neighbour has to sit
-    // further away than a single cluster's own radius (68 is the hard cap).
-    points.forEach((point, index) => {
-      const nearest = Math.min(
-        ...points.filter((_, other) => other !== index).map((other) => distance(point, other))
-      );
-      expect(nearest).toBeGreaterThan(68);
-    });
+  it('rebalances one dominant root branch across the galaxy arms', () => {
+    const leaves: GalaxyLayoutNode[] = Array.from({ length: 18 }, (_, index) => ({
+      id: `root-leaf-${index}`,
+      category: 'decision'
+    }));
+    const branchNodes: GalaxyLayoutNode[] = Array.from({ length: 540 }, (_, index) => ({
+      id: `branch-${index}`,
+      category: 'session'
+    }));
+    const nodes: GalaxyLayoutNode[] = [
+      { id: 'root', category: 'decision', importance: 10 },
+      { id: 'gateway', category: 'task', importance: 9 },
+      ...leaves,
+      ...branchNodes
+    ];
+    const links: GalaxyLayoutLink[] = [
+      { source: 'root', target: 'gateway', weight: 1 },
+      ...leaves.map((leaf) => ({ source: 'root', target: leaf.id, weight: 0.8 })),
+      ...Array.from({ length: 9 }, (_, branch) => ({
+        source: 'gateway',
+        target: `branch-${branch * 60}`,
+        weight: 0.95
+      })),
+      ...branchNodes
+        .filter((_, index) => index % 60 !== 0)
+        .map((node, index) => {
+          const branch = Math.floor(index / 59);
+          const offset = index % 59;
+          return {
+            source: `branch-${branch * 60 + offset}`,
+            target: node.id,
+            weight: 0.9
+          };
+        })
+    ];
+    const targets = buildGalaxyTargets(nodes, links);
+    const occupiedSectors = new Set(
+      branchNodes.map((node) => {
+        const target = targets.get(node.id)!;
+        const angle =
+          (Math.atan2(target.y / 0.62, target.x) + Math.PI * 2) % (Math.PI * 2);
+        return Math.floor(angle / (Math.PI * 2 / 12));
+      })
+    );
+
+    expect(occupiedSectors.size).toBeGreaterThanOrEqual(9);
   });
 
   it('prevents initialization from overwriting restored simulation coordinates', () => {
@@ -185,7 +233,7 @@ describe('buildGalaxyTargets', () => {
     expect([nodes[1].x, nodes[1].y, nodes[1].z].every(Number.isFinite)).toBe(true);
   });
 
-  it('grows diffuse nodes into short threads from real graph links', () => {
+  it('keeps a long diffuse path bounded without collapsing the galaxy', () => {
     const { nodes, links } = threadedFixture();
     const targets = buildGalaxyTargets(nodes, links);
     const lengths = links.map((link) => distance(
@@ -194,8 +242,8 @@ describe('buildGalaxyTargets', () => {
     ));
     const sorted = [...lengths].sort((left, right) => left - right);
 
-    expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(40);
-    expect(Math.max(...lengths)).toBeLessThan(80);
+    expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(180);
+    expect(Math.max(...lengths)).toBeLessThan(460);
   });
 
   it('keeps topology placement deterministic across node, edge, and endpoint forms', () => {

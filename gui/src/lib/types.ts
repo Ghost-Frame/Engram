@@ -323,6 +323,9 @@ export interface GraphData {
   edges: GraphEdge[];
   node_count: number;
   edge_count: number;
+  candidate_node_count?: number;
+  connected_view?: boolean;
+  full_view?: boolean;
 }
 
 // Access level an instance grant conveys over an owner's shard.

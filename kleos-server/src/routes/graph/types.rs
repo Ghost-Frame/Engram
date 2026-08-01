@@ -53,6 +53,10 @@ pub(super) struct GraphQuery {
     pub max: Option<i64>,
     pub min_component: Option<usize>,
     pub depth: Option<i64>,
+    /// Requests every active memory instead of applying a fixed node ceiling.
+    pub full: Option<bool>,
+    /// Requests one rank-aware connected result instead of a flat score cap.
+    pub connected: Option<bool>,
     #[allow(dead_code)]
     pub offset: Option<i64>,
 }

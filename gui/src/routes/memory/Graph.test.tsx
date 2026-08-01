@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getMemoryGraph } from '$lib/api/graph';
-import { Graph } from './Graph';
+import { getMemoryDetail, getMemoryGraph, searchGraph } from '$lib/api/graph';
+import { calculateProjectedCameraFit, Graph } from './Graph';
 
 // Captured ForceGraph instances expose configuration calls for regression assertions.
 const graphRuntime = vi.hoisted(() => ({
@@ -155,6 +155,29 @@ vi.mock('$lib/api/graph', () => ({
   }))
 }));
 
+describe('projected camera fitting', () => {
+  // A flat widescreen atlas should use horizontal field of view instead of a wasteful sphere.
+  it('frames a flat disc materially closer than spherical fitting', () => {
+    const points = [
+      { x: -800, y: -400, z: -20 },
+      { x: 800, y: 400, z: 20 }
+    ];
+    const fit = calculateProjectedCameraFit(
+      points,
+      { x: 0, y: 0, z: 1000 },
+      50,
+      16 / 9
+    );
+    const sphericalDistance =
+      (Math.hypot(800, 400, 20) / Math.tan((50 * Math.PI) / 360)) * 1.06;
+
+    expect(fit).not.toBeNull();
+    expect(fit!.distance).toBeLessThan(sphericalDistance * 0.7);
+    expect(fit!.center).toEqual({ x: 0, y: 0, z: 0 });
+    expect(fit!.position.z).toBeCloseTo(fit!.distance);
+  });
+});
+
 describe('3D memory graph', () => {
   beforeEach(() => {
     graphRuntime.instances.length = 0;
@@ -185,20 +208,31 @@ describe('3D memory graph', () => {
     render(<Graph />);
 
     expect(await screen.findByText('KLEOS')).toBeInTheDocument();
-    expect(screen.getByText((_content, element) => element?.textContent === '2 nodes')).toBeInTheDocument();
-    expect(screen.getByText((_content, element) => element?.textContent === '1 edges')).toBeInTheDocument();
-    expect(screen.getByText('Edge Floor')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Fit View' })).toBeInTheDocument();
+    expect(screen.getByText((_content, element) => element?.textContent === '2 memories')).toBeInTheDocument();
+    expect(screen.getByText((_content, element) => element?.textContent === '1 links')).toBeInTheDocument();
+    expect(screen.getByText('Edge floor')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'FIT GALAXY' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Labels' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clusters' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Color groups' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
+    expect(
+      screen.getByText((_content, element) => element?.textContent === '1 stored component')
+    ).toBeInTheDocument();
 
     await waitFor(() => expect(graphRuntime.instances).toHaveLength(1));
-    expect(getMemoryGraph).toHaveBeenLastCalledWith(1500, 2);
+    expect(getMemoryGraph).toHaveBeenLastCalledWith();
     const instance = graphRuntime.instances[0];
     expect(instance.data.nodes).toHaveLength(2);
     expect(instance.data.links).toHaveLength(1);
-    expect(instance.calls).toContainEqual({ args: [150], name: 'warmupTicks' });
-    expect(instance.calls).toContainEqual({ args: [400], name: 'cooldownTicks' });
+    expect(instance.calls).toContainEqual({ args: [0], name: 'warmupTicks' });
+    expect(instance.calls).toContainEqual({ args: [120], name: 'cooldownTicks' });
+    expect(instance.calls).toEqual(
+      expect.arrayContaining([
+        { args: ['galaxy', expect.any(Function)], name: 'd3Force' }
+      ])
+    );
   });
 
   it('returns loaded search results without replacing the spatial controls', async () => {
@@ -211,10 +245,26 @@ describe('3D memory graph', () => {
 
     expect(await screen.findByRole('heading', { name: 'Search Results' })).toBeInTheDocument();
     expect(screen.getByText('Keep the operator surface bounded.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Fit View' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'FIT GALAXY' })).toBeInTheDocument();
   });
 
-  it('uses the point-cloud path and bounded edge budget for large graphs', async () => {
+  it('opens a search result that is outside the rendered node limit', async () => {
+    vi.mocked(searchGraph).mockResolvedValueOnce({
+      results: [{ category: 'reference', content: 'Memory beyond this view.', id: 999, score: 0.91 }]
+    });
+    render(<Graph />);
+    await screen.findByText('KLEOS');
+
+    const searchInput = screen.getByPlaceholderText('Search memories...');
+    fireEvent.change(searchInput, { target: { value: 'beyond' } });
+    fireEvent.submit(searchInput.closest('form')!);
+    fireEvent.click(await screen.findByText('Memory beyond this view.'));
+
+    await waitFor(() => expect(getMemoryDetail).toHaveBeenCalledWith(999));
+    expect(await screen.findByText('Replace the perpetual renderer.')).toBeInTheDocument();
+  });
+
+  it('keeps large graphs out of the force engine while the GPU atlas renders every node', async () => {
     const largeNodes = Array.from({ length: 2501 }, (_, index) => ({
       category: index % 2 === 0 ? 'decision' : 'task',
       content: `Memory ${index + 1}`,
@@ -241,11 +291,22 @@ describe('3D memory graph', () => {
 
     render(<Graph />);
 
-    await screen.findByText((_content, element) => element?.textContent === '2501 nodes');
+    await screen.findByText((_content, element) => element?.textContent === '2,501 memories');
+    expect(
+      screen.getByText((_content, element) => element?.textContent === '15,000 links')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText((_content, element) => element?.textContent === '50 regions')
+    ).toBeInTheDocument();
+    expect(screen.getByRole('img', {
+      name: /50 selectable regions and \d+ stored-link paths/
+    })).toBeInTheDocument();
+    expect(screen.queryByText((_content, element) => element?.textContent === '4,000 drawn'))
+      .not.toBeInTheDocument();
     const instance = graphRuntime.instances[0];
-    expect(instance.data.nodes).toHaveLength(2501);
-    expect(instance.data.links).toHaveLength(14000);
+    expect(instance.data.nodes).toHaveLength(0);
+    expect(instance.data.links).toHaveLength(0);
     expect(instance.calls).toContainEqual({ args: [0], name: 'warmupTicks' });
-    expect(instance.calls).toContainEqual({ args: [45], name: 'cooldownTicks' });
+    expect(instance.calls).toContainEqual({ args: [0], name: 'cooldownTicks' });
   });
 });
