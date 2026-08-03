@@ -1340,6 +1340,8 @@ How it works:
 - Queues observations per session and flushes them in batches.
 - Uses session-start, post-tool, and user-prompt hooks to refresh changed Git
   repositories and retrieve bounded snippets.
+- Serializes refresh writes, coalesces duplicate refreshes for the same
+  repository, and serves prompts from the latest completed index revision.
 - Stores the code index locally in SQLite. Bulk indexed source is never sent to
   Kleos memory endpoints.
 - Suppresses unchanged repeated snippets in inject mode unless the prompt names
