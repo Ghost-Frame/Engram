@@ -1296,13 +1296,14 @@ Deep reference:
 Synopsis:
 
 ```bash
-kleos-sidecar [--config sidecar.toml] [--port N] [--host HOST] [--watch]
+kleos-sidecar [--config sidecar.toml] [--port N] [--host HOST] \
+  [--code-context-mode off|shadow|inject] [--code-max-tokens N]
 ```
 
 Purpose:
 
-- Local batching proxy for observations, session traffic, and optional
-  Claude session-file watching.
+- Local batching proxy for observations, session traffic, and deterministic
+  repository context selected from Agent-Forge's persistent syntax index.
 
 Config precedence:
 
@@ -1322,16 +1323,27 @@ Important options:
 - `--token`
 - `--kleos-url`
 - `--kleos-api-key`
-- `--watch`
-- `--watch-dir`, default `~/.claude/projects`
-- batch sizing, compression, idle TTL, and log format controls
+- `--code-context-mode`, default `shadow`
+- `--code-max-tokens`, default `2000`
+- batch sizing, retention, idle TTL, and log format controls
+
+Code-context modes:
+
+- `off` disables index refresh and retrieval.
+- `shadow` refreshes and measures selected snippets but does not add them to
+  prompt context.
+- `inject` adds high-confidence snippets under the separate code token budget.
 
 How it works:
 
 - Generates a bearer token at startup if one is not supplied.
 - Queues observations per session and flushes them in batches.
-- Can watch Claude session JSONL files directly and ingest those changes.
-- Uses a local LLM path for `/compress` when configured.
+- Uses session-start, post-tool, and user-prompt hooks to refresh changed Git
+  repositories and retrieve bounded snippets.
+- Stores the code index locally in SQLite. Bulk indexed source is never sent to
+  Kleos memory endpoints.
+- Suppresses unchanged repeated snippets in inject mode unless the prompt names
+  the exact symbol or the underlying file changed.
 
 ## `kleos-server`
 
