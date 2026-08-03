@@ -275,31 +275,29 @@ impl CodeIndex {
                 &query.recent_paths,
             );
         }
+        let mut freshness = HashMap::<String, bool>::new();
+        let mut stale_skipped = 0usize;
+        candidates.retain(|candidate| {
+            let fresh = candidate_is_fresh(candidate, &repository_root, &mut freshness);
+            if !fresh {
+                stale_skipped += 1;
+            }
+            fresh
+        });
         add_one_hop_candidates(&connection, repository_id, &mut candidates)?;
         candidates.sort_by(compare_candidates);
         candidates.dedup_by_key(|candidate| candidate.id);
 
         let mut snippets = Vec::new();
         let mut per_file = HashMap::<String, usize>::new();
-        let mut freshness = HashMap::<String, bool>::new();
         let mut estimated_tokens = 0usize;
-        let mut stale_skipped = 0usize;
         let mut truncated = false;
 
         for candidate in candidates {
             if candidate.score < MIN_CONTEXT_SCORE {
                 continue;
             }
-            let fresh = match freshness.get(&candidate.path) {
-                Some(fresh) => *fresh,
-                None => {
-                    let current = hash_path(&repository_root.join(&candidate.path));
-                    let fresh = current.as_deref() == Some(candidate.content_hash.as_str());
-                    freshness.insert(candidate.path.clone(), fresh);
-                    fresh
-                }
-            };
-            if !fresh {
+            if !candidate_is_fresh(&candidate, &repository_root, &mut freshness) {
                 stale_skipped += 1;
                 continue;
             }
@@ -980,6 +978,23 @@ fn score_candidate(
     }
 }
 
+/// Return whether a candidate still matches its source file, caching per-path checks.
+fn candidate_is_fresh(
+    candidate: &Candidate,
+    repository_root: &Path,
+    freshness: &mut HashMap<String, bool>,
+) -> bool {
+    match freshness.get(&candidate.path) {
+        Some(fresh) => *fresh,
+        None => {
+            let current = hash_path(&repository_root.join(&candidate.path));
+            let fresh = current.as_deref() == Some(candidate.content_hash.as_str());
+            freshness.insert(candidate.path.clone(), fresh);
+            fresh
+        }
+    }
+}
+
 /// Add one conservative relation hop from the strongest direct candidates.
 fn add_one_hop_candidates(
     connection: &Connection,
@@ -1148,7 +1163,12 @@ mod tests {
     fn indexed_context_does_not_refresh_changed_files() {
         let (_directory, repository, index) = fixture();
         let source = repository.join("src/lib.rs");
-        std::fs::write(&source, "pub fn original_symbol() {}\n").unwrap();
+        std::fs::write(&source, "pub fn original_symbol() { helper_symbol(); }\n").unwrap();
+        std::fs::write(
+            repository.join("src/helper.rs"),
+            "pub fn helper_symbol() {}\n",
+        )
+        .unwrap();
         let refresh = index.refresh(&repository).unwrap();
         std::fs::write(&source, "pub fn replacement_symbol() {}\n").unwrap();
 
