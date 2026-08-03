@@ -389,6 +389,7 @@ async fn main() {
         code_index,
         code_context_mode: rc.code_context_mode,
         code_max_tokens: rc.code_max_tokens.max(1),
+        refreshing_repositories: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         sessions: Arc::new(RwLock::new(manager)),
         source: rc.source,
         user_id: rc.user_id,

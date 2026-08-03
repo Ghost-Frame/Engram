@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -38,6 +39,9 @@ pub enum IndexError {
     /// A local SQLite operation failed.
     #[error("code-index database failed: {0}")]
     Database(#[from] rusqlite::Error),
+    /// A previous refresh panicked while holding the process-local lock.
+    #[error("code-index refresh lock is poisoned")]
+    LockPoisoned,
 }
 
 /// A lightweight handle to the dedicated local code-index database.
@@ -45,6 +49,8 @@ pub enum IndexError {
 pub struct CodeIndex {
     /// SQLite database path; connections are opened per operation.
     database_path: PathBuf,
+    /// Process-local serialization for refresh transactions sharing this handle.
+    refresh_lock: Arc<Mutex<()>>,
 }
 
 /// One indexed file row used to detect incremental changes.
@@ -120,7 +126,10 @@ impl CodeIndex {
         if let Some(parent) = database_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let index = Self { database_path };
+        let index = Self {
+            database_path,
+            refresh_lock: Arc::new(Mutex::new(())),
+        };
         let connection = index.connection()?;
         initialize_schema(&connection)?;
         Ok(index)
@@ -133,7 +142,13 @@ impl CodeIndex {
 
     /// Incrementally refresh every supported file beneath a Git repository.
     pub fn refresh(&self, path: impl AsRef<Path>) -> Result<RefreshReport, IndexError> {
-        let repository_root = resolve_repository_root(path.as_ref())?;
+        let _guard = self.lock_refreshes()?;
+        self.refresh_unlocked(path.as_ref())
+    }
+
+    /// Refresh while the caller holds the process-local refresh lock.
+    fn refresh_unlocked(&self, path: &Path) -> Result<RefreshReport, IndexError> {
+        let repository_root = resolve_repository_root(path)?;
         let root_text = repository_root.to_string_lossy().to_string();
         let mut connection = self.connection()?;
         let (repository_id, prior_revision) = ensure_repository(&connection, &root_text)?;
@@ -212,7 +227,33 @@ impl CodeIndex {
 
     /// Refresh only if needed, then return a high-confidence token-bounded context pack.
     pub fn context(&self, query: &ContextQuery) -> Result<ContextPack, IndexError> {
-        let refresh = self.refresh(&query.repo_root)?;
+        let _guard = self.lock_refreshes()?;
+        let refresh = self.refresh_unlocked(Path::new(&query.repo_root))?;
+        self.context_after_refresh(query, &refresh)
+    }
+
+    /// Query the latest completed index revision without walking repository files.
+    pub fn context_from_index(&self, query: &ContextQuery) -> Result<ContextPack, IndexError> {
+        let repository_root = resolve_repository_root(Path::new(&query.repo_root))?;
+        let root_text = repository_root.to_string_lossy().to_string();
+        let connection = self.connection()?;
+        let Some((_, revision)) = repository_state(&connection, &root_text)? else {
+            return Ok(ContextPack::default());
+        };
+        let refresh = RefreshReport {
+            repo_root: root_text,
+            index_revision: revision,
+            ..RefreshReport::default()
+        };
+        self.context_after_refresh(query, &refresh)
+    }
+
+    /// Select and budget snippets from one already completed index revision.
+    fn context_after_refresh(
+        &self,
+        query: &ContextQuery,
+        refresh: &RefreshReport,
+    ) -> Result<ContextPack, IndexError> {
         let terms = query_terms(&query.query);
         if terms.is_empty() || query.max_tokens == 0 {
             return Ok(ContextPack {
@@ -312,7 +353,8 @@ impl CodeIndex {
                 "provide exactly one of symbol or path".to_string(),
             ));
         }
-        let refresh = self.refresh(&query.repo_root)?;
+        let _guard = self.lock_refreshes()?;
+        let refresh = self.refresh_unlocked(Path::new(&query.repo_root))?;
         let connection = self.connection()?;
         let repository_id = repository_id(&connection, &refresh.repo_root)?;
         let mut statement = connection.prepare(
@@ -408,7 +450,8 @@ impl CodeIndex {
         focus_paths: &[String],
         max_tokens: usize,
     ) -> Result<(RefreshReport, Vec<IndexedSymbol>), IndexError> {
-        let refresh = self.refresh(repo_root)?;
+        let _guard = self.lock_refreshes()?;
+        let refresh = self.refresh_unlocked(repo_root.as_ref())?;
         let connection = self.connection()?;
         let repository_id = repository_id(&connection, &refresh.repo_root)?;
         let mut symbols = all_symbols(&connection, repository_id)?;
@@ -448,7 +491,8 @@ impl CodeIndex {
         kind: Option<&str>,
         limit: usize,
     ) -> Result<Vec<IndexedSymbol>, IndexError> {
-        let refresh = self.refresh(repo_root)?;
+        let _guard = self.lock_refreshes()?;
+        let refresh = self.refresh_unlocked(repo_root.as_ref())?;
         let connection = self.connection()?;
         let repository_id = repository_id(&connection, &refresh.repo_root)?;
         let needle = query.trim().to_ascii_lowercase();
@@ -475,6 +519,13 @@ impl CodeIndex {
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         Ok(connection)
+    }
+
+    /// Acquire exclusive refresh ownership for this cloned index handle.
+    fn lock_refreshes(&self) -> Result<MutexGuard<'_, ()>, IndexError> {
+        self.refresh_lock
+            .lock()
+            .map_err(|_| IndexError::LockPoisoned)
     }
 }
 
@@ -582,6 +633,18 @@ fn repository_id(connection: &Connection, root: &str) -> Result<i64, IndexError>
             [root],
             |row| row.get(0),
         )
+        .map_err(IndexError::from)
+}
+
+/// Fetch a repository identifier and revision when it has already been indexed.
+fn repository_state(connection: &Connection, root: &str) -> Result<Option<(i64, i64)>, IndexError> {
+    connection
+        .query_row(
+            "SELECT id, index_revision FROM repositories WHERE root = ?1",
+            [root],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
         .map_err(IndexError::from)
 }
 
@@ -1078,6 +1141,71 @@ mod tests {
         assert_eq!(pack.snippets[0].symbol, "calculate_invoice_total");
         assert!(pack.estimated_tokens <= 200);
         assert!(pack.render().contains("src/lib.rs:1-1"));
+    }
+
+    /// Indexed-only retrieval stays fast and rejects source changed after refresh.
+    #[test]
+    fn indexed_context_does_not_refresh_changed_files() {
+        let (_directory, repository, index) = fixture();
+        let source = repository.join("src/lib.rs");
+        std::fs::write(&source, "pub fn original_symbol() {}\n").unwrap();
+        let refresh = index.refresh(&repository).unwrap();
+        std::fs::write(&source, "pub fn replacement_symbol() {}\n").unwrap();
+
+        let stale = index
+            .context_from_index(&ContextQuery {
+                repo_root: repository.to_string_lossy().to_string(),
+                query: "original_symbol".to_string(),
+                max_tokens: 200,
+                focus_paths: Vec::new(),
+                recent_paths: Vec::new(),
+            })
+            .unwrap();
+        assert!(stale.snippets.is_empty());
+        assert_eq!(stale.stale_skipped, 1);
+        assert_eq!(stale.index_revision, refresh.index_revision);
+
+        let refreshed = index
+            .context(&ContextQuery {
+                repo_root: repository.to_string_lossy().to_string(),
+                query: "replacement_symbol".to_string(),
+                max_tokens: 200,
+                focus_paths: Vec::new(),
+                recent_paths: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(refreshed.snippets[0].symbol, "replacement_symbol");
+        assert!(refreshed.index_revision > refresh.index_revision);
+    }
+
+    /// Concurrent refresh requests sharing one handle complete without lock errors.
+    #[test]
+    fn serializes_concurrent_refreshes() {
+        let (_directory, repository, index) = fixture();
+        for number in 0..8 {
+            std::fs::write(
+                repository.join(format!("src/file_{number}.rs")),
+                format!("pub fn symbol_{number}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        let index = Arc::new(index);
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let index = index.clone();
+                let barrier = barrier.clone();
+                let repository = repository.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    index.refresh(repository)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
     }
 
     /// Weak conversational input abstains instead of injecting generic code.

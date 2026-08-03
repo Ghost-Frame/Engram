@@ -159,7 +159,18 @@ fn spawn_code_refresh(state: &SidecarState, repo_root: Option<String>) {
     let (Some(index), Some(repo_root)) = (state.code_index.clone(), repo_root) else {
         return;
     };
+    {
+        let mut refreshing = state
+            .refreshing_repositories
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !refreshing.insert(repo_root.clone()) {
+            metrics::inc_code_context("refresh_coalesced", state.code_context_mode.as_str());
+            return;
+        }
+    }
     let mode = state.code_context_mode.as_str();
+    let refreshing_repositories = state.refreshing_repositories.clone();
     tokio::task::spawn_blocking(move || {
         let started = Instant::now();
         match index.refresh(&repo_root) {
@@ -179,6 +190,10 @@ fn spawn_code_refresh(state: &SidecarState, repo_root: Option<String>) {
                 tracing::warn!(%error, repo_root = %repo_root, "local code refresh failed open");
             }
         }
+        refreshing_repositories
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&repo_root);
     });
 }
 
@@ -990,7 +1005,7 @@ async fn recall(
             };
             Some(tokio::task::spawn_blocking(move || {
                 let started = Instant::now();
-                let result = index.context(&code_query);
+                let result = index.context_from_index(&code_query);
                 (result, started.elapsed().as_secs_f64())
             }))
         }

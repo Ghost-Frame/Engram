@@ -566,6 +566,12 @@ async fn test_code_context_injects_when_memory_recall_fails() {
 
     let mut state = build_test_state(upstream_url, Some(token.to_string()));
     state.code_context_mode = CodeContextMode::Inject;
+    state
+        .code_index
+        .as_ref()
+        .unwrap()
+        .refresh(repository.path())
+        .unwrap();
     let (sidecar_url, _state, _sidecar) = spawn_sidecar_with_state(state).await;
     let response = client(Some(token))
         .post(format!("{}/recall", sidecar_url))

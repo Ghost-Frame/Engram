@@ -42,6 +42,7 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         code_index,
         code_context_mode: state::CodeContextMode::Shadow,
         code_max_tokens: 2_000,
+        refreshing_repositories: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         sessions: Arc::new(RwLock::new(manager)),
         source: "test".to_string(),
         user_id: 1,

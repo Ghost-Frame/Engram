@@ -1,6 +1,7 @@
 use agent_forge::code_context::CodeIndex;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -47,6 +48,8 @@ pub struct SidecarState {
     pub code_context_mode: CodeContextMode,
     /// Maximum approximate code tokens selected for one prompt.
     pub code_max_tokens: usize,
+    /// Repository roots with a background refresh already in progress.
+    pub refreshing_repositories: Arc<std::sync::Mutex<HashSet<String>>>,
     pub sessions: Arc<RwLock<SessionManager>>,
     pub source: String,
     pub user_id: i64,
