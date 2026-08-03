@@ -38,7 +38,7 @@ pub struct Session {
     pub repo_root: Option<String>,
     /// Recently touched paths used as deterministic retrieval boosts.
     pub recent_paths: Vec<String>,
-    /// Snippet hashes returned by the previous code-context query.
+    /// Versioned snippet identities selected by the previous code-context query.
     pub last_injected_hashes: HashSet<String>,
 }
 

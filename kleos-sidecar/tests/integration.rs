@@ -587,6 +587,46 @@ async fn test_code_context_injects_when_memory_recall_fails() {
         .unwrap_or_default()
         .contains("pub fn reconcile_invoice"));
     assert_eq!(body["code_pack"]["snippets"].as_array().unwrap().len(), 1);
+
+    let repeated = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
+        .json(&serde_json::json!({
+            "query": "invoice reconciliation behavior",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(repeated.status(), StatusCode::OK);
+    let repeated_body: serde_json::Value = repeated.json().await.unwrap();
+    assert!(repeated_body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .is_empty());
+    assert!(repeated_body["code_pack"]["snippets"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let exact_repeat = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
+        .json(&serde_json::json!({
+            "query": "reconcile_invoice",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(exact_repeat.status(), StatusCode::OK);
+    let exact_body: serde_json::Value = exact_repeat.json().await.unwrap();
+    assert!(exact_body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("pub fn reconcile_invoice"));
 }
 
 // ---------------------------------------------------------------------------

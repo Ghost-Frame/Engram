@@ -180,6 +180,7 @@ fn is_call(kind: &str) -> bool {
 /// Build one bounded semantic unit from a syntax node.
 fn unit_from_node(parsed: &ParsedFile, node: Node<'_>, kind: &str, name: &str) -> ExtractedUnit {
     let full_body = node_text(parsed, node);
+    let body = trim_chars(full_body, MAX_BODY_CHARS);
     let signature = full_body
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -190,9 +191,9 @@ fn unit_from_node(parsed: &ParsedFile, node: Node<'_>, kind: &str, name: &str) -
         name: trim_chars(name.trim(), 300),
         signature: trim_chars(signature, 500),
         docs: leading_docs(&parsed.source, node.start_byte()),
-        body: trim_chars(full_body, MAX_BODY_CHARS),
+        end_line: node.start_position().row + body.lines().count().max(1),
+        body,
         start_line: node.start_position().row + 1,
-        end_line: node.end_position().row + 1,
     }
 }
 
@@ -316,5 +317,30 @@ mod tests {
             .iter()
             .any(|edge| edge.target_name == "helper"));
         assert!(extracted.edges.iter().any(|edge| edge.kind == "test_of"));
+    }
+
+    /// A clipped unit reports the final line present in its stored source text.
+    #[test]
+    fn clipped_unit_range_matches_stored_body() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("large.rs");
+        let source = format!(
+            "fn oversized() {{\n{}\n}}\n",
+            "let value = 1;\n".repeat(2_000)
+        );
+        std::fs::write(&path, &source).unwrap();
+        let parsed = parse_file(&path).unwrap();
+        let extracted = extract_file(&parsed);
+        let unit = extracted
+            .units
+            .iter()
+            .find(|unit| unit.name == "oversized")
+            .unwrap();
+
+        assert_eq!(
+            unit.end_line,
+            unit.start_line + unit.body.lines().count().max(1) - 1
+        );
+        assert!(unit.end_line < source.lines().count());
     }
 }

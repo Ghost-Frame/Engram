@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agent_forge::code_context::{ContextPack, ContextQuery};
+use agent_forge::code_context::{ContextPack, ContextQuery, ContextSnippet};
 use arc_swap::ArcSwap;
 use axum::{
     extract::{Path, State},
@@ -670,6 +671,37 @@ fn format_recent_context(observations: &[Observation]) -> String {
         .join("\n")
 }
 
+/// Build a stable identity for one snippet version and exact source range.
+fn code_snippet_cache_key(snippet: &ContextSnippet) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        snippet.content_hash, snippet.path, snippet.start_line, snippet.end_line
+    )
+}
+
+/// Estimate one rendered snippet's token cost using the indexer's conservative rule.
+fn code_snippet_tokens(snippet: &ContextSnippet) -> usize {
+    snippet.text.chars().count().div_ceil(4).saturating_add(24)
+}
+
+/// Remove unchanged repeat snippets while preserving exact-symbol requests.
+fn suppress_unchanged_code(pack: &mut ContextPack, previous: &HashSet<String>) -> HashSet<String> {
+    let selected = pack
+        .snippets
+        .iter()
+        .map(code_snippet_cache_key)
+        .collect::<HashSet<_>>();
+    pack.snippets.retain(|snippet| {
+        snippet
+            .reason
+            .split(", ")
+            .any(|reason| reason == "exact symbol")
+            || !previous.contains(&code_snippet_cache_key(snippet))
+    });
+    pack.estimated_tokens = pack.snippets.iter().map(code_snippet_tokens).sum();
+    selected
+}
+
 /// Default minimum cosine similarity a memory must clear to be injected into a prompt.
 fn default_recall_min_semantic() -> f64 {
     0.55
@@ -903,7 +935,7 @@ async fn recall(
     }
 
     let supplied_repo_root = resolve_git_root(body.cwd.as_deref());
-    let (session_id, repo_root, recent_paths) = {
+    let (session_id, repo_root, recent_paths, previous_code_hashes) = {
         let mut sessions = state.sessions.write().await;
         let sid = sessions.resolve_id(body.session_id.as_deref()).to_string();
         let session = sessions.get_or_create(&sid);
@@ -912,7 +944,12 @@ async fn recall(
             .or_else(|| session.repo_root.clone());
         let touched_paths = repository_relative_paths(root.as_deref(), &body.touched_paths);
         session.record_repository_activity(root.clone(), &touched_paths);
-        (sid, root, session.recent_paths.clone())
+        (
+            sid,
+            root,
+            session.recent_paths.clone(),
+            session.last_injected_hashes.clone(),
+        )
     };
     let context_turns = body.context_turns.unwrap_or_else(default_context_turns);
     let max_tokens = body.max_tokens.unwrap_or_else(default_recall_max_tokens);
@@ -1014,10 +1051,15 @@ async fn recall(
 
     let memory_context = format_recall_context(&results_arr, max_tokens.saturating_mul(4));
     let mut code_pack = ContextPack::default();
+    let mut selected_code_hashes = HashSet::new();
     let mut code_error = None;
     if let Some(task) = code_task {
         match task.await {
-            Ok((Ok(pack), elapsed)) => {
+            Ok((Ok(mut pack), elapsed)) => {
+                if matches!(code_mode, CodeContextMode::Inject) {
+                    selected_code_hashes =
+                        suppress_unchanged_code(&mut pack, &previous_code_hashes);
+                }
                 metrics::record_code_context_latency(elapsed);
                 metrics::record_code_context_snippets(pack.snippets.len() as f64);
                 metrics::record_code_context_tokens(pack.estimated_tokens as f64);
@@ -1060,14 +1102,9 @@ async fn recall(
     };
 
     if matches!(code_mode, CodeContextMode::Inject) {
-        let hashes = code_pack
-            .snippets
-            .iter()
-            .map(|snippet| snippet.content_hash.clone())
-            .collect();
         let mut sessions = state.sessions.write().await;
         if let Some(session) = sessions.get_mut(&session_id) {
-            session.last_injected_hashes = hashes;
+            session.last_injected_hashes = selected_code_hashes;
         }
     }
 
