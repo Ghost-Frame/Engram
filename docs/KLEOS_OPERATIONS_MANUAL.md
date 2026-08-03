@@ -1342,6 +1342,8 @@ How it works:
   repositories and retrieve bounded snippets.
 - Serializes refresh writes, coalesces duplicate refreshes for the same
   repository, and serves prompts from the latest completed index revision.
+- Revalidates source hashes before direct ranking or relation expansion, so a
+  changed file cannot seed stale graph context while refresh is in progress.
 - Stores the code index locally in SQLite. Bulk indexed source is never sent to
   Kleos memory endpoints.
 - Suppresses unchanged repeated snippets in inject mode unless the prompt names
