@@ -59,6 +59,8 @@ enum Commands {
     Review,
     RepoMap,
     SearchCode,
+    CodeContext,
+    CodeRelations,
     SkillSearch,
     SkillCapture,
     SkillRecordExec,
@@ -185,6 +187,20 @@ fn main() {
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::ast::search::search_code(&db, input).map_err(|e| e.to_string())
+                })
+        }
+        Commands::CodeContext => {
+            read_input(&cli.input)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::code_context::code_context(&db, input).map_err(|e| e.to_string())
+                })
+        }
+        Commands::CodeRelations => {
+            read_input(&cli.input)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::code_context::code_relations(&db, input).map_err(|e| e.to_string())
                 })
         }
         Commands::SkillSearch => read_input(&cli.input)
