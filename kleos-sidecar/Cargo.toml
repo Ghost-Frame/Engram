@@ -11,6 +11,7 @@ name = "kleos-sidecar"
 path = "src/main.rs"
 
 [dependencies]
+agent-forge = { path = "../agent-forge", version = "1.10.0" }
 kleos-lib = { path = "../kleos-lib", version = "1.10.0" }
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -24,8 +25,6 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
-notify = { workspace = true }
-notify-debouncer-mini = { workspace = true }
 dirs = { workspace = true }
 arc-swap = "1"
 toml = { workspace = true }

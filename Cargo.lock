@@ -5390,6 +5390,7 @@ dependencies = [
 name = "kleos-sidecar"
 version = "1.10.0"
 dependencies = [
+ "agent-forge",
  "arc-swap",
  "axum",
  "chrono",
@@ -5398,8 +5399,6 @@ dependencies = [
  "kleos-lib",
  "metrics",
  "metrics-exporter-prometheus",
- "notify",
- "notify-debouncer-mini",
  "rand 0.9.4",
  "reqwest 0.12.28",
  "serde",

@@ -53,6 +53,8 @@ const MAX_GATE_COMPLETIONS_PER_STOP: usize = 64;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for sidecar /recall requests (memory retrieval before prompt processing).
 const SIDECAR_RECALL_TIMEOUT: Duration = Duration::from_secs(12);
+/// Timeout for best-effort sidecar session registration.
+const SIDECAR_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for sidecar /observe requests (tool result observation storage).
 const SIDECAR_OBSERVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for sidecar /end requests (session teardown notification).
@@ -141,6 +143,19 @@ fn extract_session_id(input: &Value) -> String {
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
+/// Return the hook-provided working directory or the process working directory.
+fn hook_cwd(input: &Value) -> Option<String> {
+    input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|path| path.to_string_lossy().to_string())
+        })
+}
+
 /// Legacy fixed bootstrap query, kept as the fallback when no cwd is available.
 const LEGACY_BOOTSTRAP_QUERY: &str =
     "session-bootstrap agent-rules infrastructure active-tasks recent-decisions";
@@ -189,15 +204,7 @@ fn bootstrap_task_query(input: &Value) -> String {
 /// the coordination read-back so Chiasm/Axon know which checkout this session
 /// is in (the record previously reported a useless "unknown").
 fn cwd_project(input: &Value) -> Option<String> {
-    let cwd = input
-        .get("cwd")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.display().to_string())
-        })?;
+    let cwd = hook_cwd(input)?;
     std::path::Path::new(&cwd)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -343,6 +350,56 @@ fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
                 .unwrap_or_default()
         });
     raw.chars().take(max_chars).collect()
+}
+
+/// Recursively collect path-shaped string fields from bounded tool input JSON.
+fn collect_touched_paths(value: &Value, depth: usize, paths: &mut Vec<String>) {
+    if depth > 8 || paths.len() >= 64 {
+        return;
+    }
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if matches!(
+                    key.as_str(),
+                    "file_path" | "filePath" | "path" | "notebook_path"
+                ) {
+                    if let Some(path) = value.as_str().filter(|path| !path.trim().is_empty()) {
+                        let normalized = path.replace('\\', "/");
+                        if !paths.contains(&normalized) {
+                            paths.push(normalized);
+                        }
+                    }
+                }
+                collect_touched_paths(value, depth + 1, paths);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_touched_paths(item, depth + 1, paths);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract repository path hints from the hook event's tool input.
+fn extract_touched_paths(input: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(tool_input) = input.get("tool_input") {
+        collect_touched_paths(tool_input, 0, &mut paths);
+    }
+    paths.sort();
+    paths
+}
+
+/// Return whether a successful tool event may have changed repository files.
+fn tool_may_modify_repository(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase().replace(['-', '_'], "");
+    matches!(
+        normalized.as_str(),
+        "bash" | "write" | "edit" | "multiedit" | "notebookedit" | "applypatch"
+    ) || normalized.ends_with("applypatch")
 }
 
 /// Whether a gate that cannot be reached should deny (fail closed) rather than
@@ -552,6 +609,8 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 async fn handle_session_start(client: &Client, input: &Value) {
     let agent = resolve_agent();
     let project = cwd_project(input);
+    let session_id = extract_session_id(input);
+    let cwd = hook_cwd(input);
 
     // Read coordination state BEFORE registering this session, so the banner
     // reflects who was already working in this project, not our own arrival.
@@ -572,6 +631,17 @@ async fn handle_session_start(client: &Client, input: &Value) {
             DEFAULT_TIMEOUT,
         )
         .await;
+
+    let _ = sidecar_post(
+        "/session/start",
+        &json!({
+            "session_id": session_id,
+            "agent": agent.clone(),
+            "cwd": cwd,
+        }),
+        SIDECAR_SESSION_TIMEOUT,
+    )
+    .await;
 
     // Fetch growth context (best-effort)
     let growth_path = format!(
@@ -669,6 +739,8 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 "max_tokens": max_tokens,
                 "max_query_chars": max_query_chars,
                 "session_id": session_id,
+                "cwd": hook_cwd(input),
+                "may_modify_repo": false,
             });
 
             sidecar_post("/recall", &recall_body, SIDECAR_RECALL_TIMEOUT)
@@ -844,6 +916,8 @@ async fn handle_post_tool(client: &Client, input: &Value) {
         .and_then(|t| t.as_str())
         .unwrap_or("unknown");
     let session_id = extract_session_id(input);
+    let touched_paths = extract_touched_paths(input);
+    let may_modify_repo = tool_may_modify_repository(tool_name);
 
     // Report activity (best-effort)
     let _ = client
@@ -865,6 +939,9 @@ async fn handle_post_tool(client: &Client, input: &Value) {
         "session_id": session_id,
         "importance": 3,
         "category": "discovery",
+        "cwd": hook_cwd(input),
+        "touched_paths": touched_paths,
+        "may_modify_repo": may_modify_repo,
     });
     let _ = sidecar_post("/observe", &observe_body, SIDECAR_OBSERVE_TIMEOUT).await;
 }
@@ -1198,5 +1275,36 @@ mod tests {
         let input = json!({"url": "https://example.com"});
         let cmd = derive_command("WebFetch", &input);
         assert_eq!(cmd, "https://example.com");
+    }
+
+    /// Nested tool inputs yield unique path hints and ignore unrelated strings.
+    #[test]
+    fn extracts_bounded_touched_paths() {
+        let input = json!({
+            "tool_input": {
+                "file_path": "/repo/src/lib.rs",
+                "edits": [
+                    {"path": "src/main.rs"},
+                    {"filePath": "/repo/src/lib.rs"},
+                    {"message": "not/a/path/hint"}
+                ]
+            }
+        });
+
+        assert_eq!(
+            extract_touched_paths(&input),
+            vec!["/repo/src/lib.rs", "src/main.rs"]
+        );
+    }
+
+    /// Mutating hook tools trigger incremental refresh while read-only tools do not.
+    #[test]
+    fn classifies_repository_mutators() {
+        assert!(tool_may_modify_repository("Edit"));
+        assert!(tool_may_modify_repository("NotebookEdit"));
+        assert!(tool_may_modify_repository("mcp__filesystem__apply_patch"));
+        assert!(tool_may_modify_repository("Bash"));
+        assert!(!tool_may_modify_repository("Read"));
+        assert!(!tool_may_modify_repository("WebSearch"));
     }
 }
