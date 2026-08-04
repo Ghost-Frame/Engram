@@ -57,6 +57,9 @@ enum Commands {
     /// Assemble the review record for a spec. Present only in `fluency` builds.
     #[cfg(feature = "fluency")]
     Review,
+    /// Render requirements, design, and tasks. Present only in `fluency` builds.
+    #[cfg(feature = "fluency")]
+    SpecArtifacts,
     RepoMap,
     SearchCode,
     CodeContext,
@@ -228,6 +231,10 @@ fn main() {
         Commands::Review => read_input(&cli.input)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::emit::review(&db, input).map_err(|e| e.to_string())),
+        #[cfg(feature = "fluency")]
+        Commands::SpecArtifacts => read_input(&cli.input)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::emit::spec_artifacts(&db, input).map_err(|e| e.to_string())),
     };
 
     let output = match result {

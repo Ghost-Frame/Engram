@@ -3,7 +3,9 @@
 //! provides that view without disturbing the existing tool.
 
 use crate::db::Database;
+use crate::spec_types::{ImplementationTask, TestProperty};
 use crate::tools::ToolError;
+use serde::de::DeserializeOwned;
 
 /// One design alternative with the full prose the renderer needs. `get_spec`
 /// returns only name/score/chosen; rendering a rejected alternative needs its
@@ -57,6 +59,16 @@ pub struct SpecRecord {
     pub edge_cases: Vec<String>,
     /// Optional interface contract prose.
     pub interface_contract: Option<String>,
+    /// Source files the spec expects to change.
+    pub files_to_touch: Vec<String>,
+    /// Optional dependency prose.
+    pub dependencies: Option<String>,
+    /// Existing behavior that must remain intact.
+    pub unchanged_behaviors: Vec<String>,
+    /// Concrete work items linked to criteria.
+    pub implementation_tasks: Vec<ImplementationTask>,
+    /// Explicit property-based test candidates linked to criteria.
+    pub test_properties: Vec<TestProperty>,
     /// Every recorded design alternative, chosen and rejected alike.
     pub approaches: Vec<ApproachRow>,
     /// Discoveries captured during the work.
@@ -65,27 +77,42 @@ pub struct SpecRecord {
     pub verifications: Vec<VerificationRow>,
 }
 
-/// Parse a column holding a JSON array of strings. A malformed or absent value
-/// degrades to an empty list: a partially broken record is still worth rendering,
-/// and failing the whole load would lose the parts that are intact.
+/// Parse a JSON column into its typed value. A malformed or absent value
+/// degrades to that type's default: a partially broken record is still worth
+/// rendering, and failing the whole load would lose the parts that are intact.
 ///
 /// This tolerance is deliberately scoped to a single FIELD. A malformed ROW is
 /// not tolerated -- see `load_spec_record`, which propagates row-level failures
 /// as `DatabaseError` rather than dropping the row. Dropping a row would remove
 /// a whole decision from the emitted documentation without saying so, and a
 /// record that silently omits a decision is worse than no record at all.
-fn parse_json_array(raw: Option<String>) -> Vec<String> {
-    raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+fn parse_json<T>(raw: Option<String>) -> T
+where
+    T: DeserializeOwned + Default,
+{
+    raw.and_then(|value| serde_json::from_str::<T>(&value).ok())
         .unwrap_or_default()
 }
 
 /// Load one spec and every row linked to it, as typed values ready for rendering.
 pub fn load_spec_record(db: &Database, spec_id: &str) -> Result<SpecRecord, ToolError> {
-    let (task_description, task_type, criteria_raw, edge_raw, interface_contract) = db
+    let (
+        task_description,
+        task_type,
+        criteria_raw,
+        edge_raw,
+        interface_contract,
+        files_raw,
+        dependencies,
+        unchanged_raw,
+        tasks_raw,
+        properties_raw,
+    ) = db
         .conn()
         .query_row(
             "SELECT task_description, task_type, acceptance_criteria, edge_cases,
-                    interface_contract
+                    interface_contract, files_to_touch, dependencies,
+                    unchanged_behaviors, implementation_tasks, test_properties
              FROM specs WHERE id = ?1",
             rusqlite::params![spec_id],
             |row| {
@@ -95,6 +122,11 @@ pub fn load_spec_record(db: &Database, spec_id: &str) -> Result<SpecRecord, Tool
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             },
         )
@@ -112,8 +144,8 @@ pub fn load_spec_record(db: &Database, spec_id: &str) -> Result<SpecRecord, Tool
             Ok(ApproachRow {
                 name: row.get(0)?,
                 description: row.get(1)?,
-                pros: parse_json_array(row.get(2)?),
-                cons: parse_json_array(row.get(3)?),
+                pros: parse_json(row.get(2)?),
+                cons: parse_json(row.get(3)?),
                 score: row.get(4)?,
                 chosen: row.get::<_, i64>(5)? != 0,
             })
@@ -134,7 +166,7 @@ pub fn load_spec_record(db: &Database, spec_id: &str) -> Result<SpecRecord, Tool
             Ok(LearnRow {
                 discovery: row.get(0)?,
                 context: row.get(1)?,
-                tags: parse_json_array(row.get(2)?),
+                tags: parse_json(row.get(2)?),
             })
         })
         .map_err(|e| ToolError::DatabaseError(e.to_string()))?
@@ -164,9 +196,14 @@ pub fn load_spec_record(db: &Database, spec_id: &str) -> Result<SpecRecord, Tool
         id: spec_id.to_string(),
         task_description,
         task_type,
-        acceptance_criteria: parse_json_array(criteria_raw),
-        edge_cases: parse_json_array(edge_raw),
+        acceptance_criteria: parse_json(criteria_raw),
+        edge_cases: parse_json(edge_raw),
         interface_contract,
+        files_to_touch: parse_json(files_raw),
+        dependencies,
+        unchanged_behaviors: parse_json(unchanged_raw),
+        implementation_tasks: parse_json(tasks_raw),
+        test_properties: parse_json(properties_raw),
         approaches,
         learns,
         verifications,
@@ -190,9 +227,15 @@ mod tests {
             .execute_batch(
                 r#"
                 INSERT INTO specs (id, created_at, task_description, task_type,
-                                   acceptance_criteria, edge_cases, status)
+                                   acceptance_criteria, edge_cases, files_to_touch,
+                                   dependencies, unchanged_behaviors,
+                                   implementation_tasks, test_properties, status)
                 VALUES ('spec_1', 1, 'Add a thing', 'feature',
-                        '["criterion one","criterion two"]', '["edge one"]', 'active');
+                        '["criterion one","criterion two"]', '["edge one"]',
+                        '["src/thing.rs"]', 'serde', '["old thing still works"]',
+                        '[{"description":"build it","criteria_indices":[0,1]}]',
+                        '[{"description":"all values round-trip","criteria_index":1}]',
+                        'active');
 
                 INSERT INTO approaches (id, spec_id, created_at, name, description,
                                         pros, cons, score, chosen)
@@ -219,6 +262,11 @@ mod tests {
             vec!["criterion one", "criterion two"]
         );
         assert_eq!(record.edge_cases, vec!["edge one"]);
+        assert_eq!(record.files_to_touch, vec!["src/thing.rs"]);
+        assert_eq!(record.dependencies.as_deref(), Some("serde"));
+        assert_eq!(record.unchanged_behaviors, vec!["old thing still works"]);
+        assert_eq!(record.implementation_tasks[0].criteria_indices, vec![0, 1]);
+        assert_eq!(record.test_properties[0].criteria_index, 1);
         assert_eq!(record.approaches.len(), 2);
 
         let chosen: Vec<_> = record.approaches.iter().filter(|a| a.chosen).collect();

@@ -86,6 +86,7 @@ A protocol that controls how agents think, not just what they remember:
 - **Spec before code** -- `spec-task` requires acceptance criteria and edge cases before implementation begins
 - **Hypothesis before fix** -- `log-hypothesis` with confidence scoring, `recall-errors` to prevent repeating mistakes
 - **Verification before done** -- `verify` runs commands against spec criteria, `challenge-code` generates adversarial review
+- **Human-facing spec views** -- Fluency builds render authoritative Forge records into `requirements.md`, `design.md`, and evidence-derived `tasks.md`
 - **AST-aware code analysis** -- Tree-sitter parsing across Rust, TypeScript, Python, Go, C, C++, JS. `repo-map` builds ranked symbol lists within token budgets.
 - **Session resilience** -- git checkpoints and rollback for recovery from destructive edits
 

@@ -60,6 +60,21 @@ pub fn record_path(repo_root: &Path, slug: &str) -> PathBuf {
     spec_dir(repo_root, slug).join("record.md")
 }
 
+/// Path to a spec's human-facing requirements document.
+pub fn requirements_path(repo_root: &Path, slug: &str) -> PathBuf {
+    spec_dir(repo_root, slug).join("requirements.md")
+}
+
+/// Path to a spec's human-facing design document.
+pub fn spec_design_path(repo_root: &Path, slug: &str) -> PathBuf {
+    spec_dir(repo_root, slug).join("design.md")
+}
+
+/// Path to a spec's evidence-derived task document.
+pub fn tasks_path(repo_root: &Path, slug: &str) -> PathBuf {
+    spec_dir(repo_root, slug).join("tasks.md")
+}
+
 /// Directory holding a spec's per-checkpoint slice documents.
 pub fn slices_dir(repo_root: &Path, slug: &str) -> PathBuf {
     spec_dir(repo_root, slug).join("slices")
@@ -117,6 +132,18 @@ mod tests {
         assert_eq!(
             record_path(root, "my-spec"),
             Path::new("/repo/docs/agent-forge/work/my-spec/record.md")
+        );
+        assert_eq!(
+            requirements_path(root, "my-spec"),
+            Path::new("/repo/docs/agent-forge/work/my-spec/requirements.md")
+        );
+        assert_eq!(
+            spec_design_path(root, "my-spec"),
+            Path::new("/repo/docs/agent-forge/work/my-spec/design.md")
+        );
+        assert_eq!(
+            tasks_path(root, "my-spec"),
+            Path::new("/repo/docs/agent-forge/work/my-spec/tasks.md")
         );
         assert_eq!(
             slice_path(root, "my-spec", 2, "wire-it"),
