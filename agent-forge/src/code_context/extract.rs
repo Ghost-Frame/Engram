@@ -240,8 +240,7 @@ fn normalized_target(value: &str) -> String {
         .trim()
         .trim_matches(|character: char| matches!(character, '"' | '\'' | '`'))
         .split(|character: char| !(character.is_alphanumeric() || character == '_'))
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .unwrap_or("")
         .to_string()
 }
@@ -258,9 +257,7 @@ fn leading_docs(source: &str, start_byte: usize) -> String {
             || trimmed.starts_with('*')
         {
             comments.push(trimmed.to_string());
-        } else if !trimmed.is_empty() {
-            break;
-        } else if !comments.is_empty() {
+        } else if !trimmed.is_empty() || !comments.is_empty() {
             break;
         }
     }
