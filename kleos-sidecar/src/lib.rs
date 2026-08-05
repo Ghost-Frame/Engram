@@ -3,17 +3,14 @@
 // accessible as `kleos_sidecar::...` from test code.
 
 pub mod auth;
-pub mod gate;
 pub mod metrics;
 pub mod routes;
 pub mod session;
 pub mod state;
 pub mod syntheos;
-pub mod watcher;
 
-pub use state::SidecarState;
+pub use state::{CodeContextMode, SidecarState};
 
-use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -25,7 +22,11 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         .build()
         .expect("test http client");
 
-    let llm = Some(Arc::new(LocalModelClient::new(OllamaConfig::default())));
+    let code_index = agent_forge::code_context::CodeIndex::open(
+        std::env::temp_dir().join(format!("kleos-sidecar-test-{}.db", uuid::Uuid::new_v4())),
+    )
+    .ok()
+    .map(Arc::new);
     let manager = session::SessionManager::new("test-default".to_string());
     let syntheos = Arc::new(syntheos::SyntheosClient::new_from_env(
         client.clone(),
@@ -38,14 +39,14 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         kleos_url,
         kleos_api_key: None,
         signer: None,
-        llm,
+        code_index,
+        code_context_mode: state::CodeContextMode::Shadow,
+        code_max_tokens: 2_000,
+        refreshing_repositories: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         sessions: Arc::new(RwLock::new(manager)),
         source: "test".to_string(),
         user_id: 1,
         token,
-        compress_enabled: true,
-        compress_model: None,
-        gate_model: None,
         batch_size: 5,
         batch_interval_ms: 0, // disable time-based flush in tests
         max_pending_per_session: 100,
@@ -57,9 +58,6 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
             "tool".to_string(),
         ],
         retain_tool_calls: true,
-        compress_passthrough_bytes: 100,
-        compress_max_input_bytes: 1000,
-        compress_timeout_ms: 5000,
         syntheos,
     }
 }

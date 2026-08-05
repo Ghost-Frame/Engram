@@ -18,7 +18,7 @@ use axum::{
     routing::any,
     Router,
 };
-use kleos_sidecar::{build_test_state, routes, SidecarState};
+use kleos_sidecar::{build_test_state, routes, CodeContextMode, SidecarState};
 use reqwest::Client;
 use tokio::net::TcpListener;
 
@@ -547,144 +547,96 @@ async fn test_session_start_and_end_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: /compress passthrough for small payload (under threshold).
+// Test 5: local code injection survives an unavailable memory upstream.
 // ---------------------------------------------------------------------------
 
+/// Exact code retrieval remains useful when both Kleos search routes return 404.
 #[tokio::test]
-async fn test_compress_passthrough_small_payload() {
+async fn test_code_context_injects_when_memory_recall_fails() {
     let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
-    let token = "test-token-compress";
-    let (sidecar_url, _state, _sidecar) =
-        spawn_sidecar(upstream_url, Some(token.to_string())).await;
-    let c = client(Some(token));
+    let token = "test-token-code-context";
+    let repository = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repository.path().join(".git")).unwrap();
+    std::fs::create_dir(repository.path().join("src")).unwrap();
+    std::fs::write(
+        repository.path().join("src/lib.rs"),
+        "/// Reconciles one invoice.\npub fn reconcile_invoice() -> bool { true }\n",
+    )
+    .unwrap();
 
-    // build_test_state sets compress_passthrough_bytes = 100.
-    // A payload of 50 bytes is under threshold -> passthrough=true.
-    let r = c
-        .post(format!("{}/compress", sidecar_url))
-        .json(&serde_json::json!({
-            "tool_name": "Read",
-            "tool_output": "x".repeat(50),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["passthrough"], true);
-    assert_eq!(body["reason"], "below_threshold");
-}
-
-// ---------------------------------------------------------------------------
-// Test 6: /compress rejects payload over compress_max_input_bytes with 413.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_compress_too_large_returns_413() {
-    let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
-    let token = "test-token-413";
-    let (sidecar_url, _state, _sidecar) =
-        spawn_sidecar(upstream_url, Some(token.to_string())).await;
-    let c = client(Some(token));
-
-    // build_test_state sets compress_max_input_bytes = 1000.
-    // A payload of 1100 bytes is over limit -> 413.
-    let r = c
-        .post(format!("{}/compress", sidecar_url))
-        .json(&serde_json::json!({
-            "tool_name": "Read",
-            "tool_output": "y".repeat(1100),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status(),
-        StatusCode::PAYLOAD_TOO_LARGE,
-        "expected 413 for payload over compress_max_input_bytes"
-    );
-}
-
-// With compression disabled, /compress returns the input unchanged.
-#[tokio::test]
-async fn test_compress_disabled_returns_passthrough() {
-    let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
-    let token = "test-token-compress-disabled";
     let mut state = build_test_state(upstream_url, Some(token.to_string()));
-    state.compress_enabled = false;
-    state.llm = None;
+    state.code_context_mode = CodeContextMode::Inject;
+    state
+        .code_index
+        .as_ref()
+        .unwrap()
+        .refresh(repository.path())
+        .unwrap();
     let (sidecar_url, _state, _sidecar) = spawn_sidecar_with_state(state).await;
-    let c = client(Some(token));
-
-    let r = c
-        .post(format!("{}/compress", sidecar_url))
+    let response = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
         .json(&serde_json::json!({
-            "tool_name": "Read",
-            "tool_output": "z".repeat(500),
+            "query": "Where is reconcile_invoice implemented?",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["passthrough"], true);
-    assert_eq!(body["reason"], "disabled");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["code_mode"], "inject");
+    assert!(body["memory_error"].is_string());
+    assert!(body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("pub fn reconcile_invoice"));
+    assert_eq!(body["code_pack"]["snippets"].as_array().unwrap().len(), 1);
+
+    let repeated = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
+        .json(&serde_json::json!({
+            "query": "invoice reconciliation behavior",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(repeated.status(), StatusCode::OK);
+    let repeated_body: serde_json::Value = repeated.json().await.unwrap();
+    assert!(repeated_body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .is_empty());
+    assert!(repeated_body["code_pack"]["snippets"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let exact_repeat = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
+        .json(&serde_json::json!({
+            "query": "reconcile_invoice",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(exact_repeat.status(), StatusCode::OK);
+    let exact_body: serde_json::Value = exact_repeat.json().await.unwrap();
+    assert!(exact_body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("pub fn reconcile_invoice"));
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: file-watcher checkpoint -- write a JSONL file, run process_file once
-// to advance the position, write the checkpoint, then call process_file again
-// and confirm no duplicate observations.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_watcher_checkpoint_no_duplicate_ingestion() {
-    use kleos_sidecar::watcher::flush_checkpoint;
-    use std::collections::HashMap;
-
-    let dir = tempfile::tempdir().unwrap();
-    let jsonl_path = dir.path().join("session.jsonl");
-    let cp_path = dir.path().join("checkpoint.json");
-
-    // Write two JSONL entries.
-    let line1 = r#"{"type":"tool_use","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
-    let line2 =
-        r#"{"type":"tool_use","tool_name":"Edit","tool_input":{"file_path":"/tmp/foo.rs"}}"#;
-    std::fs::write(&jsonl_path, format!("{}\n{}\n", line1, line2)).unwrap();
-
-    // Simulate the position after reading both lines.
-    let mut positions: HashMap<std::path::PathBuf, u64> = HashMap::new();
-    let full_len = std::fs::metadata(&jsonl_path).unwrap().len();
-    positions.insert(jsonl_path.clone(), full_len);
-
-    // Write checkpoint.
-    flush_checkpoint(&cp_path, &positions);
-
-    // Checkpoint file should exist.
-    assert!(cp_path.exists(), "checkpoint file should be written");
-
-    // Load checkpoint and verify positions are correct.
-    let json_text = std::fs::read_to_string(&cp_path).unwrap();
-    let loaded: HashMap<std::path::PathBuf, u64> = serde_json::from_str(&json_text).unwrap();
-    assert_eq!(
-        loaded.get(&jsonl_path).copied(),
-        Some(full_len),
-        "loaded checkpoint should match the written position"
-    );
-
-    // If we were to process the file again starting from `full_len`, no new
-    // lines would be read -- confirming no duplicate ingestion.
-    // We verify this by checking that start_pos == file_len means zero new bytes.
-    let file_len = std::fs::metadata(&jsonl_path).unwrap().len();
-    let start_pos = *loaded.get(&jsonl_path).unwrap();
-    assert_eq!(
-        start_pos, file_len,
-        "start_pos at end of file means no lines re-read"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: idle session sweep expires stale sessions.
+// Test 6: idle session sweep expires stale sessions.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

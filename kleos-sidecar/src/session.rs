@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// One bounded observation queued for durable Kleos storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     pub tool_name: String,
@@ -16,6 +17,7 @@ pub struct Observation {
     pub timestamp: DateTime<Utc>,
 }
 
+/// In-memory state for one agent session.
 pub struct Session {
     pub id: String,
     pub started_at: DateTime<Utc>,
@@ -32,9 +34,17 @@ pub struct Session {
     /// Optional origin label propagated from session/start, stamped on observations
     /// that do not carry their own origin.
     pub origin: Option<String>,
+    /// Canonical Git repository root associated with the session.
+    pub repo_root: Option<String>,
+    /// Recently touched paths used as deterministic retrieval boosts.
+    pub recent_paths: Vec<String>,
+    /// Versioned snippet identities selected by the previous code-context query.
+    pub last_injected_hashes: HashSet<String>,
 }
 
+/// Session mutation helpers for observations and repository context.
 impl Session {
+    /// Create a fresh active session with empty observations and code context.
     pub fn new(id: String) -> Self {
         Self {
             id,
@@ -47,9 +57,13 @@ impl Session {
             pending_since: None,
             last_activity: Instant::now(),
             origin: None,
+            repo_root: None,
+            recent_paths: Vec::new(),
+            last_injected_hashes: HashSet::new(),
         }
     }
 
+    /// Queue one observation and return the new pending depth.
     pub fn add_observation(&mut self, obs: Observation) -> usize {
         self.observation_count += 1;
         self.turn_count += 1;
@@ -116,8 +130,25 @@ impl Session {
         self.last_activity = Instant::now();
     }
 
+    /// Mark the session ended without removing its final statistics.
     pub fn end(&mut self) {
         self.ended = true;
+    }
+
+    /// Record a canonical repository and move touched paths to the recent tail.
+    pub fn record_repository_activity(&mut self, repo_root: Option<String>, paths: &[String]) {
+        if let Some(repo_root) = repo_root {
+            self.repo_root = Some(repo_root);
+        }
+        for path in paths {
+            let normalized = path.replace('\\', "/");
+            self.recent_paths.retain(|existing| existing != &normalized);
+            self.recent_paths.push(normalized);
+        }
+        if self.recent_paths.len() > 32 {
+            self.recent_paths.drain(..self.recent_paths.len() - 32);
+        }
+        self.last_activity = Instant::now();
     }
 }
 
@@ -130,9 +161,13 @@ pub struct SessionInfo {
     pub stored_count: usize,
     pub pending_count: usize,
     pub ended: bool,
+    /// Canonical Git repository root, when the session started inside one.
+    pub repo_root: Option<String>,
 }
 
+/// Convert live session state into its serializable summary.
 impl From<&Session> for SessionInfo {
+    /// Copy public counters and repository identity from one session.
     fn from(s: &Session) -> Self {
         Self {
             id: s.id.clone(),
@@ -141,6 +176,7 @@ impl From<&Session> for SessionInfo {
             stored_count: s.stored_count,
             pending_count: s.pending.len(),
             ended: s.ended,
+            repo_root: s.repo_root.clone(),
         }
     }
 }
@@ -151,7 +187,9 @@ pub struct SessionManager {
     pub default_session_id: String,
 }
 
+/// Lifecycle and lookup operations for the in-memory session collection.
 impl SessionManager {
+    /// Create a manager containing its always-present default session.
     pub fn new(default_session_id: String) -> Self {
         let mut sessions = HashMap::new();
         sessions.insert(
@@ -255,13 +293,16 @@ impl SessionManager {
 }
 
 #[derive(Debug)]
+/// Session lifecycle failures returned to HTTP handlers.
 pub enum SessionError {
     NotFound(String),
     AlreadyExists(String),
     AlreadyEnded(String),
 }
 
+/// Render a stable user-facing message for each session failure.
 impl std::fmt::Display for SessionError {
+    /// Format the session identifier and failure condition.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound(id) => write!(f, "session not found: {}", id),
@@ -271,13 +312,16 @@ impl std::fmt::Display for SessionError {
     }
 }
 
+/// Mark session lifecycle failures as standard errors.
 impl std::error::Error for SessionError {}
 
 #[cfg(test)]
+/// Unit tests for session lifecycle, counters, and queue invariants.
 mod tests {
     use super::*;
 
     #[test]
+    /// A new session starts active with all counters and queues empty.
     fn test_session_new() {
         let s = Session::new("test-123".to_string());
         assert_eq!(s.id, "test-123");
@@ -289,6 +333,7 @@ mod tests {
     }
 
     #[test]
+    /// Adding observations increments counters while draining preserves storage accounting.
     fn test_add_and_drain() {
         let mut s = Session::new("test".to_string());
         let obs = Observation {
@@ -317,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    /// Ending a session flips its lifecycle marker.
     fn test_end_session() {
         let mut s = Session::new("test".to_string());
         assert!(!s.ended);
@@ -325,6 +371,7 @@ mod tests {
     }
 
     #[test]
+    /// A new manager creates and resolves its default session.
     fn test_session_manager_default() {
         let mgr = SessionManager::new("default-123".to_string());
         assert_eq!(mgr.default_session_id, "default-123");
@@ -333,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    /// Get-or-create inserts each non-default session at most once.
     fn test_session_manager_get_or_create() {
         let mut mgr = SessionManager::new("default".to_string());
         assert_eq!(mgr.active_count(), 1);
@@ -347,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    /// Explicit starts reject active duplicates and permit ended replacements.
     fn test_session_manager_start_session() {
         let mut mgr = SessionManager::new("default".to_string());
 
@@ -363,6 +412,7 @@ mod tests {
     }
 
     #[test]
+    /// Ending sessions updates summaries and rejects invalid lifecycle transitions.
     fn test_session_manager_end_session() {
         let mut mgr = SessionManager::new("default".to_string());
         mgr.start_session("s1".to_string()).unwrap();
@@ -383,6 +433,7 @@ mod tests {
     }
 
     #[test]
+    /// Session lists distinguish active entries from the complete collection.
     fn test_session_manager_list() {
         let mut mgr = SessionManager::new("default".to_string());
         mgr.start_session("s1".to_string()).unwrap();
@@ -398,6 +449,7 @@ mod tests {
     }
 
     #[test]
+    /// Explicit session identifiers override the manager default.
     fn test_session_manager_resolve_id() {
         let mgr = SessionManager::new("my-default".to_string());
         assert_eq!(mgr.resolve_id(None), "my-default");
@@ -405,6 +457,7 @@ mod tests {
     }
 
     #[test]
+    /// The pending timer is initialized only when the first item enters an empty queue.
     fn add_observation_sets_pending_since_on_first_only() {
         let mut s = Session::new("t".into());
         assert!(s.pending_since.is_none());
@@ -426,6 +479,7 @@ mod tests {
     }
 
     #[test]
+    /// Confirmed storage increments the durable count without overflow.
     fn record_stored_bumps_count_saturating() {
         let mut s = Session::new("t".into());
         assert_eq!(s.stored_count, 0);
@@ -437,6 +491,7 @@ mod tests {
     }
 
     #[test]
+    /// Failed observations return to the queue head and restart its timer.
     fn requeue_prepends_failed_and_rearms_pending_since() {
         let mut s = Session::new("t".into());
         let obs = |n: u32| Observation {
@@ -468,6 +523,7 @@ mod tests {
     }
 
     #[test]
+    /// Requeueing no observations preserves all session state.
     fn requeue_empty_is_noop() {
         let mut s = Session::new("t".into());
         s.requeue(Vec::new());
@@ -476,6 +532,7 @@ mod tests {
     }
 
     #[test]
+    /// Draining all observations also clears the pending timer.
     fn drain_pending_clears_pending_since() {
         let mut s = Session::new("t".into());
         s.add_observation(Observation {
@@ -494,6 +551,7 @@ mod tests {
     }
 
     #[test]
+    /// Overlap draining keeps the configured newest tail in order.
     fn drain_with_overlap_keeps_tail() {
         let mut s = Session::new("t".into());
         let obs = |n: u32| Observation {

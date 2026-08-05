@@ -1,22 +1,19 @@
 mod auth;
-mod gate;
 mod metrics;
 mod routes;
 mod session;
 mod state;
 mod syntheos;
-mod watcher;
 
+use agent_forge::code_context::CodeIndex;
 use axum::extract::DefaultBodyLimit;
 use clap::Parser;
-use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use session::SessionManager;
-pub use state::SidecarState;
+pub use state::{CodeContextMode, SidecarState};
 
 // ---------------------------------------------------------------------------
 // Config file schema -- keys mirror the CLI flags.
@@ -36,9 +33,8 @@ struct ConfigFile {
     kleos_url: Option<String>,
     #[serde(alias = "kleos_api_key")]
     kleos_api_key: Option<String>,
-    watch: Option<bool>,
-    watch_dir: Option<String>,
-    watcher_state_path: Option<String>,
+    code_context_mode: Option<CodeContextMode>,
+    code_max_tokens: Option<usize>,
     batch_size: Option<usize>,
     batch_interval_ms: Option<u64>,
     max_pending_per_session: Option<usize>,
@@ -46,13 +42,6 @@ struct ConfigFile {
     retain_overlap_turns: Option<usize>,
     retain_roles: Option<String>,
     retain_tool_calls: Option<bool>,
-    compress_enabled: Option<bool>,
-    compress_model: Option<String>,
-    #[serde(alias = "gate_model")]
-    gate_model: Option<String>,
-    compress_passthrough_bytes: Option<usize>,
-    compress_max_input_bytes: Option<usize>,
-    compress_timeout_ms: Option<u64>,
     session_idle_ttl_secs: Option<u64>,
     log_format: Option<String>,
 }
@@ -132,17 +121,13 @@ struct Cli {
     #[arg(long, env = "KLEOS_API_KEY")]
     kleos_api_key: Option<String>,
 
-    /// Enable file watcher for Claude Code session JSONL files.
-    #[arg(long, env = "KLEOS_SIDECAR_WATCH")]
-    watch: bool,
+    /// Local code retrieval policy: off, shadow, or inject.
+    #[arg(long, env = "KLEOS_CODE_CONTEXT_MODE", value_enum)]
+    code_context_mode: Option<CodeContextMode>,
 
-    /// Directory to watch for session files (default: ~/.claude/projects).
-    #[arg(long, env = "CLAUDE_SESSIONS_DIR")]
-    watch_dir: Option<String>,
-
-    /// Path to the watcher position checkpoint JSON file.
-    #[arg(long, env = "KLEOS_SIDECAR_WATCHER_STATE_PATH")]
-    watcher_state_path: Option<PathBuf>,
+    /// Maximum approximate code tokens selected for a prompt.
+    #[arg(long, env = "KLEOS_CODE_MAX_TOKENS")]
+    code_max_tokens: Option<usize>,
 
     /// Size-based flush threshold.
     #[arg(long, env = "KLEOS_SIDECAR_BATCH_SIZE")]
@@ -176,33 +161,6 @@ struct Cli {
     #[arg(long, env = "KLEOS_RETAIN_TOOL_CALLS")]
     retain_tool_calls: Option<bool>,
 
-    /// Enable /compress LLM summarization. Disable to make /compress always
-    /// pass content through without probing or calling a local model.
-    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_ENABLED")]
-    compress_enabled: Option<bool>,
-
-    /// Optional model override used only for /compress calls.
-    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_MODEL")]
-    compress_model: Option<String>,
-
-    /// Model override for the memory gate (file watcher quality filter).
-    /// Defaults to the compress model if unset.
-    #[arg(long, env = "KLEOS_SIDECAR_GATE_MODEL")]
-    gate_model: Option<String>,
-
-    /// Byte threshold below which /compress passes content through without LLM.
-    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_PASSTHROUGH_BYTES")]
-    compress_passthrough_bytes: Option<usize>,
-
-    /// Maximum input bytes sent to the LLM for compression. Requests larger than
-    /// this are rejected with 413 rather than silently truncated.
-    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_MAX_INPUT_BYTES")]
-    compress_max_input_bytes: Option<usize>,
-
-    /// LLM call timeout for /compress (milliseconds).
-    #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_TIMEOUT_MS")]
-    compress_timeout_ms: Option<u64>,
-
     /// Sessions idle longer than this are removed from memory (seconds). Default 86400.
     #[arg(long, env = "KLEOS_SIDECAR_SESSION_IDLE_TTL_SECS")]
     session_idle_ttl_secs: Option<u64>,
@@ -223,9 +181,8 @@ struct ResolvedConfig {
     token: Option<String>,
     kleos_url: String,
     kleos_api_key: Option<String>,
-    watch: bool,
-    watch_dir: Option<String>,
-    watcher_state_path: Option<PathBuf>,
+    code_context_mode: CodeContextMode,
+    code_max_tokens: usize,
     batch_size: usize,
     batch_interval_ms: u64,
     max_pending_per_session: usize,
@@ -233,12 +190,6 @@ struct ResolvedConfig {
     retain_overlap_turns: usize,
     retain_roles: String,
     retain_tool_calls: bool,
-    compress_enabled: bool,
-    compress_model: Option<String>,
-    gate_model: Option<String>,
-    compress_passthrough_bytes: usize,
-    compress_max_input_bytes: usize,
-    compress_timeout_ms: u64,
     session_idle_ttl_secs: u64,
     log_format: String,
 }
@@ -267,11 +218,12 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
         user_id: pick!(cli.user_id, cfg.user_id, 1_i64),
         token: cli.token.or(cfg.token),
         kleos_api_key: cli.kleos_api_key.or(cfg.kleos_api_key),
-        watch: cli.watch || cfg.watch.unwrap_or(false),
-        watch_dir: cli.watch_dir.or(cfg.watch_dir),
-        watcher_state_path: cli
-            .watcher_state_path
-            .or_else(|| cfg.watcher_state_path.map(PathBuf::from)),
+        code_context_mode: pick!(
+            cli.code_context_mode,
+            cfg.code_context_mode,
+            CodeContextMode::Shadow
+        ),
+        code_max_tokens: pick!(cli.code_max_tokens, cfg.code_max_tokens, 2_000_usize),
         batch_size: pick!(cli.batch_size, cfg.batch_size, 10_usize),
         batch_interval_ms: pick!(cli.batch_interval_ms, cfg.batch_interval_ms, 2000_u64),
         max_pending_per_session: pick!(
@@ -287,20 +239,6 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
             String::from("user,assistant,tool")
         ),
         retain_tool_calls: pick!(cli.retain_tool_calls, cfg.retain_tool_calls, false),
-        compress_enabled: pick!(cli.compress_enabled, cfg.compress_enabled, true),
-        compress_model: cli.compress_model.or(cfg.compress_model),
-        gate_model: cli.gate_model.or(cfg.gate_model),
-        compress_passthrough_bytes: pick!(
-            cli.compress_passthrough_bytes,
-            cfg.compress_passthrough_bytes,
-            2000_usize
-        ),
-        compress_max_input_bytes: pick!(
-            cli.compress_max_input_bytes,
-            cfg.compress_max_input_bytes,
-            50_000_usize
-        ),
-        compress_timeout_ms: pick!(cli.compress_timeout_ms, cfg.compress_timeout_ms, 10_000_u64),
         session_idle_ttl_secs: pick!(
             cli.session_idle_ttl_secs,
             cfg.session_idle_ttl_secs,
@@ -394,24 +332,12 @@ async fn main() {
         .build()
         .expect("failed to create HTTP client");
 
-    let llm: Option<Arc<LocalModelClient>> = if rc.compress_enabled {
-        let llm_config = OllamaConfig::from_env();
-        let client = LocalModelClient::new(llm_config);
-        if client.probe().await {
-            tracing::info!(
-                compress_model = rc.compress_model.as_deref().unwrap_or("<ollama default>"),
-                "local LLM client ready for sidecar compression"
-            );
-        } else {
-            tracing::warn!(
-                compress_model = rc.compress_model.as_deref().unwrap_or("<ollama default>"),
-                "local LLM unavailable at startup -- will re-probe on first compress request"
-            );
+    let code_index = match CodeIndex::open_default() {
+        Ok(index) => Some(Arc::new(index)),
+        Err(error) => {
+            tracing::warn!(%error, "local code index unavailable; retrieval will fail open");
+            None
         }
-        Some(Arc::new(client))
-    } else {
-        tracing::info!("sidecar compression disabled");
-        None
     };
 
     let session_id = rc
@@ -460,14 +386,14 @@ async fn main() {
         kleos_url: rc.kleos_url,
         kleos_api_key: rc.kleos_api_key,
         signer,
-        llm,
+        code_index,
+        code_context_mode: rc.code_context_mode,
+        code_max_tokens: rc.code_max_tokens.max(1),
+        refreshing_repositories: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         sessions: Arc::new(RwLock::new(manager)),
         source: rc.source,
         user_id: rc.user_id,
         token,
-        compress_enabled: rc.compress_enabled,
-        compress_model: rc.compress_model,
-        gate_model: rc.gate_model,
         batch_size: rc.batch_size.max(1),
         batch_interval_ms: rc.batch_interval_ms,
         max_pending_per_session: rc.max_pending_per_session.max(1),
@@ -481,9 +407,6 @@ async fn main() {
             .map(ToOwned::to_owned)
             .collect(),
         retain_tool_calls: rc.retain_tool_calls,
-        compress_passthrough_bytes: rc.compress_passthrough_bytes,
-        compress_max_input_bytes: rc.compress_max_input_bytes,
-        compress_timeout_ms: rc.compress_timeout_ms,
         syntheos: syntheos_client,
     };
 
@@ -495,24 +418,11 @@ async fn main() {
         overlap_turns = state.overlap_turns,
         retain_roles = ?state.retain_roles,
         retain_tool_calls = state.retain_tool_calls,
-        compress_enabled = state.compress_enabled,
-        compress_model = state
-            .compress_model
-            .as_deref()
-            .unwrap_or("<ollama default>"),
+        code_context_mode = state.code_context_mode.as_str(),
+        code_index_available = state.code_index.is_some(),
+        code_max_tokens = state.code_max_tokens,
         "observation batching configured"
     );
-
-    if rc.watch {
-        if let Some(ref dir) = rc.watch_dir {
-            std::env::set_var("CLAUDE_SESSIONS_DIR", dir);
-        }
-        // If a custom checkpoint path was provided, wire it via env so watcher picks it up.
-        if let Some(ref cp) = rc.watcher_state_path {
-            std::env::set_var("KLEOS_SIDECAR_WATCHER_STATE_PATH", cp);
-        }
-        let _watcher_handle = watcher::start(state.clone());
-    }
 
     // Time-based batch flusher.
     if state.batch_interval_ms > 0 {
@@ -605,14 +515,14 @@ async fn main() {
             .register_soma_agent(
                 "kleos-sidecar",
                 "system",
-                &["observe", "compress", "recall"],
+                &["observe", "recall", "code-context"],
             )
             .await;
 
         let hb_syntheos = state.syntheos.clone();
         let hb_sessions = state.sessions.clone();
-        let hb_llm = state.llm.clone();
-        let hb_compress_enabled = state.compress_enabled;
+        let hb_code_index_available = state.code_index.is_some();
+        let hb_code_context_mode = state.code_context_mode.as_str();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
             ticker.tick().await;
@@ -624,17 +534,13 @@ async fn main() {
                     let pending: usize = guard.list().iter().map(|s| s.pending_count).sum();
                     (active, pending)
                 };
-                let llm_available = hb_llm
-                    .as_ref()
-                    .map(|llm| llm.is_available())
-                    .unwrap_or(false);
                 hb_syntheos.soma_heartbeat(
                     "kleos-sidecar",
                     serde_json::json!({
                         "active_sessions": active_sessions,
                         "pending_depth": pending_depth,
-                        "compress_enabled": hb_compress_enabled,
-                        "llm_available": llm_available,
+                        "code_context_mode": hb_code_context_mode,
+                        "code_index_available": hb_code_index_available,
                     }),
                 );
             }

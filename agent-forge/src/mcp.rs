@@ -176,6 +176,46 @@ pub fn tool_list() -> Vec<Value> {
             &["spec_id"],
         ),
         tool(
+            "code_context",
+            "Refresh a Git repository index and return a high-confidence token-bounded code context pack.",
+            json!({
+                "repo_root":{"type":"string"}, "query":{"type":"string"},
+                "max_tokens":{"type":"integer","minimum":1,"maximum":16000},
+                "focus_paths":{"type":"array","items":{"type":"string"}},
+                "recent_paths":{"type":"array","items":{"type":"string"}}
+            }),
+            &["repo_root", "query"],
+        ),
+        tool(
+            "code_relations",
+            "Refresh a Git repository index and return syntax-derived relations for one symbol or path.",
+            json!({
+                "repo_root":{"type":"string"}, "symbol":{"type":"string"}, "path":{"type":"string"},
+                "kinds":{"type":"array","items":{"type":"string"}},
+                "direction":{"type":"string","enum":["outgoing","incoming","both"]},
+                "limit":{"type":"integer","minimum":1,"maximum":200}
+            }),
+            &["repo_root"],
+        ),
+        tool(
+            "repo_map",
+            "Incrementally refresh and return a token-bounded repository symbol map.",
+            json!({
+                "path":{"type":"string"}, "focus":{"type":"array","items":{"type":"string"}},
+                "max_tokens":{"type":"integer","minimum":1,"maximum":32000}
+            }),
+            &["path"],
+        ),
+        tool(
+            "search_code",
+            "Incrementally refresh and search indexed symbol names.",
+            json!({
+                "query":{"type":"string"}, "path":{"type":"string"}, "symbol_type":{"type":"string"},
+                "limit":{"type":"integer","minimum":1,"maximum":500}
+            }),
+            &["query"],
+        ),
+        tool(
             "review",
             "Assemble and optionally write a Fluency review record.",
             json!({"spec_id":{"type":"string"},"repo_root":{"type":"string"},"write":{"type":"boolean"}}),
@@ -196,11 +236,13 @@ where
 
 /// Enforce MCP-only repository context that remains optional for direct CLI calls.
 fn validate_mcp_arguments(name: &str, arguments: &Value) -> Result<(), String> {
-    if matches!(name, "checkpoint" | "rollback" | "session_diff" | "review")
-        && arguments
-            .get("repo_root")
-            .and_then(Value::as_str)
-            .is_none_or(|repo_root| repo_root.trim().is_empty())
+    if matches!(
+        name,
+        "checkpoint" | "rollback" | "session_diff" | "review" | "code_context" | "code_relations"
+    ) && arguments
+        .get("repo_root")
+        .and_then(Value::as_str)
+        .is_none_or(|repo_root| repo_root.trim().is_empty())
     {
         return Err(format!("{name} requires a non-empty repo_root"));
     }
@@ -229,6 +271,10 @@ fn call_tool(db: &Database, name: &str, arguments: Value) -> Result<Output, Stri
         "update_spec" => call_typed(db, arguments, tools::spec::update_spec),
         "list_specs" => call_typed(db, arguments, tools::spec::list_specs),
         "get_spec" => call_typed(db, arguments, tools::spec::get_spec),
+        "code_context" => call_typed(db, arguments, tools::code_context::code_context),
+        "code_relations" => call_typed(db, arguments, tools::code_context::code_relations),
+        "repo_map" => call_typed(db, arguments, tools::ast::repo_map::repo_map),
+        "search_code" => call_typed(db, arguments, tools::ast::search::search_code),
         "review" => call_typed(db, arguments, tools::emit::review),
         _ => Err(format!("unknown Agent-Forge tool: {name}")),
     }
@@ -736,7 +782,11 @@ mod tests {
         assert!(names.contains(&"recall_errors"));
         assert!(names.contains(&"rollback"));
         assert!(names.contains(&"spec_task"));
-        assert_eq!(names.len(), 19);
+        assert!(names.contains(&"code_context"));
+        assert!(names.contains(&"code_relations"));
+        assert!(names.contains(&"repo_map"));
+        assert!(names.contains(&"search_code"));
+        assert_eq!(names.len(), 23);
     }
 
     /// Learning calls persist and recall discoveries through the shared database.

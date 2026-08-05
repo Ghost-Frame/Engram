@@ -9,6 +9,9 @@
 /// Database access: SQLite forge DB open/migrate/query.
 pub mod db;
 
+/// Persistent, repository-local code indexing and context retrieval.
+pub mod code_context;
+
 /// Emission layer: renders the captured audit trail into committed markdown.
 /// Compiled only under the `fluency` feature, which is off by default.
 #[cfg(feature = "fluency")]
