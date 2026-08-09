@@ -472,20 +472,12 @@ async fn post_prompt_generate(
                         }));
                     }
 
-                    let kleos_url = state
-                        .config
-                        .eidolon
-                        .url
-                        .as_deref()
-                        .unwrap_or("http://127.0.0.1:4200");
-
                     let living = build_living_prompt(
                         task,
                         &task_memories,
                         &task_contradictions,
                         &infra_memories,
                         &failure_memories,
-                        kleos_url,
                         &state.config.servers,
                         &state.config.safety.rules,
                     );
