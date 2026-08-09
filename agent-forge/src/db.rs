@@ -41,6 +41,9 @@ impl Database {
                 edge_cases TEXT,
                 files_to_touch TEXT,
                 dependencies TEXT,
+                unchanged_behaviors TEXT NOT NULL DEFAULT '[]',
+                implementation_tasks TEXT NOT NULL DEFAULT '[]',
+                test_properties TEXT NOT NULL DEFAULT '[]',
                 status TEXT DEFAULT 'active',
                 completed_at INTEGER,
                 status_note TEXT
@@ -137,6 +140,21 @@ impl Database {
         if !has_column("specs", "status_note") {
             self.conn
                 .execute_batch("ALTER TABLE specs ADD COLUMN status_note TEXT;")?;
+        }
+        if !has_column("specs", "unchanged_behaviors") {
+            self.conn.execute_batch(
+                "ALTER TABLE specs ADD COLUMN unchanged_behaviors TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
+        if !has_column("specs", "implementation_tasks") {
+            self.conn.execute_batch(
+                "ALTER TABLE specs ADD COLUMN implementation_tasks TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
+        if !has_column("specs", "test_properties") {
+            self.conn.execute_batch(
+                "ALTER TABLE specs ADD COLUMN test_properties TEXT NOT NULL DEFAULT '[]';",
+            )?;
         }
         if !has_column("checkpoints", "spec_id") {
             self.conn.execute_batch(
@@ -270,5 +288,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 3);
+    }
+
+    /// A database created before spec artifacts gains empty structured fields
+    /// without changing the existing spec row.
+    #[test]
+    fn legacy_specs_gain_artifact_fields_without_data_loss() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE specs (
+                     id TEXT PRIMARY KEY,
+                     created_at INTEGER NOT NULL,
+                     task_description TEXT NOT NULL,
+                     task_type TEXT NOT NULL,
+                     acceptance_criteria TEXT NOT NULL,
+                     interface_contract TEXT,
+                     edge_cases TEXT,
+                     files_to_touch TEXT,
+                     dependencies TEXT,
+                     status TEXT DEFAULT 'active'
+                 );
+                 INSERT INTO specs (
+                     id, created_at, task_description, task_type,
+                     acceptance_criteria, status
+                 ) VALUES (
+                     'legacy', 1, 'Preserve this spec', 'feature',
+                     '[\"still here\"]', 'active'
+                 );",
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(&path).unwrap();
+        let row: (String, String, String, String) = db
+            .conn()
+            .query_row(
+                "SELECT task_description, unchanged_behaviors,
+                        implementation_tasks, test_properties
+                 FROM specs WHERE id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            row,
+            (
+                "Preserve this spec".into(),
+                "[]".into(),
+                "[]".into(),
+                "[]".into()
+            )
+        );
     }
 }

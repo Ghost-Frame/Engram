@@ -28,6 +28,35 @@ fn bullets(items: &[String]) -> String {
         .join("")
 }
 
+/// Display a zero-based criterion index as the one-based label used in emitted
+/// documents.
+fn requirement_label(index: usize) -> String {
+    format!("R{}", index + 1)
+}
+
+/// Normalize prose for a Markdown table cell without changing its meaning.
+fn table_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace(['\r', '\n'], " ")
+}
+
+/// Return the successful verification commands linked to one criterion in
+/// chronological order, with duplicate commands collapsed.
+fn passing_evidence(record: &SpecRecord, criteria_index: usize) -> Vec<&str> {
+    let Ok(criteria_index) = i64::try_from(criteria_index) else {
+        return Vec::new();
+    };
+    let mut commands = Vec::new();
+    for verification in &record.verifications {
+        if verification.success
+            && verification.criteria_index == Some(criteria_index)
+            && !commands.contains(&verification.command.as_str())
+        {
+            commands.push(verification.command.as_str());
+        }
+    }
+    commands
+}
+
 /// Choose a code-fence long enough that the content cannot close it early.
 /// CommonMark ends a fenced block at the first line whose backtick run is at
 /// least as long as the opening fence, so an interface contract containing its
@@ -127,6 +156,202 @@ pub fn render_record(record: &SpecRecord, trust: Trust) -> String {
     out
 }
 
+/// Render the requirements artifact from authoritative spec fields.
+pub fn render_requirements(record: &SpecRecord) -> String {
+    let mut out = format!("# Requirements: {}\n\n", record.task_description);
+    out.push_str(&format!(
+        "- **spec:** `{}`\n- **type:** {}\n\n",
+        record.id, record.task_type
+    ));
+
+    out.push_str("## Acceptance requirements\n\n");
+    if record.acceptance_criteria.is_empty() {
+        out.push_str("_None recorded._\n");
+    } else {
+        for (index, criterion) in record.acceptance_criteria.iter().enumerate() {
+            out.push_str(&format!(
+                "### {}\n\n{}\n\n",
+                requirement_label(index),
+                criterion
+            ));
+        }
+    }
+
+    out.push_str("## Edge cases\n\n");
+    out.push_str(&bullets(&record.edge_cases));
+
+    out.push_str("\n## Behavior to preserve\n\n");
+    if record.unchanged_behaviors.is_empty() && record.task_type == "bugfix" {
+        out.push_str(
+            "> **Specification gap:** No unchanged behavior was recorded for this bug fix.\n",
+        );
+    } else {
+        out.push_str(&bullets(&record.unchanged_behaviors));
+    }
+
+    out.push_str("\n## Property-test candidates\n\n");
+    if record.test_properties.is_empty() {
+        out.push_str("_None recorded. Candidates are never inferred._\n");
+    } else {
+        for (index, property) in record.test_properties.iter().enumerate() {
+            out.push_str(&format!(
+                "- **P{} ({})**: {}\n",
+                index + 1,
+                requirement_label(property.criteria_index),
+                property.description
+            ));
+        }
+    }
+
+    out
+}
+
+/// Render the design artifact from the interface contract, expected change
+/// surface, dependencies, and recorded approach comparison.
+pub fn render_design(record: &SpecRecord) -> String {
+    let mut out = format!("# Design: {}\n\n", record.task_description);
+    out.push_str(&format!("- **spec:** `{}`\n\n", record.id));
+
+    out.push_str("## Interface contract\n\n");
+    if let Some(contract) = &record.interface_contract {
+        let fence = fence_for(contract);
+        out.push_str(&format!("{}text\n{}\n{}\n", fence, contract, fence));
+    } else {
+        out.push_str("_None recorded._\n");
+    }
+
+    out.push_str("\n## Dependencies\n\n");
+    match &record.dependencies {
+        Some(dependencies) => out.push_str(&format!("{}\n", dependencies)),
+        None => out.push_str("_None recorded._\n"),
+    }
+
+    out.push_str("\n## Expected files\n\n");
+    out.push_str(&bullets(&record.files_to_touch));
+
+    out.push_str("\n## Chosen approach\n\n");
+    if let Some(chosen) = record.approaches.iter().find(|approach| approach.chosen) {
+        out.push_str(&format!(
+            "### {}\n\n{}\n\n",
+            chosen.name, chosen.description
+        ));
+        out.push_str("**Advantages**\n\n");
+        out.push_str(&bullets(&chosen.pros));
+        out.push_str("\n**Tradeoffs**\n\n");
+        out.push_str(&bullets(&chosen.cons));
+    } else {
+        out.push_str("_No approach chosen._\n");
+    }
+
+    out.push_str("\n## Rejected alternatives\n\n");
+    let rejected: Vec<&ApproachRow> = record
+        .approaches
+        .iter()
+        .filter(|approach| !approach.chosen)
+        .collect();
+    if rejected.is_empty() {
+        out.push_str("_None recorded._\n");
+    } else {
+        for approach in rejected {
+            out.push_str(&format!(
+                "### {}\n\n{}\n\n",
+                approach.name, approach.description
+            ));
+            out.push_str("**Why it was not chosen**\n\n");
+            out.push_str(&bullets(&approach.cons));
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+/// Render implementation tasks and a criterion-to-task-to-verification table.
+/// Task checkboxes are computed from evidence and are never stored as mutable
+/// state.
+pub fn render_tasks(record: &SpecRecord) -> String {
+    let mut out = format!("# Tasks: {}\n\n", record.task_description);
+    out.push_str(&format!("- **spec:** `{}`\n\n", record.id));
+    out.push_str(
+        "> Checkboxes are derived from successful verification evidence for every linked requirement.\n\n",
+    );
+
+    out.push_str("## Implementation tasks\n\n");
+    if record.implementation_tasks.is_empty() {
+        out.push_str("_No implementation tasks recorded._\n");
+    } else {
+        for (index, task) in record.implementation_tasks.iter().enumerate() {
+            let complete = !task.criteria_indices.is_empty()
+                && task
+                    .criteria_indices
+                    .iter()
+                    .all(|criteria_index| !passing_evidence(record, *criteria_index).is_empty());
+            let labels = task
+                .criteria_indices
+                .iter()
+                .map(|criteria_index| requirement_label(*criteria_index))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let evidence = task
+                .criteria_indices
+                .iter()
+                .flat_map(|criteria_index| passing_evidence(record, *criteria_index))
+                .fold(Vec::new(), |mut commands, command| {
+                    if !commands.contains(&command) {
+                        commands.push(command);
+                    }
+                    commands
+                });
+
+            out.push_str(&format!(
+                "- [{}] **T{}:** {}\n  - Requirements: {}\n",
+                if complete { "x" } else { " " },
+                index + 1,
+                task.description,
+                labels
+            ));
+            if evidence.is_empty() {
+                out.push_str("  - Passing evidence: _None recorded._\n");
+            } else {
+                out.push_str(&format!("  - Passing evidence: {}\n", evidence.join("; ")));
+            }
+        }
+    }
+
+    out.push_str("\n## Traceability\n\n");
+    out.push_str("| Requirement | Tasks | Passing verification |\n");
+    out.push_str("| --- | --- | --- |\n");
+    for criteria_index in 0..record.acceptance_criteria.len() {
+        let tasks = record
+            .implementation_tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| task.criteria_indices.contains(&criteria_index))
+            .map(|(index, _)| format!("T{}", index + 1))
+            .collect::<Vec<_>>();
+        let evidence = passing_evidence(record, criteria_index)
+            .into_iter()
+            .map(table_cell)
+            .collect::<Vec<_>>();
+        out.push_str(&format!(
+            "| {} | {} | {} |\n",
+            requirement_label(criteria_index),
+            if tasks.is_empty() {
+                "**Unassigned**".to_string()
+            } else {
+                tasks.join(", ")
+            },
+            if evidence.is_empty() {
+                "_None_".to_string()
+            } else {
+                evidence.join("<br>")
+            }
+        ));
+    }
+
+    out
+}
+
 /// Render one slice document: the model's knowledge-transfer prose plus the
 /// decisions and discoveries stored for the spec.
 pub fn render_slice(
@@ -176,6 +401,17 @@ mod tests {
             acceptance_criteria: vec!["it works".into()],
             edge_cases: vec!["empty input".into()],
             interface_contract: Some("fn thing() -> u8".into()),
+            files_to_touch: vec!["src/thing.rs".into()],
+            dependencies: Some("serde".into()),
+            unchanged_behaviors: vec!["old behavior remains".into()],
+            implementation_tasks: vec![crate::spec_types::ImplementationTask {
+                description: "Build the thing".into(),
+                criteria_indices: vec![0],
+            }],
+            test_properties: vec![crate::spec_types::TestProperty {
+                description: "All valid inputs round-trip".into(),
+                criteria_index: 0,
+            }],
             approaches: vec![
                 ApproachRow {
                     name: "Direct".into(),
@@ -293,6 +529,65 @@ mod tests {
         let md = render_record(&r, Trust::SpecVerified);
         assert!(md.contains("```text"));
         assert!(!md.contains("````"));
+    }
+
+    /// Requirements preserve stable labels, bugfix gaps, and explicit property
+    /// candidates without inventing additional properties.
+    #[test]
+    fn requirements_render_structured_spec_fields() {
+        let mut r = record();
+        r.task_type = "bugfix".into();
+        r.unchanged_behaviors.clear();
+        let md = render_requirements(&r);
+
+        assert!(md.contains("### R1"));
+        assert!(md.contains("No unchanged behavior was recorded"));
+        assert!(md.contains("**P1 (R1)**"));
+        assert!(md.contains("All valid inputs round-trip"));
+    }
+
+    /// Design output contains the contract, expected change surface, chosen
+    /// approach, and rejected alternative.
+    #[test]
+    fn design_renders_recorded_decisions() {
+        let md = render_design(&record());
+
+        assert!(md.contains("fn thing() -> u8"));
+        assert!(md.contains("src/thing.rs"));
+        assert!(md.contains("## Chosen approach"));
+        assert!(md.contains("### Direct"));
+        assert!(md.contains("### Indirect"));
+    }
+
+    /// A task remains pending until all linked criteria have successful
+    /// evidence, then becomes checked without any task-state mutation.
+    #[test]
+    fn task_completion_is_derived_from_passing_evidence() {
+        let mut r = record();
+        r.acceptance_criteria.push("second condition".into());
+        r.implementation_tasks[0].criteria_indices.push(1);
+        let pending = render_tasks(&r);
+        assert!(pending.contains("- [ ] **T1:**"));
+
+        r.verifications.push(VerificationRow {
+            command: "cargo test second".into(),
+            success: true,
+            criteria_index: Some(1),
+        });
+        let complete = render_tasks(&r);
+        assert!(complete.contains("- [x] **T1:**"));
+        assert!(complete.contains("| R2 | T1 | cargo test second |"));
+    }
+
+    /// The traceability table makes uncovered requirements and absent evidence
+    /// visible instead of silently treating them as complete.
+    #[test]
+    fn tasks_render_traceability_gaps() {
+        let mut r = record();
+        r.acceptance_criteria.push("unassigned condition".into());
+        let md = render_tasks(&r);
+
+        assert!(md.contains("| R2 | **Unassigned** | _None_ |"));
     }
 
     /// The rendered alternative is the highest-SCORING rejected approach, and the

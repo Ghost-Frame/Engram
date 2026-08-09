@@ -50,7 +50,9 @@ pub fn tool_list() -> Vec<Value> {
                 "task_description":{"type":"string"}, "task_type":{"type":"string","enum":["feature","bugfix","refactor","enhancement","test","docs"]},
                 "acceptance_criteria":{"type":"array","items":{"type":"string"},"minItems":2}, "interface_contract":{"type":"string"},
                 "edge_cases":{"type":"array","items":{"type":"string"},"minItems":3}, "files_to_touch":{"type":"array","items":{"type":"string"}},
-                "dependencies":{"type":"string"}
+                "dependencies":{"type":"string"}, "unchanged_behaviors":{"type":"array","items":{"type":"string"}},
+                "implementation_tasks":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"criteria_indices":{"type":"array","items":{"type":"integer","minimum":0},"minItems":1}},"required":["description","criteria_indices"]}},
+                "test_properties":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"criteria_index":{"type":"integer","minimum":0}},"required":["description","criteria_index"]}}
             }),
             &[
                 "task_description",
@@ -216,6 +218,12 @@ pub fn tool_list() -> Vec<Value> {
             &["query"],
         ),
         tool(
+            "spec_artifacts",
+            "Render and optionally write requirements, design, and evidence-derived tasks for a spec.",
+            json!({"spec_id":{"type":"string"},"repo_root":{"type":"string"},"write":{"type":"boolean"}}),
+            &["spec_id", "repo_root"],
+        ),
+        tool(
             "review",
             "Assemble and optionally write a Fluency review record.",
             json!({"spec_id":{"type":"string"},"repo_root":{"type":"string"},"write":{"type":"boolean"}}),
@@ -238,7 +246,13 @@ where
 fn validate_mcp_arguments(name: &str, arguments: &Value) -> Result<(), String> {
     if matches!(
         name,
-        "checkpoint" | "rollback" | "session_diff" | "review" | "code_context" | "code_relations"
+        "checkpoint"
+            | "rollback"
+            | "session_diff"
+            | "spec_artifacts"
+            | "review"
+            | "code_context"
+            | "code_relations"
     ) && arguments
         .get("repo_root")
         .and_then(Value::as_str)
@@ -275,6 +289,7 @@ fn call_tool(db: &Database, name: &str, arguments: Value) -> Result<Output, Stri
         "code_relations" => call_typed(db, arguments, tools::code_context::code_relations),
         "repo_map" => call_typed(db, arguments, tools::ast::repo_map::repo_map),
         "search_code" => call_typed(db, arguments, tools::ast::search::search_code),
+        "spec_artifacts" => call_typed(db, arguments, tools::emit::spec_artifacts),
         "review" => call_typed(db, arguments, tools::emit::review),
         _ => Err(format!("unknown Agent-Forge tool: {name}")),
     }
@@ -312,9 +327,7 @@ fn handle_request(db: &Database, request: Value) -> Option<Value> {
         Some(method) => method,
         None => return Some(rpc_error(id, -32600, "missing JSON-RPC method")),
     };
-    if request.get("id").is_none() {
-        return None;
-    }
+    request.get("id")?;
     let result = match method {
         "initialize" => json!({
             "protocolVersion": "2025-03-26",
@@ -776,6 +789,7 @@ mod tests {
             .filter_map(|tool| tool["name"].as_str())
             .collect();
         assert!(names.contains(&"checkpoint"));
+        assert!(names.contains(&"spec_artifacts"));
         assert!(names.contains(&"review"));
         assert!(names.contains(&"session_learn"));
         assert!(names.contains(&"session_recall"));
@@ -786,7 +800,7 @@ mod tests {
         assert!(names.contains(&"code_relations"));
         assert!(names.contains(&"repo_map"));
         assert!(names.contains(&"search_code"));
-        assert_eq!(names.len(), 23);
+        assert_eq!(names.len(), 24);
     }
 
     /// Learning calls persist and recall discoveries through the shared database.
@@ -820,7 +834,8 @@ mod tests {
         );
     }
 
-    /// Spec creation, checkpoint emission, and review share one local database.
+    /// Spec creation, checkpoint emission, artifact emission, and review share
+    /// one local database.
     #[test]
     fn emits_and_reviews_from_one_database() {
         let dir = tempdir().unwrap();
@@ -829,7 +844,10 @@ mod tests {
         let spec = structured(handle_jsonrpc(&db, request(1, "spec_task", json!({
             "task_description":"Teach a local MCP slice", "task_type":"feature",
             "acceptance_criteria":["MCP works", "Fluency emits"],
-            "interface_contract":"Local stdio MCP", "edge_cases":["EOF", "bad JSON", "hollow prose"]
+            "interface_contract":"Local stdio MCP", "edge_cases":["EOF", "bad JSON", "hollow prose"],
+            "unchanged_behaviors":["review still emits"],
+            "implementation_tasks":[{"description":"Render planning views","criteria_indices":[0,1]}],
+            "test_properties":[{"description":"Every view names its spec","criteria_index":0}]
         }))).unwrap());
         let spec_id = spec["id"].as_str().unwrap();
         let checkpoint = structured(handle_jsonrpc(&db, request(2, "checkpoint", json!({
@@ -849,11 +867,23 @@ mod tests {
             .unwrap();
         assert_eq!(stored_ref.as_deref(), Some(expected_ref.as_str()));
         let slice_path = checkpoint["data"]["slice_path"].as_str().unwrap();
-        let review = structured(
+        let artifacts = structured(
             handle_jsonrpc(
                 &db,
                 request(
                     3,
+                    "spec_artifacts",
+                    json!({"spec_id":spec_id, "repo_root":dir.path()}),
+                ),
+            )
+            .unwrap(),
+        );
+        assert_eq!(artifacts["success"], true);
+        let review = structured(
+            handle_jsonrpc(
+                &db,
+                request(
+                    4,
                     "review",
                     json!({
                         "spec_id":spec_id, "repo_root":dir.path()
@@ -864,6 +894,18 @@ mod tests {
         );
         assert_eq!(review["success"], true);
         assert!(std::path::Path::new(slice_path).is_file());
+        assert!(dir
+            .path()
+            .join("docs/agent-forge/work/teach-a-local-mcp-slice/requirements.md")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("docs/agent-forge/work/teach-a-local-mcp-slice/design.md")
+            .is_file());
+        assert!(dir
+            .path()
+            .join("docs/agent-forge/work/teach-a-local-mcp-slice/tasks.md")
+            .is_file());
         assert!(dir
             .path()
             .join("docs/agent-forge/work/teach-a-local-mcp-slice/record.md")
