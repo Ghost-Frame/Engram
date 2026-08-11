@@ -1,4 +1,7 @@
+//! Regression tests for individual dream stages and the full cycle driver.
+
 use crate::brain::dream::{run_dream_cycle, StageReport};
+use crate::brain::hopfield::edges::{self, EdgeType};
 use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::recall;
 use crate::db::Database;
@@ -11,6 +14,7 @@ fn make_pattern(dim: usize, seed: u8) -> Vec<f32> {
         .collect()
 }
 
+/// Store deterministic test patterns in both persistence and live network state.
 async fn seed_patterns(db: &Database, network: &mut HopfieldNetwork, user_id: i64, count: u8) {
     for i in 0..count {
         let embedding = make_pattern(64, i);
@@ -50,6 +54,7 @@ async fn test_replay_empty_network() {
 }
 
 #[tokio::test]
+/// Replay strengthens an accessed pattern whose strength is below one.
 async fn test_replay_with_patterns() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -75,6 +80,7 @@ async fn test_replay_with_patterns() {
 }
 
 #[tokio::test]
+/// Merge handles an empty network without changing state.
 async fn test_merge_empty_network() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -86,6 +92,7 @@ async fn test_merge_empty_network() {
 }
 
 #[tokio::test]
+/// Merge collapses two nearly identical patterns into one live pattern.
 async fn test_merge_similar_patterns() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -111,6 +118,7 @@ async fn test_merge_similar_patterns() {
 }
 
 #[tokio::test]
+/// Prune handles an empty network without changing state.
 async fn test_prune_empty_network() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -122,6 +130,7 @@ async fn test_prune_empty_network() {
 }
 
 #[tokio::test]
+/// Prune removes dead patterns while retaining healthy patterns.
 async fn test_prune_removes_dead_patterns() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -154,6 +163,7 @@ async fn test_prune_removes_dead_patterns() {
 }
 
 #[tokio::test]
+/// Discovery handles an empty network without creating edges.
 async fn test_discover_empty_network() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -165,6 +175,7 @@ async fn test_discover_empty_network() {
 }
 
 #[tokio::test]
+/// Discovery examines similar patterns and returns a well-formed report.
 async fn test_discover_creates_edges() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -190,7 +201,69 @@ async fn test_discover_creates_edges() {
     assert!(report.items_processed <= 2);
 }
 
+/// Discovery bounds pair comparisons independently of the pattern count.
 #[tokio::test]
+async fn test_discover_caps_pair_comparisons() {
+    let db = Database::connect_memory().await.unwrap();
+    let mut network = HopfieldNetwork::new();
+    let user_id = 1i64;
+
+    seed_patterns(&db, &mut network, user_id, 100).await;
+
+    let report = crate::brain::dream::discover::discover(&db, &mut network, user_id, 1)
+        .await
+        .unwrap();
+
+    assert!(report.items_processed <= 64);
+    assert!(report.items_changed <= 1);
+}
+
+/// A zero discovery budget performs no pair comparisons or edge writes.
+#[tokio::test]
+async fn test_discover_zero_budget_does_no_work() {
+    let db = Database::connect_memory().await.unwrap();
+    let mut network = HopfieldNetwork::new();
+    let user_id = 1i64;
+
+    seed_patterns(&db, &mut network, user_id, 2).await;
+
+    let report = crate::brain::dream::discover::discover(&db, &mut network, user_id, 0)
+        .await
+        .unwrap();
+
+    assert_eq!(report.items_processed, 0);
+    assert_eq!(report.items_changed, 0);
+}
+
+/// Discovery recognizes an association already stored in reverse direction.
+#[tokio::test]
+async fn test_discover_does_not_duplicate_reverse_association() {
+    let db = Database::connect_memory().await.unwrap();
+    let mut network = HopfieldNetwork::new();
+    let user_id = 1i64;
+    let base = make_pattern(64, 0);
+    let similar: Vec<f32> = base.iter().map(|&value| value * 0.99 + 0.005).collect();
+
+    recall::store_pattern(&db, &mut network, 1, &base, user_id, 5, 1.0)
+        .await
+        .unwrap();
+    recall::store_pattern(&db, &mut network, 2, &similar, user_id, 5, 1.0)
+        .await
+        .unwrap();
+    edges::store_edge(&db, 2, 1, 0.3, EdgeType::Association, user_id)
+        .await
+        .unwrap();
+
+    let report = crate::brain::dream::discover::discover(&db, &mut network, user_id, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(report.items_changed, 0);
+    assert_eq!(edges::count_edges(&db, user_id).await.unwrap(), 1);
+}
+
+#[tokio::test]
+/// Decorrelation handles an empty network without changing state.
 async fn test_decorrelate_empty_network() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -202,6 +275,7 @@ async fn test_decorrelate_empty_network() {
 }
 
 #[tokio::test]
+/// Contradiction resolution handles an empty network without changing state.
 async fn test_resolve_empty_network() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -238,6 +312,7 @@ async fn test_run_dream_cycle_empty() {
 }
 
 #[tokio::test]
+/// A populated full dream cycle completes every stage within the sanity limit.
 async fn test_run_dream_cycle_with_patterns() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
@@ -253,6 +328,7 @@ async fn test_run_dream_cycle_with_patterns() {
 }
 
 #[tokio::test]
+/// The cycle driver persists a finished run record for the correct tenant.
 async fn test_dream_run_persisted() {
     let db = Database::connect_memory().await.unwrap();
     let mut network = HopfieldNetwork::new();
