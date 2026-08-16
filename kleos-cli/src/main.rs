@@ -1040,6 +1040,12 @@ enum HandoffCommands {
     Dump {
         #[arg(long)]
         project: Option<String>,
+        /// Logical stream used to group related standalone sessions.
+        #[arg(long)]
+        workstream: Option<String>,
+        /// Human-readable session label shown during candidate selection.
+        #[arg(long)]
+        title: Option<String>,
         #[arg(long)]
         branch: Option<String>,
         #[arg(long)]
@@ -1059,8 +1065,15 @@ enum HandoffCommands {
     },
     /// Get latest handoff(s) with filters
     Restore {
+        /// Exact handoff id to restore without inference.
+        #[arg(long)]
+        id: Option<i64>,
         #[arg(long)]
         project: Option<String>,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        workstream: Option<String>,
         #[arg(long)]
         agent: Option<String>,
         #[arg(long, name = "type")]
@@ -1105,9 +1118,26 @@ enum HandoffCommands {
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        workstream: Option<String>,
+        #[arg(long)]
         agent: Option<String>,
         #[arg(long, name = "type")]
         handoff_type: Option<String>,
+    },
+    /// List the newest checkpoint for each stable session identity.
+    Candidates {
+        #[arg(long, default_value = "20")]
+        limit: i64,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        workstream: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Full-text search across handoff content
     Search {
@@ -3506,33 +3536,64 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
     }
 }
 
-/// Detects the project name from git remote or directory name.
+/// Detects a project only inside a Git worktree, using the origin name or Git
+/// root basename. Ordinary directory names are never promoted to projects.
 fn detect_project(dir: Option<&str>) -> Option<String> {
     let dir = dir
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let detected = detect_project_at_path(&dir)?;
+    std::env::var("SESSION_HANDOFF_PROJECT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(Some(detected))
+}
 
-    if let Ok(val) = std::env::var("SESSION_HANDOFF_PROJECT") {
-        if !val.is_empty() {
-            return Some(val);
-        }
+/// Detects a repository identity at an exact filesystem path and returns
+/// `None` when the path is not inside a Git worktree.
+fn detect_project_at_path(dir: &std::path::Path) -> Option<String> {
+    let root_output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !root_output.status.success() {
+        return None;
+    }
+    let git_root = std::path::PathBuf::from(
+        String::from_utf8_lossy(&root_output.stdout)
+            .trim()
+            .to_string(),
+    );
+    if git_root.as_os_str().is_empty() {
+        return None;
     }
 
     let output = std::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
-        .current_dir(&dir)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let name = url.rsplit('/').next().unwrap_or(&url);
-        let name = name.strip_suffix(".git").unwrap_or(name);
-        if !name.is_empty() {
-            return Some(name.to_string());
+        .current_dir(&git_root)
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(name) = project_from_remote(&url) {
+                return Some(name);
+            }
         }
     }
 
-    dir.file_name().map(|n| n.to_string_lossy().to_string())
+    git_root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+/// Extracts a repository name from HTTPS, filesystem, or SCP-style Git URLs.
+fn project_from_remote(url: &str) -> Option<String> {
+    let tail = url.rsplit(['/', ':']).next()?.trim();
+    let name = tail.strip_suffix(".git").unwrap_or(tail).trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Detects the current git branch name.
@@ -3588,11 +3649,52 @@ fn detect_model() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Resolves the stable handoff session id from an explicit value or known
+/// agent environment variables.
+fn detect_session_id(explicit: Option<&String>) -> Option<String> {
+    explicit
+        .cloned()
+        .or_else(|| std::env::var("CODEX_THREAD_ID").ok())
+        .or_else(|| std::env::var("SESSION_ID").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Resolves a logical workstream from an explicit value, environment, or
+/// repository project label.
+fn detect_workstream(explicit: Option<&String>, project: Option<&String>) -> Option<String> {
+    explicit
+        .cloned()
+        .or_else(|| std::env::var("SESSION_HANDOFF_WORKSTREAM").ok())
+        .or_else(|| project.cloned())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Returns whether restore is running outside Git without the stable session
+/// identity required to avoid selecting an unrelated standalone handoff.
+fn restore_requires_exact_session(in_git_worktree: bool, session_id: Option<&str>) -> bool {
+    !in_git_worktree && session_id.is_none()
+}
+
+/// Resolves dump scope exclusively from Git worktree detection so an explicit
+/// compatibility project label cannot turn a standalone session into a
+/// repository handoff.
+fn dump_scope(in_git_worktree: bool) -> &'static str {
+    if in_git_worktree {
+        "repository"
+    } else {
+        "standalone"
+    }
+}
+
 /// Dispatches session handoff subcommands (dump, restore, list, gc, etc.).
 async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
     match cmd {
         HandoffCommands::Dump {
             project,
+            workstream,
+            title,
             branch,
             agent,
             handoff_type,
@@ -3621,32 +3723,53 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             };
 
             let dir_str = dir.as_deref();
-            let project = project.clone().or_else(|| detect_project(dir_str));
+            let detected_project = detect_project(dir_str);
+            let in_git_worktree = detected_project.is_some();
+            let project = project.clone().or(detected_project);
             let branch = branch.clone().or_else(|| detect_branch(dir_str));
-
-            let Some(ref project) = project else {
-                eprintln!("Error: could not detect project. Use --project");
+            let scope = dump_scope(in_git_worktree);
+            let Some(workstream) = detect_workstream(workstream.as_ref(), project.as_ref()) else {
+                eprintln!("Error: standalone handoffs require --workstream");
                 std::process::exit(1);
             };
+            let session_id = detect_session_id(session.as_ref());
+            if scope == "standalone" && session_id.is_none() {
+                eprintln!(
+                    "Error: standalone handoffs require --session, SESSION_ID, or CODEX_THREAD_ID"
+                );
+                std::process::exit(1);
+            }
+            if scope == "standalone" && handoff_type.as_deref() == Some("mechanical") {
+                eprintln!("Error: mechanical handoffs require a Git worktree");
+                std::process::exit(1);
+            }
 
-            let body = json!({
-                "project": project,
+            let mut body = json!({
+                "scope": scope,
+                "workstream": workstream,
+                "title": title,
                 "branch": branch,
                 "directory": dir.clone().or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())),
                 "agent": agent.clone().unwrap_or_else(detect_agent),
                 "type": handoff_type.clone().unwrap_or_else(|| "manual".to_string()),
                 "content": content_str,
-                "session_id": session.clone().or_else(|| std::env::var("SESSION_ID").ok()),
+                "session_id": session_id,
                 "model": model.clone().or_else(detect_model),
                 "host": host.clone().unwrap_or_else(detect_host),
             });
+            if let Some(ref project) = project {
+                body["project"] = json!(project);
+            }
 
             match client.post("/handoffs", body).await {
                 Ok(v) => {
                     if v.get("skipped").and_then(|s| s.as_bool()).unwrap_or(false) {
-                        eprintln!("Skipped duplicate handoff for '{}'", project);
+                        eprintln!("Skipped duplicate handoff for '{}'", workstream);
                     } else if let Some(id) = v.get("id") {
-                        println!("Stored handoff #{} (project={})", id, project);
+                        println!(
+                            "Stored handoff #{} (scope={}, workstream={})",
+                            id, scope, workstream
+                        );
                     } else {
                         println!("{}", serde_json::to_string_pretty(&v).unwrap());
                     }
@@ -3656,7 +3779,10 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         }
 
         HandoffCommands::Restore {
+            id,
             project,
+            scope,
+            workstream,
             agent,
             handoff_type,
             model,
@@ -3665,10 +3791,43 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             limit,
             dir,
         } => {
-            let project = project.clone().or_else(|| detect_project(dir.as_deref()));
+            if let Some(id) = id {
+                match client.get(&format!("/handoffs/{id}")).await {
+                    Ok(value) => {
+                        if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
+                            println!("{}", content);
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(&value).unwrap());
+                        }
+                    }
+                    Err(error) => eprintln!("Error: {}", error),
+                }
+                return;
+            }
+
+            let detected_project = detect_project(dir.as_deref());
+            let in_git_worktree = detected_project.is_some();
+            let project = project.clone().or(detected_project);
+            let session_id = detect_session_id(session.as_ref());
+            if restore_requires_exact_session(in_git_worktree, session_id.as_deref()) {
+                eprintln!(
+                    "Error: standalone restore requires --id or a stable --session. Use `kleos-cli handoff candidates` to choose one."
+                );
+                std::process::exit(1);
+            }
+            let workstream = detect_workstream(workstream.as_ref(), project.as_ref());
             let mut params: Vec<(&str, String)> = Vec::new();
             if let Some(ref p) = project {
                 params.push(("project", p.clone()));
+            }
+            if let Some(value) = scope
+                .clone()
+                .or_else(|| project.is_none().then(|| "standalone".to_string()))
+            {
+                params.push(("scope", value));
+            }
+            if let Some(ref value) = workstream {
+                params.push(("workstream", value.clone()));
             }
             if let Some(ref a) = agent {
                 params.push(("agent", a.clone()));
@@ -3679,7 +3838,7 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             if let Some(ref m) = model {
                 params.push(("model", m.clone()));
             }
-            if let Some(ref s) = session {
+            if let Some(ref s) = session_id {
                 params.push(("session_id", s.clone()));
             }
             if let Some(ref s) = since {
@@ -3715,11 +3874,16 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
 
         HandoffCommands::Latest { project, dir } => {
             let project = project.clone().or_else(|| detect_project(dir.as_deref()));
-            let query = if let Some(ref p) = project {
-                format!("?project={}", utf8_percent_encode(p, NON_ALPHANUMERIC))
-            } else {
-                String::new()
+            let Some(ref project) = project else {
+                eprintln!(
+                    "Error: latest requires a Git project. For standalone sessions use `handoff restore --session ...` or `handoff candidates`."
+                );
+                std::process::exit(1);
             };
+            let query = format!(
+                "?project={}",
+                utf8_percent_encode(project, NON_ALPHANUMERIC)
+            );
 
             match client.get(&format!("/handoffs/latest{}", query)).await {
                 Ok(v) => {
@@ -3747,7 +3911,14 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                     .to_string_lossy()
                     .to_string()
             });
-            let project = project.clone().or_else(|| detect_project(Some(&work_dir)));
+            let detected_project = detect_project(Some(&work_dir));
+            if detected_project.is_none() {
+                eprintln!(
+                    "Error: mechanical handoffs require a Git worktree. Use `handoff dump --workstream ...` for standalone sessions."
+                );
+                std::process::exit(1);
+            }
+            let project = project.clone().or(detected_project);
 
             let Some(ref project) = project else {
                 eprintln!("Error: could not detect project. Use --project");
@@ -3843,12 +4014,14 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
 
             let body = json!({
                 "project": project,
+                "scope": "repository",
+                "workstream": project,
                 "branch": branch,
                 "directory": work_dir,
                 "agent": agent.clone().unwrap_or_else(detect_agent),
                 "type": "mechanical",
                 "content": content,
-                "session_id": session.clone().or_else(|| std::env::var("SESSION_ID").ok()),
+                "session_id": detect_session_id(session.as_ref()),
                 "model": model.clone().or_else(detect_model),
                 "host": host.clone().unwrap_or_else(detect_host),
                 "metadata": json!({"cwd": work_dir, "auto": true}),
@@ -3871,12 +4044,20 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         HandoffCommands::List {
             limit,
             project,
+            scope,
+            workstream,
             agent,
             handoff_type,
         } => {
             let mut params: Vec<(&str, String)> = Vec::new();
             if let Some(ref p) = project {
                 params.push(("project", p.clone()));
+            }
+            if let Some(ref value) = scope {
+                params.push(("scope", value.clone()));
+            }
+            if let Some(ref value) = workstream {
+                params.push(("workstream", value.clone()));
             }
             if let Some(ref a) = agent {
                 params.push(("agent", a.clone()));
@@ -3895,37 +4076,53 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             match client.get(&format!("/handoffs?{}", query)).await {
                 Ok(v) => {
                     if let Some(handoffs) = v.get("handoffs").and_then(|h| h.as_array()) {
-                        println!(
-                            "{:>6}  {:<20}  {:<20}  {:<12}  {:<10}  {:<8}  {:<10}  {:>6}",
-                            "ID", "Created", "Project", "Agent", "Type", "Host", "Session", "Size"
-                        );
-                        println!("{}", "-".repeat(100));
-                        for h in handoffs {
-                            let session_display = h
-                                .get("session_id")
-                                .and_then(|s| s.as_str())
-                                .map(|s| &s[..s.len().min(8)])
-                                .unwrap_or("");
-                            let content_len = h
-                                .get("content")
-                                .and_then(|c| c.as_str())
-                                .map(|c| c.len())
-                                .unwrap_or(0);
-                            println!(
-                                "{:>6}  {:<20}  {:<20}  {:<12}  {:<10}  {:<8}  {:<10}  {:>6}",
-                                h.get("id").and_then(|i| i.as_i64()).unwrap_or(0),
-                                h.get("created_at").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("project").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("agent").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("type").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("host").and_then(|s| s.as_str()).unwrap_or(""),
-                                session_display,
-                                content_len,
-                            );
-                        }
+                        print_handoff_rows(handoffs, false);
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Candidates {
+            limit,
+            scope,
+            workstream,
+            agent,
+            since,
+        } => {
+            let mut params: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+            if let Some(ref value) = scope {
+                params.push(("scope", value.clone()));
+            }
+            if let Some(ref value) = workstream {
+                params.push(("workstream", value.clone()));
+            }
+            if let Some(ref value) = agent {
+                params.push(("agent", value.clone()));
+            }
+            if let Some(ref value) = since {
+                params.push(("since", value.clone()));
+            }
+            let query = params
+                .iter()
+                .map(|(key, value)| {
+                    format!("{}={}", key, utf8_percent_encode(value, NON_ALPHANUMERIC))
+                })
+                .collect::<Vec<_>>()
+                .join("&");
+
+            match client.get(&format!("/handoffs/candidates?{query}")).await {
+                Ok(value) => {
+                    if let Some(handoffs) = value.get("handoffs").and_then(|rows| rows.as_array()) {
+                        if handoffs.is_empty() {
+                            eprintln!("No session handoff candidates found");
+                        } else {
+                            print_handoff_rows(handoffs, true);
+                            eprintln!("Restore exactly with: kleos-cli handoff restore --id <ID>");
+                        }
+                    }
+                }
+                Err(error) => eprintln!("Error: {}", error),
             }
         }
 
@@ -4000,6 +4197,44 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         HandoffCommands::Atoms { cmd } => {
             handle_atom_command(client, cmd).await;
         }
+    }
+}
+
+/// Prints identity-first handoff rows so standalone candidates remain
+/// distinguishable even when they have no repository directory.
+fn print_handoff_rows(handoffs: &[Value], full_session: bool) {
+    println!("ID\tCreated\tScope\tWorkstream\tTitle\tSession\tType\tAgent");
+    for handoff in handoffs {
+        let session = handoff
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let session_display = if full_session {
+            session.to_string()
+        } else {
+            session.chars().take(12).collect()
+        };
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            handoff.get("id").and_then(Value::as_i64).unwrap_or(0),
+            handoff
+                .get("created_at")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            handoff
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("legacy"),
+            handoff
+                .get("workstream")
+                .and_then(Value::as_str)
+                .or_else(|| handoff.get("project").and_then(Value::as_str))
+                .unwrap_or(""),
+            handoff.get("title").and_then(Value::as_str).unwrap_or(""),
+            session_display,
+            handoff.get("type").and_then(Value::as_str).unwrap_or(""),
+            handoff.get("agent").and_then(Value::as_str).unwrap_or(""),
+        );
     }
 }
 
@@ -4956,7 +5191,8 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_safe_materialization_path, resolve_credential_authority_url, sanitize_download_name,
+        detect_project_at_path, dump_scope, is_safe_materialization_path, project_from_remote,
+        resolve_credential_authority_url, restore_requires_exact_session, sanitize_download_name,
     };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
 
@@ -5022,6 +5258,60 @@ mod tests {
         assert!(sanitize_download_name(".").is_none());
         assert!(sanitize_download_name("..").is_none());
         assert!(sanitize_download_name("/").is_none());
+    }
+
+    /// Non-Git folders, including date-slug session directories, never become
+    /// inferred project identities.
+    #[test]
+    fn project_detection_rejects_ordinary_directories() {
+        let unique = format!(
+            "kleos-handoff-non-git-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&path).expect("create isolated test directory");
+        assert_eq!(detect_project_at_path(&path), None);
+        std::fs::remove_dir(&path).expect("remove isolated empty test directory");
+    }
+
+    /// Repository names are parsed consistently from common Git remote forms.
+    #[test]
+    fn project_detection_parses_remote_names() {
+        assert_eq!(
+            project_from_remote("https://github.com/example/Kleos.git").as_deref(),
+            Some("Kleos")
+        );
+        assert_eq!(
+            project_from_remote("git@github.com:example/Kleos.git").as_deref(),
+            Some("Kleos")
+        );
+        assert_eq!(project_from_remote(""), None);
+    }
+
+    /// A project label does not make a non-Git restore safe; callers outside
+    /// Git still need an exact handoff id or stable session id.
+    #[test]
+    fn standalone_restore_requires_stable_session() {
+        assert!(restore_requires_exact_session(false, None));
+        assert!(!restore_requires_exact_session(false, Some("thread-123")));
+        assert!(!restore_requires_exact_session(true, None));
+    }
+
+    /// Dump scope depends on Git detection, not an explicit compatibility
+    /// project label supplied while outside a worktree.
+    #[test]
+    fn standalone_dump_scope_cannot_be_overridden_by_project_label() {
+        let explicit_project = Some("legacy-project".to_string());
+        let detected_project: Option<String> = None;
+        let resolved_project = explicit_project.or(detected_project.clone());
+
+        assert_eq!(resolved_project.as_deref(), Some("legacy-project"));
+        assert_eq!(dump_scope(detected_project.is_some()), "standalone");
+        assert_eq!(dump_scope(true), "repository");
     }
 
     /// PHYLAXD_URL input wins over legacy CREDD_URL input.

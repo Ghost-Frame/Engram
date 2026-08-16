@@ -20,6 +20,9 @@ pub struct Handoff {
     pub id: i64,
     pub created_at: String,
     pub project: String,
+    pub scope: String,
+    pub workstream: String,
+    pub title: Option<String>,
     pub branch: Option<String>,
     pub directory: Option<String>,
     pub agent: String,
@@ -36,7 +39,11 @@ pub struct Handoff {
 /// Input payload for [`HandoffsDb::store`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreParams {
+    #[serde(default)]
     pub project: String,
+    pub scope: Option<String>,
+    pub workstream: Option<String>,
+    pub title: Option<String>,
     pub branch: Option<String>,
     pub directory: Option<String>,
     pub agent: Option<String>,
@@ -53,6 +60,8 @@ pub struct StoreParams {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct HandoffFilters {
     pub project: Option<String>,
+    pub scope: Option<String>,
+    pub workstream: Option<String>,
     pub agent: Option<String>,
     #[serde(rename = "type")]
     pub handoff_type: Option<String>,
@@ -170,6 +179,7 @@ impl HandoffsDb {
     /// content hash within the same project, and spawns a throttled
     /// background auto-GC pass when the user's row count exceeds 500.
     pub async fn store(&self, params: StoreParams, user_id: i64) -> Result<StoreResult> {
+        let params = normalize_store_params(params)?;
         let handoff_type = params
             .handoff_type
             .clone()
@@ -221,6 +231,9 @@ impl HandoffsDb {
 
         let branch = params.branch.clone();
         let directory = params.directory.clone();
+        let scope = params.scope.clone().expect("normalized scope");
+        let workstream = params.workstream.clone().expect("normalized workstream");
+        let title = params.title.clone();
         let content = params.content.clone();
         let session_id = params.session_id.clone();
         let model = params.model.clone();
@@ -230,11 +243,14 @@ impl HandoffsDb {
         let new_id: i64 = conn
             .interact(move |conn| {
                 conn.execute(
-                    "INSERT INTO handoffs (user_id, project, branch, directory, agent, type, content, metadata, session_id, model, host, content_hash)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    "INSERT INTO handoffs (user_id, project, scope, workstream, title, branch, directory, agent, type, content, metadata, session_id, model, host, content_hash)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     rusqlite::params![
                         user_id,
                         project2,
+                        scope,
+                        workstream,
+                        title,
                         branch,
                         directory,
                         agent,
@@ -253,7 +269,6 @@ impl HandoffsDb {
             .map_err(|e| EngError::Internal(format!("handoffs writer interact failed: {e}")))??;
 
         let writer_clone = self.writer();
-        let project3 = project.clone();
         let gc_sem = Arc::clone(&self.gc_sem);
         tokio::spawn(async move {
             // Throttle concurrent auto-GC tasks (M-005).
@@ -290,10 +305,7 @@ impl HandoffsDb {
                 // Reuse the same writer conn -- acquiring a second from the
                 // single-writer pool while still holding the first deadlocks
                 // the writer indefinitely.
-                if let Err(e) = conn
-                    .interact(move |c| run_tiered_gc(c, &project3, user_id))
-                    .await
-                {
+                if let Err(e) = conn.interact(move |c| run_tiered_gc(c, user_id)).await {
                     error!("handoffs auto_gc failed: {}", e);
                 }
             }
@@ -322,6 +334,7 @@ impl HandoffsDb {
         pre_extracted_atoms: Option<Vec<atoms::ExtractedAtom>>,
         sidecar_url: Option<&str>,
     ) -> Result<StoreResult> {
+        let params = normalize_store_params(params)?;
         let result = self.store(params.clone(), user_id).await?;
 
         // Mechanical handoffs are git-state dumps; skip atom extraction.
@@ -342,8 +355,9 @@ impl HandoffsDb {
 
         if !extracted.is_empty() {
             let count = extracted.len();
+            let workstream = params.workstream.as_deref().expect("normalized workstream");
             if let Err(e) = self
-                .store_atoms(handoff_id, &params.project, &extracted, user_id)
+                .store_atoms(handoff_id, workstream, &extracted, user_id)
                 .await
             {
                 warn!(
@@ -362,78 +376,28 @@ impl HandoffsDb {
     /// Lists handoffs for a user, applying the given filters (AND-joined)
     /// and ordering by `created_at` descending.
     pub async fn list(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
-        let limit = filters.limit.unwrap_or(20);
+        let limit = filters.limit.unwrap_or(20).clamp(1, 500);
         let conn =
             self.reader().get().await.map_err(|e| {
                 EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
             })?;
 
         conn.interact(move |conn| {
-            // Tenant scoping always first; subsequent filters are AND-joined.
-            let mut conditions: Vec<String> = vec!["user_id = ?1".to_string()];
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
-                vec![Box::new(user_id) as Box<dyn rusqlite::types::ToSql>];
-
-            if let Some(ref p) = filters.project {
-                conditions.push(format!("project = ?{}", params.len() + 1));
-                params.push(Box::new(p.clone()));
-            }
-            if let Some(ref a) = filters.agent {
-                conditions.push(format!("agent = ?{}", params.len() + 1));
-                params.push(Box::new(a.clone()));
-            }
-            if let Some(ref t) = filters.handoff_type {
-                conditions.push(format!("type = ?{}", params.len() + 1));
-                params.push(Box::new(t.clone()));
-            }
-            if let Some(ref m) = filters.model {
-                conditions.push(format!("model = ?{}", params.len() + 1));
-                params.push(Box::new(m.clone()));
-            }
-            if let Some(ref s) = filters.session_id {
-                conditions.push(format!("session_id = ?{}", params.len() + 1));
-                params.push(Box::new(s.clone()));
-            }
-            if let Some(ref h) = filters.host {
-                conditions.push(format!("host = ?{}", params.len() + 1));
-                params.push(Box::new(h.clone()));
-            }
-            if let Some(ref since) = filters.since {
-                conditions.push(format!("created_at >= ?{}", params.len() + 1));
-                params.push(Box::new(since.clone()));
-            }
-
-            let where_clause = format!("WHERE {}", conditions.join(" AND "));
+            let (where_clause, params) = build_handoff_filter_clause(&filters, user_id);
 
             let sql = format!(
-                "SELECT id, created_at, project, branch, directory, agent, type, content, metadata, session_id, model, host, content_hash
-                 FROM handoffs {} ORDER BY created_at DESC LIMIT {}",
+                "SELECT id, created_at, project, scope,
+                        COALESCE(NULLIF(workstream, ''), project), title,
+                        branch, directory, agent, type, content, metadata,
+                        session_id, model, host, content_hash
+                 FROM handoffs {} ORDER BY created_at DESC, id DESC LIMIT {}",
                 where_clause, limit
             );
 
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params_refs.as_slice(), |row| {
-                let metadata_str: Option<String> = row.get(8)?;
-                let metadata = metadata_str
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str(s).ok());
-                Ok(Handoff {
-                    id: row.get(0)?,
-                    created_at: row.get(1)?,
-                    project: row.get(2)?,
-                    branch: row.get(3)?,
-                    directory: row.get(4)?,
-                    agent: row.get(5)?,
-                    handoff_type: row.get(6)?,
-                    content: row.get(7)?,
-                    metadata,
-                    session_id: row.get(9)?,
-                    model: row.get(10)?,
-                    host: row.get(11)?,
-                    content_hash: row.get(12)?,
-                })
-            })?;
+            let rows = stmt.query_map(params_refs.as_slice(), map_handoff_row)?;
 
             let mut results = Vec::new();
             for row in rows {
@@ -445,31 +409,88 @@ impl HandoffsDb {
         .map_err(|e| EngError::Internal(format!("handoffs list interact failed: {e}")))?
     }
 
-    /// Returns the most recent handoff matching `filters`. If a `project`
-    /// filter is set and yields no results, falls back to the most recent
-    /// handoff across all projects for the user.
+    /// Returns the most recent handoff matching `filters` without weakening
+    /// those filters when no exact match exists.
     pub async fn get_latest(
         &self,
         filters: HandoffFilters,
         user_id: i64,
     ) -> Result<Option<Handoff>> {
-        let has_project = filters.project.is_some();
         let mut f = filters;
         f.limit = Some(1);
-
         let results = self.list(f.clone(), user_id).await?;
-        if !results.is_empty() {
-            return Ok(results.into_iter().next());
-        }
+        Ok(results.into_iter().next())
+    }
 
-        if has_project {
-            let mut fallback = f;
-            fallback.project = None;
-            let results = self.list(fallback, user_id).await?;
-            return Ok(results.into_iter().next());
-        }
+    /// Fetches one handoff by exact id while preserving user isolation.
+    pub async fn get(&self, id: i64, user_id: i64) -> Result<Option<Handoff>> {
+        let conn =
+            self.reader().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
 
-        Ok(None)
+        conn.interact(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, created_at, project, scope,
+                        COALESCE(NULLIF(workstream, ''), project), title,
+                        branch, directory, agent, type, content, metadata,
+                        session_id, model, host, content_hash
+                 FROM handoffs WHERE id = ?1 AND user_id = ?2",
+            )?;
+            match stmt.query_row(rusqlite::params![id, user_id], map_handoff_row) {
+                Ok(handoff) => Ok::<Option<Handoff>, EngError>(Some(handoff)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("handoffs get interact failed: {e}")))?
+    }
+
+    /// Lists the newest handoff for each stable session identity matching the
+    /// filters, suitable for ambiguity-safe restore selection.
+    pub async fn candidates(&self, filters: HandoffFilters, user_id: i64) -> Result<Vec<Handoff>> {
+        let limit = filters.limit.unwrap_or(20).clamp(1, 100);
+        let conn =
+            self.reader().get().await.map_err(|e| {
+                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
+            })?;
+
+        conn.interact(move |conn| {
+            let (where_clause, params) = build_handoff_filter_clause(&filters, user_id);
+            let sql = format!(
+                "WITH ranked AS (
+                     SELECT id, created_at, project, scope,
+                            COALESCE(NULLIF(workstream, ''), project) AS workstream,
+                            title, branch, directory, agent, type, content,
+                            metadata, session_id, model, host, content_hash,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY scope,
+                                             COALESCE(NULLIF(workstream, ''), project),
+                                             session_id
+                                ORDER BY created_at DESC, id DESC
+                            ) AS session_rank
+                     FROM handoffs {where_clause}
+                       AND session_id IS NOT NULL AND TRIM(session_id) <> ''
+                 )
+                 SELECT id, created_at, project, scope, workstream, title,
+                        branch, directory, agent, type, content, metadata,
+                        session_id, model, host, content_hash
+                 FROM ranked WHERE session_rank = 1
+                 ORDER BY created_at DESC, id DESC LIMIT {limit}"
+            );
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|param| param.as_ref()).collect();
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_refs.as_slice(), map_handoff_row)?;
+            let mut candidates = Vec::new();
+            for row in rows {
+                candidates.push(row?);
+            }
+            Ok::<Vec<Handoff>, EngError>(candidates)
+        })
+        .await
+        .map_err(|e| EngError::Internal(format!("handoffs candidates interact failed: {e}")))?
     }
 
     /// Full-text search over handoffs, scoped to the caller and optionally a
@@ -669,9 +690,10 @@ impl HandoffsDb {
     }
 
     /// Garbage-collects a user's handoffs. When `keep` is set, retains only
-    /// the newest `keep` rows per project. Otherwise, when `tiered` is true,
-    /// applies age-based tiered retention (mechanical: 7 days, manual/auto:
-    /// 90 days) plus a 50-row-per-project cap.
+    /// the newest `keep` rows per identity group. Otherwise, when `tiered` is
+    /// true, applies age-based retention plus a 50-row-per-identity cap.
+    /// Repository and legacy groups use project; standalone groups use the
+    /// full scope, workstream, and stable-session identity tuple.
     pub async fn gc(&self, tiered: bool, keep: Option<i64>, user_id: i64) -> Result<GcResult> {
         let conn =
             self.writer().get().await.map_err(|e| {
@@ -686,21 +708,7 @@ impl HandoffsDb {
             )?;
 
             if let Some(n) = keep {
-                let projects: Vec<String> = {
-                    let mut stmt = conn.prepare(
-                        "SELECT DISTINCT project FROM handoffs WHERE user_id = ?1",
-                    )?;
-                    let rows = stmt.query_map(rusqlite::params![user_id], |r| r.get(0))?;
-                    rows.collect::<rusqlite::Result<Vec<_>>>()?
-                };
-                for project in projects {
-                    conn.execute(
-                        "DELETE FROM handoffs WHERE user_id = ?3 AND project = ?1 AND id NOT IN (
-                             SELECT id FROM handoffs WHERE user_id = ?3 AND project = ?1 ORDER BY created_at DESC LIMIT ?2
-                         )",
-                        rusqlite::params![project, n, user_id],
-                    )?;
-                }
+                prune_identity_groups(conn, user_id, n.max(1))?;
             } else if tiered {
                 conn.execute(
                     "DELETE FROM handoffs WHERE user_id = ?1 AND type = 'mechanical' AND created_at < datetime('now', '-7 days')",
@@ -711,22 +719,7 @@ impl HandoffsDb {
                     rusqlite::params![user_id],
                 )?;
 
-                let projects: Vec<String> = {
-                    let mut stmt = conn.prepare(
-                        "SELECT DISTINCT project FROM handoffs WHERE user_id = ?1",
-                    )?;
-                    let rows = stmt.query_map(rusqlite::params![user_id], |r| r.get(0))?;
-                    rows.collect::<rusqlite::Result<Vec<_>>>()?
-                };
-
-                for project in projects {
-                    conn.execute(
-                        "DELETE FROM handoffs WHERE user_id = ?2 AND project = ?1 AND id NOT IN (
-                             SELECT id FROM handoffs WHERE user_id = ?2 AND project = ?1 ORDER BY created_at DESC LIMIT 50
-                         )",
-                        rusqlite::params![project, user_id],
-                    )?;
-                }
+                prune_identity_groups(conn, user_id, 50)?;
             }
 
             // Intentionally NOT running VACUUM here. VACUUM takes a whole-DB
@@ -1055,6 +1048,156 @@ impl HandoffsDb {
     }
 }
 
+/// Builds a user-scoped SQL filter and owned bind values shared by list and
+/// candidate queries.
+fn build_handoff_filter_clause(
+    filters: &HandoffFilters,
+    user_id: i64,
+) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+    let mut conditions = vec!["user_id = ?1".to_string()];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        vec![Box::new(user_id) as Box<dyn rusqlite::types::ToSql>];
+
+    if let Some(ref project) = filters.project {
+        conditions.push(format!("project = ?{}", params.len() + 1));
+        params.push(Box::new(project.clone()));
+    }
+    if let Some(ref scope) = filters.scope {
+        conditions.push(format!("scope = ?{}", params.len() + 1));
+        params.push(Box::new(scope.clone()));
+    }
+    if let Some(ref workstream) = filters.workstream {
+        conditions.push(format!(
+            "COALESCE(NULLIF(workstream, ''), project) = ?{}",
+            params.len() + 1
+        ));
+        params.push(Box::new(workstream.clone()));
+    }
+    if let Some(ref agent) = filters.agent {
+        conditions.push(format!("agent = ?{}", params.len() + 1));
+        params.push(Box::new(agent.clone()));
+    }
+    if let Some(ref handoff_type) = filters.handoff_type {
+        conditions.push(format!("type = ?{}", params.len() + 1));
+        params.push(Box::new(handoff_type.clone()));
+    }
+    if let Some(ref model) = filters.model {
+        conditions.push(format!("model = ?{}", params.len() + 1));
+        params.push(Box::new(model.clone()));
+    }
+    if let Some(ref session_id) = filters.session_id {
+        conditions.push(format!("session_id = ?{}", params.len() + 1));
+        params.push(Box::new(session_id.clone()));
+    }
+    if let Some(ref host) = filters.host {
+        conditions.push(format!("host = ?{}", params.len() + 1));
+        params.push(Box::new(host.clone()));
+    }
+    if let Some(ref since) = filters.since {
+        conditions.push(format!("created_at >= ?{}", params.len() + 1));
+        params.push(Box::new(since.clone()));
+    }
+
+    (format!("WHERE {}", conditions.join(" AND ")), params)
+}
+
+/// Normalizes new handoff identity fields and rejects ambiguous standalone
+/// writes before they reach SQLite.
+fn normalize_store_params(mut params: StoreParams) -> Result<StoreParams> {
+    if params.content.trim().is_empty() {
+        return Err(EngError::InvalidInput(
+            "handoff content must not be empty".to_string(),
+        ));
+    }
+
+    params.project = params.project.trim().to_string();
+    params.scope = trimmed_nonempty(params.scope);
+    params.workstream = trimmed_nonempty(params.workstream);
+    params.title = trimmed_nonempty(params.title);
+    params.session_id = trimmed_nonempty(params.session_id);
+    params.handoff_type = trimmed_nonempty(params.handoff_type);
+    params.agent = trimmed_nonempty(params.agent);
+
+    let scope = params.scope.clone().unwrap_or_else(|| {
+        if params.project.is_empty() {
+            "standalone".to_string()
+        } else {
+            "repository".to_string()
+        }
+    });
+    if scope != "repository" && scope != "standalone" {
+        return Err(EngError::InvalidInput(format!(
+            "handoff scope must be 'repository' or 'standalone', got '{scope}'"
+        )));
+    }
+
+    if scope == "repository" && params.project.is_empty() {
+        return Err(EngError::InvalidInput(
+            "repository handoffs require a non-empty project".to_string(),
+        ));
+    }
+    let workstream = params
+        .workstream
+        .clone()
+        .or_else(|| (scope == "repository").then(|| params.project.clone()))
+        .ok_or_else(|| {
+            EngError::InvalidInput("standalone handoffs require a non-empty workstream".to_string())
+        })?;
+    if scope == "standalone" {
+        if params.session_id.is_none() {
+            return Err(EngError::InvalidInput(
+                "standalone handoffs require a stable session_id".to_string(),
+            ));
+        }
+        if params.handoff_type.as_deref() == Some("mechanical") {
+            return Err(EngError::InvalidInput(
+                "mechanical handoffs require a Git repository".to_string(),
+            ));
+        }
+        // The compatibility column remains populated for old readers, but it
+        // is no longer used as the standalone session identity.
+        params.project = workstream.clone();
+    }
+
+    params.scope = Some(scope);
+    params.workstream = Some(workstream);
+    Ok(params)
+}
+
+/// Trims an optional string and converts empty values to `None`.
+fn trimmed_nonempty(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+/// Maps the shared handoff SELECT projection into a domain row.
+fn map_handoff_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Handoff> {
+    let metadata_str: Option<String> = row.get(11)?;
+    let metadata = metadata_str
+        .as_deref()
+        .and_then(|value| serde_json::from_str(value).ok());
+    Ok(Handoff {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        project: row.get(2)?,
+        scope: row.get(3)?,
+        workstream: row.get(4)?,
+        title: row.get(5)?,
+        branch: row.get(6)?,
+        directory: row.get(7)?,
+        agent: row.get(8)?,
+        handoff_type: row.get(9)?,
+        content: row.get(10)?,
+        metadata,
+        session_id: row.get(12)?,
+        model: row.get(13)?,
+        host: row.get(14)?,
+        content_hash: row.get(15)?,
+    })
+}
+
 /// Computes a 16-hex-char SHA-256 prefix of `content`, used for mechanical
 /// handoff deduplication. Mechanical content has volatile timestamp lines
 /// stripped before hashing so identical git-state dumps hash the same.
@@ -1093,13 +1236,9 @@ fn strip_mechanical_timestamps(content: &str) -> String {
     lines.join("\n")
 }
 
-/// Applies tiered age-based retention (mechanical: 7 days, manual/auto: 90
-/// days) plus a 50-row-per-project cap, for a single user/project pair.
-fn run_tiered_gc(
-    conn: &mut rusqlite::Connection,
-    project: &str,
-    user_id: i64,
-) -> rusqlite::Result<()> {
+/// Applies tiered age-based retention plus a per-identity checkpoint cap for a
+/// single user.
+fn run_tiered_gc(conn: &mut rusqlite::Connection, user_id: i64) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM handoffs WHERE user_id = ?1 AND type = 'mechanical' AND created_at < datetime('now', '-7 days')",
         rusqlite::params![user_id],
@@ -1108,11 +1247,37 @@ fn run_tiered_gc(
         "DELETE FROM handoffs WHERE user_id = ?1 AND type IN ('manual', 'auto') AND created_at < datetime('now', '-90 days')",
         rusqlite::params![user_id],
     )?;
+    prune_identity_groups(conn, user_id, 50)?;
+    Ok(())
+}
+
+/// Prunes checkpoints by repository project or standalone session identity,
+/// preventing one busy workstream from deleting distinct standalone sessions.
+fn prune_identity_groups(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    keep: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM handoffs WHERE user_id = ?2 AND project = ?1 AND id NOT IN (
-             SELECT id FROM handoffs WHERE user_id = ?2 AND project = ?1 ORDER BY created_at DESC LIMIT 50
+        "DELETE FROM handoffs WHERE id IN (
+             SELECT id FROM (
+                 SELECT id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY scope,
+                                         CASE WHEN scope = 'standalone'
+                                             THEN COALESCE(NULLIF(workstream, ''), project)
+                                             ELSE project END,
+                                         CASE WHEN scope = 'standalone'
+                                             THEN COALESCE(session_id, '')
+                                             ELSE '' END
+                            ORDER BY created_at DESC, id DESC
+                        ) AS identity_rank
+                 FROM handoffs
+                 WHERE user_id = ?1
+             ) ranked
+             WHERE identity_rank > ?2
          )",
-        rusqlite::params![project, user_id],
+        rusqlite::params![user_id, keep],
     )?;
     Ok(())
 }
@@ -1126,6 +1291,9 @@ mod tests {
     fn store_params(project: &str, content: &str) -> StoreParams {
         StoreParams {
             project: project.to_string(),
+            scope: None,
+            workstream: None,
+            title: None,
             branch: None,
             directory: None,
             agent: Some("test-agent".to_string()),
@@ -1180,6 +1348,176 @@ mod tests {
         assert_eq!(bob[0].id, b);
         assert!(alice.iter().all(|h| h.id != b));
         assert!(bob.iter().all(|h| h.id != a));
+    }
+
+    #[tokio::test]
+    /// Standalone writes persist explicit identity without treating directory
+    /// provenance as a project.
+    async fn standalone_identity_is_first_class() {
+        let db = fresh_db().await;
+        let mut params = store_params("", "continue the remote-control cleanup");
+        params.scope = Some("standalone".to_string());
+        params.workstream = Some("kodak-session-handoffs".to_string());
+        params.title = Some("Organize orphan sessions".to_string());
+        params.session_id = Some("thread-123".to_string());
+        params.directory = Some("/tmp/generated-date-slug".to_string());
+
+        let id = db
+            .store(params, 7)
+            .await
+            .expect("store standalone")
+            .id
+            .unwrap();
+        let handoff = db.get(id, 7).await.expect("get standalone").unwrap();
+
+        assert_eq!(handoff.scope, "standalone");
+        assert_eq!(handoff.workstream, "kodak-session-handoffs");
+        assert_eq!(handoff.project, "kodak-session-handoffs");
+        assert_eq!(handoff.session_id.as_deref(), Some("thread-123"));
+        assert_eq!(handoff.title.as_deref(), Some("Organize orphan sessions"));
+        assert_eq!(
+            handoff.directory.as_deref(),
+            Some("/tmp/generated-date-slug")
+        );
+    }
+
+    #[tokio::test]
+    /// Standalone handoffs reject missing stable session identity and
+    /// repository-only mechanical snapshots.
+    async fn standalone_identity_rejects_ambiguous_writes() {
+        let db = fresh_db().await;
+        let mut missing_session = store_params("", "semantic state");
+        missing_session.scope = Some("standalone".to_string());
+        missing_session.workstream = Some("orphan-session".to_string());
+        missing_session.session_id = None;
+        let error = db
+            .store(missing_session, 7)
+            .await
+            .expect_err("session required");
+        assert!(matches!(error, EngError::InvalidInput(_)));
+
+        let mut overloaded_project = store_params("date-slug-directory", "semantic state");
+        overloaded_project.scope = Some("standalone".to_string());
+        overloaded_project.workstream = None;
+        overloaded_project.session_id = Some("thread-123".to_string());
+        let error = db
+            .store(overloaded_project, 7)
+            .await
+            .expect_err("standalone workstream must be explicit");
+        assert!(matches!(error, EngError::InvalidInput(_)));
+
+        let mut mechanical = store_params("", "git status");
+        mechanical.scope = Some("standalone".to_string());
+        mechanical.workstream = Some("orphan-session".to_string());
+        mechanical.handoff_type = Some("mechanical".to_string());
+        let error = db.store(mechanical, 7).await.expect_err("Git required");
+        assert!(matches!(error, EngError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    /// Legacy project-only callers are normalized to repository scope and use
+    /// their project as the logical workstream.
+    async fn project_only_writes_remain_compatible() {
+        let db = fresh_db().await;
+        let id = db
+            .store(store_params("kleos", "repository state"), 7)
+            .await
+            .expect("store repository")
+            .id
+            .unwrap();
+        let handoff = db.get(id, 7).await.expect("get repository").unwrap();
+        assert_eq!(handoff.scope, "repository");
+        assert_eq!(handoff.workstream, "kleos");
+    }
+
+    #[tokio::test]
+    /// Latest never falls back to a handoff outside the requested project.
+    async fn latest_preserves_exact_filters() {
+        let db = fresh_db().await;
+        db.store(store_params("other", "wrong session"), 7)
+            .await
+            .expect("store other");
+        let latest = db
+            .get_latest(
+                HandoffFilters {
+                    project: Some("missing".to_string()),
+                    ..HandoffFilters::default()
+                },
+                7,
+            )
+            .await
+            .expect("latest");
+        assert!(latest.is_none());
+    }
+
+    #[tokio::test]
+    /// Candidate listing returns only the newest checkpoint per stable session
+    /// and never exposes another user's candidate.
+    async fn candidates_group_by_session_and_user() {
+        let db = fresh_db().await;
+        let mut first = store_params("", "first checkpoint");
+        first.scope = Some("standalone".to_string());
+        first.workstream = Some("remote-control".to_string());
+        first.session_id = Some("thread-a".to_string());
+        db.store(first, 7).await.expect("first");
+
+        let mut second = store_params("", "newest checkpoint");
+        second.scope = Some("standalone".to_string());
+        second.workstream = Some("remote-control".to_string());
+        second.session_id = Some("thread-a".to_string());
+        db.store(second, 7).await.expect("second");
+
+        let mut other_session = store_params("", "different checkpoint");
+        other_session.scope = Some("standalone".to_string());
+        other_session.workstream = Some("remote-control".to_string());
+        other_session.session_id = Some("thread-b".to_string());
+        db.store(other_session, 7).await.expect("other session");
+
+        let mut other_user = store_params("", "private checkpoint");
+        other_user.scope = Some("standalone".to_string());
+        other_user.workstream = Some("remote-control".to_string());
+        other_user.session_id = Some("thread-private".to_string());
+        db.store(other_user, 99).await.expect("other user");
+
+        let candidates = db
+            .candidates(
+                HandoffFilters {
+                    scope: Some("standalone".to_string()),
+                    workstream: Some("remote-control".to_string()),
+                    ..HandoffFilters::default()
+                },
+                7,
+            )
+            .await
+            .expect("candidates");
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].session_id.as_deref(), Some("thread-b"));
+        assert_eq!(candidates[1].content, "newest checkpoint");
+        assert!(candidates
+            .iter()
+            .all(|handoff| { handoff.session_id.as_deref() != Some("thread-private") }));
+    }
+
+    #[tokio::test]
+    /// Candidate grouping uses the full identity tuple, so a reused session id
+    /// in two workstreams remains two selectable candidates.
+    async fn candidates_preserve_same_session_across_workstreams() {
+        let db = fresh_db().await;
+        for workstream in ["remote-control", "memory-design"] {
+            let mut params = store_params("", workstream);
+            params.scope = Some("standalone".to_string());
+            params.workstream = Some(workstream.to_string());
+            params.session_id = Some("thread-reused".to_string());
+            db.store(params, 7).await.expect("store candidate");
+        }
+
+        let candidates = db
+            .candidates(HandoffFilters::default(), 7)
+            .await
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 2);
+        assert_ne!(candidates[0].workstream, candidates[1].workstream);
     }
 
     #[tokio::test]
@@ -1253,6 +1591,54 @@ mod tests {
 
         let alice = db.list(HandoffFilters::default(), 7).await.expect("list a");
         assert_eq!(alice.len(), 5, "alice handoffs untouched by bob's gc");
+    }
+
+    #[tokio::test]
+    /// Retention treats standalone sessions in one workstream as distinct
+    /// identities instead of pruning them as one synthetic project.
+    async fn gc_preserves_distinct_standalone_sessions() {
+        let db = fresh_db().await;
+        for session_id in ["thread-a", "thread-b"] {
+            for checkpoint in 0..3 {
+                let mut params = store_params("", &format!("{session_id}-{checkpoint}"));
+                params.scope = Some("standalone".to_string());
+                params.workstream = Some("shared-workstream".to_string());
+                params.session_id = Some(session_id.to_string());
+                db.store(params, 7).await.expect("store checkpoint");
+            }
+        }
+
+        let result = db.gc(false, Some(1), 7).await.expect("gc standalone");
+        assert_eq!(result.remaining, 2);
+        let candidates = db
+            .candidates(HandoffFilters::default(), 7)
+            .await
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[tokio::test]
+    /// Retention includes workstream in standalone identity, preventing a
+    /// reused session id from causing cross-workstream checkpoint deletion.
+    async fn gc_preserves_same_session_across_workstreams() {
+        let db = fresh_db().await;
+        for workstream in ["remote-control", "memory-design"] {
+            for checkpoint in 0..3 {
+                let mut params = store_params("", &format!("{workstream}-{checkpoint}"));
+                params.scope = Some("standalone".to_string());
+                params.workstream = Some(workstream.to_string());
+                params.session_id = Some("thread-reused".to_string());
+                db.store(params, 7).await.expect("store checkpoint");
+            }
+        }
+
+        let result = db.gc(false, Some(1), 7).await.expect("gc standalone");
+        assert_eq!(result.remaining, 2);
+        let candidates = db
+            .candidates(HandoffFilters::default(), 7)
+            .await
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 2);
     }
 
     #[tokio::test]
