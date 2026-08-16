@@ -361,25 +361,41 @@ pub static ROUTES: &[Route] = &[
         Write,
         "handoffs.store",
         "/handoffs",
-        "Store a new handoff dump.",
+        "Store a repository or standalone handoff with stable session identity.",
         ["handoffs.dump"],
-        r#"{"type":"object","properties":{"project":{"type":"string"},"content":{"type":"string"},"agent":{"type":"string"},"type":{"type":"string"},"branch":{"type":"string"},"directory":{"type":"string"},"session_id":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"metadata":{"type":"object"},"atoms":{"type":"array","items":{"type":"object"}}},"required":["content","project"]}"#
+        r#"{"type":"object","properties":{"project":{"type":"string"},"scope":{"type":"string","enum":["repository","standalone"]},"workstream":{"type":"string","minLength":1},"title":{"type":"string"},"content":{"type":"string","minLength":1},"agent":{"type":"string"},"type":{"type":"string"},"branch":{"type":"string"},"directory":{"type":"string"},"session_id":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"metadata":{"type":"object"},"atoms":{"type":"array","items":{"type":"object"}}},"required":["content"]}"#
     ),
     route!(
         Get,
         Read,
         "handoffs.list",
         "/handoffs",
-        "List handoffs.",
-        r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+        "List handoffs by exact repository, scope, workstream, or session filters.",
+        r#"{"type": "object", "properties": {"project": {"type":"string"}, "scope":{"type":"string","enum":["legacy","repository","standalone"]}, "workstream":{"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
     ),
     route!(
         Get,
         Read,
         "handoffs.latest",
         "/handoffs/latest",
-        "Fetch the most recent handoff.",
-        r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+        "Fetch the most recent exact filter match without cross-project fallback.",
+        r#"{"type": "object", "properties": {"project": {"type":"string"}, "scope":{"type":"string","enum":["legacy","repository","standalone"]}, "workstream":{"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "handoffs.get",
+        "/handoffs/{id}",
+        "Fetch one exact caller-owned handoff by id.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "handoffs.candidates",
+        "/handoffs/candidates",
+        "List the newest checkpoint for each stable session identity.",
+        r#"{"type":"object","properties":{"scope":{"type":"string","enum":["legacy","repository","standalone"]},"workstream":{"type":"string"},"project":{"type":"string"},"agent":{"type":"string"},"type":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"since":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     route!(
         Get,

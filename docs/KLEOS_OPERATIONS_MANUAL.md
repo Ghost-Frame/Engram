@@ -386,20 +386,40 @@ tenant.
 
 ### Handoffs
 
-#### `kleos-cli handoff dump [--project P] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
+Handoff identity has three independent parts:
+
+- `scope`: `repository` or `standalone` for new writes; migrated rows retain
+  `legacy`.
+- `workstream`: the logical subject that groups related sessions.
+- `session_id`: the stable identity of one agent thread within a workstream.
+
+`project` remains a compatibility and repository label. `directory` is
+provenance only and is never promoted to identity outside a Git worktree.
+
+#### `kleos-cli handoff dump [--project P] [--workstream W] [--title TEXT] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
 
 - Stores a handoff via `POST /handoffs`.
 - If `--content` is omitted, reads stdin.
-- Auto-detects project from `SESSION_HANDOFF_PROJECT`, git origin, or cwd name.
+- Inside Git, detects a repository project from `SESSION_HANDOFF_PROJECT`, the
+  origin URL, or the Git root name.
+- Outside Git, stores a semantic `standalone` handoff and requires a logical
+  workstream plus a stable session id. The CLI resolves session identity from
+  `--session`, `SESSION_ID`, or `CODEX_THREAD_ID`.
+- `SESSION_HANDOFF_WORKSTREAM` supplies a reusable default workstream.
 
 #### `kleos-cli handoff restore [filters...]`
 
-- Calls `GET /handoffs`.
+- `--id ID` calls `GET /handoffs/{id}` for an exact restore.
+- Filtered restore calls `GET /handoffs`.
 - Prints only the handoff content bodies.
+- Outside Git, restore requires an exact handoff id or stable session id. It
+  never guesses from the global newest row.
 
 #### `kleos-cli handoff latest [--project P] [--dir PATH]`
 
 - Calls `GET /handoffs/latest`.
+- Requires a repository project. A missing exact project match returns not
+  found instead of falling back to a different project.
 
 #### `kleos-cli handoff mechanical [--project P] [--agent A] [--dir PATH] [--session S] [--model M] [--host H]`
 
@@ -408,15 +428,23 @@ How it works:
 - Collects git status, recent commits, diff stats, stashes, and recently
   modified files from the working tree.
 - Stores that bundle as a `mechanical` handoff via `POST /handoffs`.
+- Refuses to run outside a Git worktree, even when `--project` is supplied.
 
 Use for:
 
 - Mechanical state capture at session boundaries.
 
-#### `kleos-cli handoff list [--limit N] [--project P] [--agent A] [--handoff-type T]`
+#### `kleos-cli handoff list [--limit N] [--project P] [--scope S] [--workstream W] [--agent A] [--handoff-type T]`
 
 - Calls `GET /handoffs`.
 - Prints a summary table.
+
+#### `kleos-cli handoff candidates [--limit N] [--scope S] [--workstream W] [--agent A] [--since TIME]`
+
+- Calls `GET /handoffs/candidates`.
+- Returns only the newest checkpoint for each stable session id.
+- Prints complete ids and session identities so an ambiguous standalone
+  restore can be selected explicitly with `handoff restore --id ID`.
 
 #### `kleos-cli handoff search QUERY [--project P] [--limit N]`
 

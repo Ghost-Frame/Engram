@@ -560,6 +560,10 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_drop_enrollment_invites,
         tx
     ),
+    // v102: first-class handoff identity. Existing project labels are retained
+    // as legacy workstreams; new writers can distinguish repository and
+    // standalone sessions without overloading cwd-derived project names.
+    migration!(102, "handoff_identity", run_migration_handoff_identity, tx),
 ];
 
 // --- Version constants ---
@@ -4694,6 +4698,27 @@ fn run_migration_fts_unicode61(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+/// v102: add explicit scope, workstream, and title fields to handoffs while
+/// preserving every existing project-backed row as legacy data.
+fn run_migration_handoff_identity(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE handoffs
+             ADD COLUMN scope TEXT NOT NULL DEFAULT 'legacy'
+             CHECK (scope IN ('legacy', 'repository', 'standalone'));
+         ALTER TABLE handoffs
+             ADD COLUMN workstream TEXT NOT NULL DEFAULT '';
+         ALTER TABLE handoffs
+             ADD COLUMN title TEXT;
+         UPDATE handoffs SET workstream = project WHERE workstream = '';
+         CREATE INDEX IF NOT EXISTS idx_handoffs_workstream
+             ON handoffs(user_id, workstream, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_handoffs_candidates
+             ON handoffs(user_id, scope, workstream, session_id, created_at DESC);",
+    )?;
+    info!("Migration 102 complete: handoff identity fields added and legacy rows backfilled");
+    Ok(())
+}
+
 /// Migration 95: add a nullable `lang` column to the global `memories` table for
 /// the detected ISO 639-1 content language. Nullable with no backfill -- NULL
 /// means "unknown / treat as en". Populated by detect_lang on subsequent writes.
@@ -6485,6 +6510,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(user2_pending, 1);
+    }
+
+    /// Global migration 102 preserves project-only rows as legacy handoffs and
+    /// supplies their logical workstream without inventing session identity.
+    #[test]
+    fn test_handoff_identity_migration_backfills_legacy_rows() {
+        let conn = open_test_db();
+        apply_migrations_up_to(&conn, 101);
+        conn.execute(
+            "INSERT INTO handoffs (user_id, project, content) VALUES (?1, ?2, ?3)",
+            rusqlite::params![7, "date-slug-project", "legacy checkpoint"],
+        )
+        .unwrap();
+
+        run_migration_handoff_identity(&conn).unwrap();
+        let identity: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT scope, workstream, title FROM handoffs WHERE user_id = ?1",
+                rusqlite::params![7],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(identity.0, "legacy");
+        assert_eq!(identity.1, "date-slug-project");
+        assert_eq!(identity.2, None);
     }
 
     // -----------------------------------------------------------------------

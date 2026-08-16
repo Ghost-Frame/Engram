@@ -54,6 +54,8 @@ const DAILY_TOOL_NAMES: &[&str] = &[
     "handoffs.dump",
     "handoffs.list",
     "handoffs.latest",
+    "handoffs.get",
+    "handoffs.candidates",
     "handoffs.search",
     "sessions.get",
     "sessions.append",
