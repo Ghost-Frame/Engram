@@ -86,6 +86,7 @@ A protocol that controls how agents think, not just what they remember:
 - **Spec before code** -- `spec-task` requires acceptance criteria and edge cases before implementation begins
 - **Hypothesis before fix** -- `log-hypothesis` with confidence scoring, `recall-errors` to prevent repeating mistakes
 - **Verification before done** -- `verify` runs commands against spec criteria, `challenge-code` generates adversarial review
+- **Human-facing spec views** -- Fluency builds render authoritative Forge records into `requirements.md`, `design.md`, and evidence-derived `tasks.md`
 - **AST-aware code analysis** -- Tree-sitter parsing across Rust, TypeScript, Python, Go, C, C++, JS. `repo-map` builds ranked symbol lists within token budgets.
 - **Session resilience** -- git checkpoints and rollback for recovery from destructive edits
 
@@ -259,9 +260,10 @@ variable on the server. A new hooks bundle will ship once the surface stabilises
 `kleos-sidecar` sits between your agent and the server:
 
 - Buffers observations in memory instead of blocking on every write
-- Optional compression via local Ollama
 - Batched flushing to the server
-- File-watching and persistent session support
+- Hook-driven repository refresh for deterministic local code context
+- `off`, `shadow`, and `inject` rollout modes with an independent code token budget
+- In-memory session continuity without a local AI runtime or transcript watcher
 
 ### Security model
 
@@ -395,7 +397,7 @@ Four channels run per query:
 | `kleos-cli` | Command-line client. Memory ops, skill management, handoffs, credential management. |
 | `kleos-client` | Shared Rust HTTP client with PIV/Ed25519 envelope signing. |
 | `kleos-mcp` | MCP transport bridge. Curated daily-driver registry with compatibility aliases; stdio by default, HTTP behind a feature flag. |
-| `kleos-sidecar` | Session-scoped memory proxy. File watcher, batched flushing, Ollama compression, persistent sessions. |
+| `kleos-sidecar` | Session-scoped memory proxy. Batched flushing and hook-driven local code-context retrieval. |
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
 | `kleos-credd` | Base credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
 | `kleos-phylax` | Agent-native credential authority library: approvals, leases, ECDH, namespaces. |

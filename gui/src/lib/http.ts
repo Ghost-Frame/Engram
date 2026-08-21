@@ -22,10 +22,9 @@ export function onUnauthorized(cb: () => void) {
   };
 }
 
-// Build the API URL for production same-origin or local Vite proxy mode.
-export function buildUrl(path: string, port?: string): string {
-  const resolvedPort = port ?? (typeof window !== 'undefined' ? window.location.port : '');
-  return `${resolvedPort === '4200' ? '' : '/api'}${path}`;
+// Build an API URL for the embedded server or the local Vite development proxy.
+export function buildUrl(path: string, useDevProxy = import.meta.env.MODE === 'development'): string {
+  return `${useDevProxy ? '/api' : ''}${path}`;
 }
 
 // Describes options accepted by the shared request helper.
@@ -33,7 +32,7 @@ export interface RequestOpts {
   method?: string;
   body?: unknown;
   token?: string;
-  port?: string;
+  useDevProxy?: boolean;
   signal?: AbortSignal;
 }
 
@@ -60,7 +59,7 @@ export async function request<T>(path: string, opts: RequestOpts = {}): Promise<
     }
   }
 
-  const res = await fetch(buildUrl(path, opts.port), {
+  const res = await fetch(buildUrl(path, opts.useDevProxy), {
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     credentials: 'same-origin',
     headers,
@@ -93,17 +92,32 @@ export function isAuthenticated(): boolean {
   return readCookie('kleos_csrf') !== '';
 }
 
+// Describes a cookie-login attempt without exposing the server response body.
+export interface LoginResult {
+  ok: boolean;
+  error?: string;
+}
+
 // Establish a GUI session by exchanging the API key for HttpOnly session +
 // readable CSRF cookies via the server's cookie-login endpoint. The raw key is
-// never persisted in localStorage. Returns true on success.
-export async function loginWithApiKey(apiKey: string): Promise<boolean> {
+// never persisted in localStorage.
+export async function loginWithApiKey(apiKey: string): Promise<LoginResult> {
   const res = await fetch('/gui/auth', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ api_key: apiKey }).toString()
   });
-  return res.ok;
+  if (res.ok) {
+    return { ok: true };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, error: 'That API key was rejected.' };
+  }
+  if (res.status === 429) {
+    return { ok: false, error: 'Too many attempts. Wait a moment and try again.' };
+  }
+  return { ok: false, error: 'Kleos could not start a session. Try again.' };
 }
 
 // Clear the GUI session cookies.

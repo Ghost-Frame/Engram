@@ -53,6 +53,8 @@ pub fn spawn_audit_worker(
         loop {
             let event = tokio::select! {
                 _ = shutdown.cancelled() => {
+                    // Close first so producers cannot enqueue after the final drain check.
+                    rx.close();
                     // Drain without waiting for new events, then stop.
                     while let Ok(ev) = rx.try_recv() {
                         write_audit_event(&db, ev).await;
@@ -96,12 +98,29 @@ async fn write_audit_event(db: &Database, ev: AuditEvent) {
     }
 }
 
+/// Delivers an audit event without losing it if the background receiver has closed.
+async fn dispatch_audit_event(
+    db: &Database,
+    audit_tx: &tokio::sync::mpsc::Sender<AuditEvent>,
+    event: AuditEvent,
+) {
+    match audit_tx.try_send(event) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("audit event dropped: channel full");
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
+            write_audit_event(db, event).await;
+        }
+    }
+}
+
 /// Axum middleware that logs every HTTP request to the audit trail.
 ///
 /// Runs after auth middleware so that `AuthContext` is available in extensions.
-/// The response path performs no awaits after the handler returns: the event is
-/// try_sent into the bounded worker channel and dropped (with a warning) when
-/// the channel is full or closed (finding [57]).
+/// The response path normally uses a non-blocking bounded channel. If the
+/// receiver has already closed, it writes directly so an in-flight request is
+/// still recorded. A full channel continues to shed load (finding [57]).
 #[tracing::instrument(skip_all, fields(middleware = "server.audit"))]
 pub async fn audit_middleware(
     State(state): State<AppState>,
@@ -141,21 +160,64 @@ pub async fn audit_middleware(
         })
         .unwrap_or((None, None, None, None));
 
-    if let Err(e) = state.audit_tx.try_send(AuditEvent {
-        user_id,
-        agent_id,
-        identity_id,
-        tier,
-        method,
-        path,
-        status,
-        ip,
-    }) {
-        // Channel full (sustained DB stall) or worker gone: shed the event
-        // rather than blocking the response. try_send makes this observable
-        // where the old semaphore starvation was silent queueing.
-        tracing::warn!("audit event dropped: {}", e);
-    }
+    dispatch_audit_event(
+        &state.db,
+        &state.audit_tx,
+        AuditEvent {
+            user_id,
+            agent_id,
+            identity_id,
+            tier,
+            method,
+            path,
+            status,
+            ip,
+        },
+    )
+    .await;
 
     response
+}
+
+#[cfg(test)]
+/// Regression coverage for audit delivery behavior.
+mod tests {
+    use super::*;
+
+    /// Verifies that a closed background receiver falls back to a direct database write.
+    #[tokio::test]
+    async fn closed_receiver_persists_event_directly() {
+        let db = Database::connect_memory().await.unwrap();
+        let (audit_tx, mut audit_rx) = tokio::sync::mpsc::channel(1);
+        audit_rx.close();
+
+        dispatch_audit_event(
+            &db,
+            &audit_tx,
+            AuditEvent {
+                user_id: Some(42),
+                agent_id: None,
+                identity_id: None,
+                tier: None,
+                method: "POST".to_string(),
+                path: "/store".to_string(),
+                status: 200,
+                ip: Some("127.0.0.1".to_string()),
+            },
+        )
+        .await;
+
+        let count = db
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE user_id = 42
+                     AND action = 'http.post' AND details = 'path=/store status=200'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
 }

@@ -449,6 +449,9 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         "skill_duration_sample_count",
         apply_schema_v83_skill_duration_sample_count
     ),
+    // v84: explicit handoff scope/workstream/title fields. Existing rows are
+    // retained as legacy scope and backfilled from their project label.
+    tenant_migration!(84, "handoff_identity", apply_schema_v84_handoff_identity),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -819,6 +822,30 @@ tenant_migration_sql!(
     "v57",
     "../tenant/schema_v57_approvals_readd.sql"
 );
+
+/// Tenant v84: add first-class handoff identity fields and preserve existing
+/// project labels as legacy workstreams.
+fn apply_schema_v84_handoff_identity(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE handoffs
+             ADD COLUMN scope TEXT NOT NULL DEFAULT 'legacy'
+             CHECK (scope IN ('legacy', 'repository', 'standalone'));
+         ALTER TABLE handoffs
+             ADD COLUMN workstream TEXT NOT NULL DEFAULT '';
+         ALTER TABLE handoffs
+             ADD COLUMN title TEXT;
+         CREATE INDEX IF NOT EXISTS idx_handoffs_workstream
+             ON handoffs(user_id, workstream, created_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_handoffs_candidates
+             ON handoffs(user_id, scope, workstream, session_id, created_at DESC);",
+    )?;
+    conn.execute(
+        "UPDATE handoffs SET workstream = project WHERE workstream = ''",
+        [],
+    )?;
+    info!("tenant migration 84 complete: handoff identity fields added");
+    Ok(())
+}
 
 /// Tenant v80: re-add `user_id` to `axon_subscriptions` with
 /// `UNIQUE(agent, channel, user_id)` (reverses v31, mirror of global migration
@@ -1746,14 +1773,18 @@ pub fn run_tenant_migrations_to(
         );",
     )?;
 
-    let current: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-        [],
-        |row| row.get(0),
-    )?;
+    let applied: std::collections::HashSet<i64> = {
+        let mut stmt = conn.prepare("SELECT version FROM schema_migrations")?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        let mut set = std::collections::HashSet::new();
+        for v in rows {
+            set.insert(v?);
+        }
+        set
+    };
 
     for m in TENANT_MIGRATIONS.iter() {
-        if m.version <= current {
+        if applied.contains(&m.version) {
             continue;
         }
         if m.version > target_version {
@@ -8412,5 +8443,54 @@ mod tests {
             remaining, 0,
             "ON DELETE CASCADE still enforced after v58 rebuild"
         );
+    }
+
+    /// Tenant migration 84 preserves legacy handoffs and backfills their
+    /// logical workstream from the former project-only identity.
+    #[test]
+    fn handoff_identity_migration_backfills_legacy_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations_to(&conn, Some(7), 83).unwrap();
+        conn.execute(
+            "INSERT INTO handoffs (user_id, project, content) VALUES (?1, ?2, ?3)",
+            rusqlite::params![7, "date-slug-project", "legacy checkpoint"],
+        )
+        .unwrap();
+
+        run_tenant_migrations_to(&conn, Some(7), 84).unwrap();
+        let identity: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT scope, workstream, title FROM handoffs WHERE user_id = ?1",
+                rusqlite::params![7],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(identity.0, "legacy");
+        assert_eq!(identity.1, "date-slug-project");
+        assert_eq!(identity.2, None);
+    }
+
+    /// Tenant gate must self-heal a deleted mid-chain version (same fork-band fix
+    /// as the global chain).
+    #[test]
+    fn tenant_gap_below_recorded_version_self_heals() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open memory");
+        run_tenant_migrations(&conn, None).unwrap();
+        let victim: i64 = TENANT_MIGRATIONS
+            .iter()
+            .map(|m| m.version)
+            .find(|&v| v >= 2)
+            .expect("a non-first tenant version exists");
+        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [victim])
+            .unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                [victim],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 1, "tenant victim version must be re-recorded");
     }
 }

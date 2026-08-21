@@ -1,137 +1,203 @@
+import { Link } from 'react-router';
 import { getAxonStats } from '$lib/api/axon';
-import { getBrocaStats } from '$lib/api/broca';
-import { getChiasmStats } from '$lib/api/chiasm';
+import { getBrocaStats, getFeed } from '$lib/api/broca';
+import { getChiasmStats, listTasks } from '$lib/api/chiasm';
 import { getLoomStats } from '$lib/api/loom';
-import { getSomaStats } from '$lib/api/soma';
+import { listAgents } from '$lib/api/soma';
 import { getThymusStats } from '$lib/api/thymus';
-import { useLive } from '$lib/realtime';
-import { SERVICES, type ServiceDef, type ServiceId } from '$lib/services';
-import type {
-  AxonStats,
-  BrocaStats,
-  ChiasmStats,
-  LoomStats,
-  SomaStats,
-  ThymusStats
-} from '$lib/types';
-import { useMemo } from 'react';
+import { displayCount, displayServiceName, displayTime } from '$lib/display';
+import { useLive, useStreamStatus } from '$lib/realtime';
+import type { Task } from '$lib/types';
 import { Badge } from '../ui/Badge';
-import { Card } from '../ui/Card';
-import { StatPill } from '../ui/StatPill';
+import { EmptyState } from '../ui/EmptyState';
 
-const STAT_FETCHERS: Record<ServiceId, () => Promise<unknown>> = {
-  axon: getAxonStats,
-  broca: getBrocaStats,
-  chiasm: getChiasmStats,
-  loom: getLoomStats,
-  soma: getSomaStats,
-  thymus: getThymusStats
-};
-
-// Describes the compact metric shown for one service card.
-interface ServiceMetric {
-  detail: string;
-  label: string;
-  value: string;
-}
-
-// Render the six-service operational overview.
+// Render the operator's cross-service summary and immediate work queues.
 export function Overview() {
+  const streamStatus = useStreamStatus();
+  const tasks = useLive(['overview', 'tasks'], listTasks, 'chiasm');
+  const actions = useLive(['overview', 'actions'], () => getFeed(8), 'broca');
+  const agents = useLive(['overview', 'agents'], listAgents, 'soma');
+  const chiasm = useLive(['stats', 'chiasm'], getChiasmStats, 'chiasm');
+  const broca = useLive(['stats', 'broca'], getBrocaStats, 'broca');
+  const axon = useLive(['stats', 'axon'], getAxonStats, 'axon');
+  const loom = useLive(['stats', 'loom'], getLoomStats, 'loom');
+  const thymus = useLive(['stats', 'thymus'], getThymusStats, 'thymus');
+  const activeTasks = (tasks.data ?? []).filter((task) => task.status === 'active');
+  const queuedTasks = (tasks.data ?? []).filter((task) => task.status === 'pending');
+  const onlineAgents = (agents.data ?? []).filter((agent) => agent.status === 'online');
+
   return (
     <div className="overview">
       <header className="overview__header">
         <div>
+          <span className="page-heading__eyebrow">System posture / now</span>
           <h1 className="overview__title">Mission Control</h1>
-          <p className="overview__subtle">Coordination services at a glance.</p>
+          <p className="overview__subtle">
+            Work, signals, and quality in one operational surface. Exceptions rise; healthy machinery stays quiet.
+          </p>
         </div>
-        <Badge label="Axon live" tone="ok" />
+        <Badge label={streamStatus === 'live' ? 'mesh live' : streamStatus} tone={streamStatus === 'live' ? 'ok' : 'warn'} />
       </header>
-      <section className="overview__grid" aria-label="Service status">
-        {SERVICES.map((service) => (
-          <ServiceOverviewCard key={service.id} service={service} />
-        ))}
+
+      <section aria-label="System metrics" className="overview__metrics">
+        <OverviewMetric
+          detail={`${displayCount(queuedTasks.length)} queued`}
+          label="active work"
+          value={displayCount(activeTasks.length)}
+        />
+        <OverviewMetric
+          detail={`${displayCount(agents.data?.length)} registered`}
+          label="agents online"
+          value={displayCount(onlineAgents.length)}
+        />
+        <OverviewMetric
+          detail={`${displayCount(axon.data?.channels)} channels`}
+          label="signals"
+          value={displayCount(axon.data?.total_events)}
+        />
+        <OverviewMetric
+          detail={`${displayCount(thymus.data?.rubrics)} rubrics`}
+          label="evaluations"
+          value={displayCount(thymus.data?.evaluations)}
+        />
+      </section>
+
+      <section aria-label="Operational queues" className="overview__grid">
+        <OverviewPanel className="overview-panel--work" label="Chiasm" title="Work in motion" to="/chiasm">
+          {tasks.isLoading ? (
+            <OverviewLoading />
+          ) : activeTasks.length === 0 ? (
+            <EmptyState message="No active work. The queue is clear." />
+          ) : (
+            <div className="mission-list">
+              {activeTasks.slice(0, 6).map((task) => (
+                <article className="mission-row" key={task.id}>
+                  <span className="mission-row__id">#{task.id}</span>
+                  <span>
+                    <strong>{task.title}</strong>
+                    <small>{task.project} / {task.agent}</small>
+                  </span>
+                  <TaskState task={task} />
+                </article>
+              ))}
+            </div>
+          )}
+        </OverviewPanel>
+
+        <OverviewPanel className="overview-panel--stream" label="Broca + Axon" title="Latest signal" to="/stream">
+          {actions.isLoading ? (
+            <OverviewLoading />
+          ) : !actions.data?.length ? (
+            <EmptyState message="No recent narrated actions." />
+          ) : (
+            <div className="signal-list">
+              {actions.data.slice(0, 6).map((entry) => (
+                <article className="signal-row" key={entry.id}>
+                  <time>{displayTime(entry.created_at)}</time>
+                  <span>
+                    <strong>{entry.action}</strong>
+                    <small>{displayServiceName(entry.service)} / {entry.agent}</small>
+                  </span>
+                </article>
+              ))}
+            </div>
+          )}
+        </OverviewPanel>
+
+        <OverviewPanel className="overview-panel--fleet" label="Soma" title="Agent fleet" to="/soma">
+          <div className="fleet-summary">
+            <strong>{displayCount(onlineAgents.length)}</strong>
+            <span>online now</span>
+          </div>
+          <div className="fleet-list">
+            {(agents.data ?? []).slice(0, 8).map((agent) => (
+              <span className="fleet-agent" key={agent.id}>
+                <i className={`signal-dot is-${agent.status}`} />
+                {agent.name}
+                <small>{agent.type}</small>
+              </span>
+            ))}
+          </div>
+        </OverviewPanel>
+
+        <OverviewPanel className="overview-panel--quality" label="Loom + Thymus" title="Automation health" to="/thymus">
+          <div className="quality-grid">
+            <QualityMetric label="workflow runs" value={loom.data?.runs} />
+            <QualityMetric label="active runs" value={loom.data?.active_runs} />
+            <QualityMetric label="evaluations" value={thymus.data?.evaluations} />
+            <QualityMetric label="narrated actions" value={broca.data?.total_actions} />
+          </div>
+          <p className="quality-note">
+            {thymus.isError || loom.isError ? 'One or more quality signals are unavailable.' : 'Quality telemetry is responding.'}
+          </p>
+        </OverviewPanel>
       </section>
     </div>
   );
 }
 
-// Render one live service summary card.
-function ServiceOverviewCard({ service }: { service: ServiceDef }) {
-  const queryKey = useMemo(() => ['stats', service.id] as const, [service.id]);
-  const query = useLive(queryKey, STAT_FETCHERS[service.id], service.channel);
-  const metric = summarizeServiceStats(service.id, query.data);
-  const badgeTone = query.isError ? 'err' : query.isLoading ? 'warn' : 'ok';
-  const badgeLabel = query.isError ? 'error' : query.isLoading ? 'loading' : 'live';
-
+// Render one metric in the top posture strip.
+function OverviewMetric({ detail, label, value }: { detail: string; label: string; value: string }) {
   return (
-    <Card accent={service.id}>
-      <div className="overview-card">
-        <div className="overview-card__top">
-          <span className="overview-card__name">{service.label}</span>
-          <Badge label={badgeLabel} tone={badgeTone} />
-        </div>
-        <StatPill label={metric.label} value={metric.value} />
-        <p className="overview-card__detail">{metric.detail}</p>
-      </div>
-    </Card>
+    <article className="overview-metric">
+      <span className="overview-metric__label">{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </article>
   );
 }
 
-// Convert typed service stats into a consistent overview metric.
-function summarizeServiceStats(serviceId: ServiceId, data: unknown): ServiceMetric {
-  switch (serviceId) {
-    case 'chiasm': {
-      const stats = data as ChiasmStats | undefined;
-      return {
-        detail: `${formatCount(stats?.by_status.active)} active`,
-        label: 'tasks',
-        value: formatCount(stats?.total)
-      };
-    }
-    case 'broca': {
-      const stats = data as BrocaStats | undefined;
-      return {
-        detail: `${formatCount(stats?.agents)} agents across ${formatCount(stats?.services)} services`,
-        label: 'actions',
-        value: formatCount(stats?.total_actions)
-      };
-    }
-    case 'soma': {
-      const stats = data as SomaStats | undefined;
-      return {
-        detail: `${formatCount(stats?.online_agents)} online`,
-        label: 'agents',
-        value: formatCount(stats?.total_agents)
-      };
-    }
-    case 'loom': {
-      const stats = data as LoomStats | undefined;
-      return {
-        detail: `${formatCount(stats?.active_runs)} active runs`,
-        label: 'runs',
-        value: formatCount(stats?.runs)
-      };
-    }
-    case 'axon': {
-      const stats = data as AxonStats | undefined;
-      return {
-        detail: `${formatCount(stats?.channels)} channels`,
-        label: 'events',
-        value: formatCount(stats?.total_events)
-      };
-    }
-    case 'thymus': {
-      const stats = data as ThymusStats | undefined;
-      return {
-        detail: `${formatCount(stats?.evaluations)} evaluations`,
-        label: 'rubrics',
-        value: formatCount(stats?.rubrics)
-      };
-    }
-  }
+// Render a dashboard section with a direct route action.
+function OverviewPanel({
+  children,
+  className,
+  label,
+  title,
+  to
+}: {
+  children: React.ReactNode;
+  className: string;
+  label: string;
+  title: string;
+  to: string;
+}) {
+  return (
+    <article className={`overview-panel ${className}`}>
+      <header className="panel-heading">
+        <div>
+          <small>{label}</small>
+          <h2>{title}</h2>
+        </div>
+        <Link className="panel-heading__link" to={to}>Open →</Link>
+      </header>
+      {children}
+    </article>
+  );
 }
 
-// Format numeric counts for compact panels while data is loading.
-function formatCount(value: number | undefined) {
-  return typeof value === 'number' ? value.toLocaleString() : '...';
+// Render a task status badge with heartbeat freshness.
+function TaskState({ task }: { task: Task }) {
+  const hasHeartbeat = Boolean(task.last_heartbeat);
+  return <Badge label={hasHeartbeat ? 'active' : 'waiting'} tone={hasHeartbeat ? 'ok' : 'warn'} />;
+}
+
+// Render a compact dashboard loading treatment.
+function OverviewLoading() {
+  return (
+    <div aria-label="Loading" className="overview-loading">
+      <span className="skeleton" />
+      <span className="skeleton" />
+      <span className="skeleton" />
+    </div>
+  );
+}
+
+// Render one automation or quality count.
+function QualityMetric({ label, value }: { label: string; value: number | undefined }) {
+  return (
+    <div className="quality-metric">
+      <strong>{displayCount(value)}</strong>
+      <span>{label}</span>
+    </div>
+  );
 }

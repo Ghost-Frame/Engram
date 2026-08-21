@@ -3,6 +3,8 @@
 
 pub mod approaches;
 pub mod ast;
+/// Persistent code-context and relation query adapters.
+pub mod code_context;
 pub mod comments;
 /// The `review` tool. Compiled only under the `fluency` feature.
 #[cfg(feature = "fluency")]

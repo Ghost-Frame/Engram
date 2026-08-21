@@ -137,7 +137,11 @@ async fn list_api_keys_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let keys = auth::list_keys(&state.db, auth.user_id).await?;
+    let keys = if auth.has_scope(&Scope::Admin) {
+        auth::list_all_keys(&state.db).await?
+    } else {
+        auth::list_keys(&state.db, auth.user_id).await?
+    };
     Ok(Json(json!({ "keys": keys })))
 }
 

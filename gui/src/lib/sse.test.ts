@@ -40,13 +40,13 @@ describe('AxonStream', () => {
   });
 
   it('builds the stream URL with an agent', () => {
-    new AxonStream('kleos-gui', '4200').connect();
+    new AxonStream('kleos-gui', false).connect();
 
-    expect(FakeEventSource.last.url).toContain('/axon/stream?agent=kleos-gui');
+    expect(FakeEventSource.last.url).toBe('/axon/stream?agent=kleos-gui');
   });
 
   it('routes default message events by channel', () => {
-    const stream = new AxonStream('kleos-gui', '4200');
+    const stream = new AxonStream('kleos-gui', false);
     const seen: string[] = [];
     stream.onChannel('chiasm', (event) => seen.push(event.action));
 
@@ -60,7 +60,7 @@ describe('AxonStream', () => {
   });
 
   it('routes custom action events by channel', () => {
-    const stream = new AxonStream('kleos-gui', '4200');
+    const stream = new AxonStream('kleos-gui', false);
     const seen: string[] = [];
     stream.onChannel('broca', (event) => seen.push(event.action));
 

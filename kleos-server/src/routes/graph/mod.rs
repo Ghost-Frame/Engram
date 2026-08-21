@@ -15,7 +15,7 @@ use kleos_lib::graph::{
     },
     pagerank::update_pagerank_scores,
     search::{graph_search, neighborhood_filtered},
-    types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions},
+    types::{CreateEntityRequest, CreateRelationshipRequest, GraphBuildOptions, GraphBuildResult},
 };
 use kleos_lib::validation::{
     MAX_ENTITY_RELATIONSHIPS, MAX_GRAPH_BUILD_NODES, MAX_GRAPH_NEIGHBORHOOD_DEPTH,
@@ -23,6 +23,7 @@ use kleos_lib::validation::{
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     error::AppError,
@@ -497,7 +498,7 @@ async fn create_relationship_handler(
     Ok((StatusCode::CREATED, Json(relationship)))
 }
 
-// --- GET /graph  (accepts ?limit=N or ?max=N for GUI compat, ?depth= is accepted but unused) ---
+// --- GET /graph ---
 
 #[tracing::instrument(skip_all)]
 async fn graph_handler(
@@ -511,17 +512,35 @@ async fn graph_handler(
     // straight as the SQL LIMIT. Unspecified requests still default to the
     // conservative 5k.
     const GRAPH_NODE_CEILING: usize = 50_000;
+    let full = params.full.unwrap_or(false);
     let cap = params
         .max
         .or(params.limit)
         .map(|n| (n.max(1) as usize).min(GRAPH_NODE_CEILING))
         .unwrap_or(MAX_GRAPH_BUILD_NODES);
+    // Full mode retains every honest component; connected sampling is only a
+    // shaping option for bounded views.
+    let connected = !full && params.connected.unwrap_or(false);
     let opts = GraphBuildOptions {
         user_id: auth.effective_user_id(),
-        limit: Some(cap),
+        // Connected results need the wider candidate graph so lower-ranked
+        // bridge memories remain available when the final cap is applied.
+        limit: if full {
+            None
+        } else {
+            Some(if connected { GRAPH_NODE_CEILING } else { cap })
+        },
         min_component: params.min_component.unwrap_or(1),
     };
-    let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
+    let mut result = build_graph_data(&db, &opts).await.map_err(AppError)?;
+    let candidate_node_count = result.nodes.len();
+    if connected {
+        result = limit_graph_to_connected_view(result, cap);
+    }
+    if let Some(requested_depth) = params.depth {
+        let depth = requested_depth.clamp(1, i64::from(MAX_GRAPH_NEIGHBORHOOD_DEPTH)) as usize;
+        result = limit_graph_to_depth(result, depth);
+    }
     let node_count = result.nodes.len();
     let edge_count = result.edges.len();
     Ok(Json(json!({
@@ -529,7 +548,217 @@ async fn graph_handler(
         "edges": result.edges,
         "node_count": node_count,
         "edge_count": edge_count,
+        "candidate_node_count": candidate_node_count,
+        "connected_view": connected,
+        "full_view": full,
     })))
+}
+
+/// Select one bounded, rank-aware component while retaining real bridge nodes.
+///
+/// Nodes arrive in descending score order. The largest candidate component is
+/// rooted at its highest-ranked node, then one deterministic breadth-first tree
+/// supplies the shortest stored-edge path to every other node. Ranked targets
+/// are admitted with their missing tree path, so the final induced subgraph is
+/// connected without creating synthetic relationships.
+fn limit_graph_to_connected_view(mut graph: GraphBuildResult, limit: usize) -> GraphBuildResult {
+    if limit == 0 || graph.nodes.is_empty() {
+        return GraphBuildResult {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+    }
+
+    let rank: HashMap<&str, usize> = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.id.as_str(), index))
+        .collect();
+    let node_ids: HashSet<&str> = rank.keys().copied().collect();
+    let mut adjacency: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+    for edge in &graph.edges {
+        if !node_ids.contains(edge.source.as_str()) || !node_ids.contains(edge.target.as_str()) {
+            continue;
+        }
+        adjacency
+            .entry(edge.source.clone())
+            .or_default()
+            .push((edge.target.clone(), edge.weight));
+        adjacency
+            .entry(edge.target.clone())
+            .or_default()
+            .push((edge.source.clone(), edge.weight));
+    }
+    for neighbors in adjacency.values_mut() {
+        neighbors.sort_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| rank.get(left.0.as_str()).cmp(&rank.get(right.0.as_str())))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+    }
+
+    let mut assigned = HashSet::new();
+    let mut largest_component = Vec::new();
+    for node in &graph.nodes {
+        if assigned.contains(&node.id) {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut queue = VecDeque::from([node.id.clone()]);
+        while let Some(current) = queue.pop_front() {
+            if !assigned.insert(current.clone()) {
+                continue;
+            }
+            component.push(current.clone());
+            if let Some(neighbors) = adjacency.get(&current) {
+                queue.extend(neighbors.iter().map(|(neighbor, _)| neighbor.clone()));
+            }
+        }
+        if component.len() > largest_component.len() {
+            largest_component = component;
+        }
+    }
+
+    let component_ids: HashSet<String> = largest_component.into_iter().collect();
+    let Some(seed) = graph
+        .nodes
+        .iter()
+        .find(|node| component_ids.contains(&node.id))
+        .map(|node| node.id.clone())
+    else {
+        return GraphBuildResult {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+    };
+
+    let mut parents: HashMap<String, Option<String>> = HashMap::from([(seed.clone(), None)]);
+    let mut traversal = Vec::new();
+    let mut queue = VecDeque::from([seed.clone()]);
+    while let Some(current) = queue.pop_front() {
+        traversal.push(current.clone());
+        if let Some(neighbors) = adjacency.get(&current) {
+            for (neighbor, _) in neighbors {
+                if component_ids.contains(neighbor) && !parents.contains_key(neighbor) {
+                    parents.insert(neighbor.clone(), Some(current.clone()));
+                    queue.push_back(neighbor.clone());
+                }
+            }
+        }
+    }
+
+    let mut selected = HashSet::from([seed]);
+    for node in &graph.nodes {
+        if selected.len() >= limit {
+            break;
+        }
+        if !component_ids.contains(&node.id) || selected.contains(&node.id) {
+            continue;
+        }
+
+        let mut path = Vec::new();
+        let mut current = Some(node.id.as_str());
+        while let Some(id) = current {
+            if selected.contains(id) {
+                break;
+            }
+            path.push(id.to_string());
+            current = parents
+                .get(id)
+                .and_then(|parent| parent.as_ref().map(String::as_str));
+        }
+        if current.is_some() && selected.len() + path.len() <= limit {
+            selected.extend(path);
+        }
+    }
+
+    // A path near the end can exceed the remaining budget. Fill residual slots
+    // in traversal order only when a selected parent keeps the set connected.
+    for node_id in traversal {
+        if selected.len() >= limit {
+            break;
+        }
+        let parent_selected = parents
+            .get(&node_id)
+            .and_then(Option::as_ref)
+            .is_none_or(|parent| selected.contains(parent));
+        if parent_selected {
+            selected.insert(node_id);
+        }
+    }
+
+    graph.nodes.retain(|node| selected.contains(&node.id));
+    graph
+        .edges
+        .retain(|edge| selected.contains(&edge.source) && selected.contains(&edge.target));
+    graph
+}
+
+/// Keep each connected component within `depth` hops of its highest-ranked node.
+///
+/// Graph nodes arrive in score order from `build_graph_data`, so the first node
+/// encountered in a component is its stable seed. This gives the GUI a bounded,
+/// meaningful depth control without allowing traversal to exceed the existing
+/// node cap or cross the caller-scoped graph returned by the builder.
+fn limit_graph_to_depth(mut graph: GraphBuildResult, depth: usize) -> GraphBuildResult {
+    let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &graph.edges {
+        adjacency
+            .entry(edge.source.clone())
+            .or_default()
+            .push(edge.target.clone());
+        adjacency
+            .entry(edge.target.clone())
+            .or_default()
+            .push(edge.source.clone());
+    }
+
+    let mut assigned_components = HashSet::new();
+    let mut keep = HashSet::new();
+    for node in &graph.nodes {
+        if assigned_components.contains(&node.id) {
+            continue;
+        }
+
+        let mut component_queue = VecDeque::from([node.id.clone()]);
+        while let Some(current) = component_queue.pop_front() {
+            if !assigned_components.insert(current.clone()) {
+                continue;
+            }
+            if let Some(neighbors) = adjacency.get(&current) {
+                component_queue.extend(neighbors.iter().cloned());
+            }
+        }
+
+        let mut depth_queue = VecDeque::from([(node.id.clone(), 0_usize)]);
+        let mut depth_seen = HashSet::new();
+        while let Some((current, distance)) = depth_queue.pop_front() {
+            if !depth_seen.insert(current.clone()) {
+                continue;
+            }
+            keep.insert(current.clone());
+            if distance >= depth {
+                continue;
+            }
+            if let Some(neighbors) = adjacency.get(&current) {
+                depth_queue.extend(
+                    neighbors
+                        .iter()
+                        .cloned()
+                        .map(|neighbor| (neighbor, distance + 1)),
+                );
+            }
+        }
+    }
+
+    graph.nodes.retain(|node| keep.contains(&node.id));
+    graph
+        .edges
+        .retain(|edge| keep.contains(&edge.source) && keep.contains(&edge.target));
+    graph
 }
 
 // --- GET /graph/raw ---
@@ -939,4 +1168,155 @@ fn row_to_relationship_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> 
         "evidence_count": evidence_count,
         "created_at": created_at,
     }))
+}
+
+/// Regression tests for route-local graph shaping behavior.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kleos_lib::graph::types::{GraphEdge, GraphNode, LinkType};
+
+    /// Build a minimal memory node for graph-depth tests.
+    fn memory_node(id: i64) -> GraphNode {
+        GraphNode {
+            id: format!("m{id}"),
+            label: format!("memory {id}"),
+            weight: 1.0,
+            pagerank: None,
+            community: None,
+            metadata: None,
+            node_type: "memory".to_string(),
+            category: "general".to_string(),
+            importance: 5,
+            group: "general".to_string(),
+            size: 1.0,
+            source: "test".to_string(),
+            created_at: "2026-01-01".to_string(),
+            is_static: false,
+            content: format!("memory {id}"),
+            source_count: 1,
+            community_id: None,
+            decay_score: None,
+        }
+    }
+
+    /// Build an undirected test relationship represented by one stored edge.
+    fn graph_edge(source: i64, target: i64) -> GraphEdge {
+        GraphEdge {
+            source: format!("m{source}"),
+            target: format!("m{target}"),
+            link_type: LinkType::Cite,
+            weight: 0.8,
+        }
+    }
+
+    /// Count connected components in a route-shaped graph result.
+    fn component_count(graph: &GraphBuildResult) -> usize {
+        let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+        for edge in &graph.edges {
+            adjacency
+                .entry(edge.source.as_str())
+                .or_default()
+                .push(edge.target.as_str());
+            adjacency
+                .entry(edge.target.as_str())
+                .or_default()
+                .push(edge.source.as_str());
+        }
+        let mut seen = HashSet::new();
+        let mut count = 0;
+        for node in &graph.nodes {
+            if seen.contains(node.id.as_str()) {
+                continue;
+            }
+            count += 1;
+            let mut queue = VecDeque::from([node.id.as_str()]);
+            while let Some(current) = queue.pop_front() {
+                if !seen.insert(current) {
+                    continue;
+                }
+                if let Some(neighbors) = adjacency.get(current) {
+                    queue.extend(neighbors.iter().copied());
+                }
+            }
+        }
+        count
+    }
+
+    /// Connected views admit lower-ranked bridge nodes before dropping rank targets.
+    #[test]
+    fn connected_view_keeps_ranked_targets_and_real_bridges() {
+        let graph = GraphBuildResult {
+            nodes: (1..=5).map(memory_node).collect(),
+            edges: vec![
+                graph_edge(1, 5),
+                graph_edge(5, 2),
+                graph_edge(2, 3),
+                graph_edge(3, 4),
+            ],
+        };
+
+        let connected = limit_graph_to_connected_view(graph, 4);
+        let ids: Vec<&str> = connected
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect();
+
+        assert_eq!(ids, vec!["m1", "m2", "m3", "m5"]);
+        assert_eq!(component_count(&connected), 1);
+        assert_eq!(connected.edges.len(), 3);
+    }
+
+    /// The largest real component wins even when a smaller component ranks first.
+    #[test]
+    fn connected_view_prefers_largest_component_and_honors_tiny_limits() {
+        let graph = GraphBuildResult {
+            nodes: (1..=6).map(memory_node).collect(),
+            edges: vec![
+                graph_edge(1, 2),
+                graph_edge(3, 4),
+                graph_edge(4, 5),
+                graph_edge(5, 6),
+            ],
+        };
+
+        let connected = limit_graph_to_connected_view(graph.clone(), 3);
+        let ids: Vec<&str> = connected
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect();
+        let one = limit_graph_to_connected_view(graph, 1);
+
+        assert_eq!(ids, vec!["m3", "m4", "m5"]);
+        assert_eq!(component_count(&connected), 1);
+        assert_eq!(one.nodes[0].id, "m3");
+        assert!(one.edges.is_empty());
+    }
+
+    /// Depth bounds each component from its first, highest-ranked node.
+    #[test]
+    fn graph_depth_limits_long_components_and_preserves_small_ones() {
+        let graph = GraphBuildResult {
+            nodes: (1..=8).map(memory_node).collect(),
+            edges: vec![
+                graph_edge(1, 2),
+                graph_edge(2, 3),
+                graph_edge(3, 4),
+                graph_edge(4, 5),
+                graph_edge(6, 7),
+            ],
+        };
+
+        let limited = limit_graph_to_depth(graph, 2);
+        let ids: Vec<&str> = limited.nodes.iter().map(|node| node.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["m1", "m2", "m3", "m6", "m7", "m8"]);
+        assert_eq!(limited.edges.len(), 3);
+        assert!(limited
+            .edges
+            .iter()
+            .all(|edge| edge.source != "m4" && edge.target != "m4"));
+    }
 }

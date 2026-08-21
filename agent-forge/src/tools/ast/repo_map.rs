@@ -1,14 +1,10 @@
-//! AST-based repository map generator. Walks a directory tree, extracts every
-//! named symbol from supported files, optionally boosts symbols from focus
-//! paths, and returns a ranked symbol list within a configurable token budget.
+//! Persistent repository map generator backed by the shared local code index.
 
+use crate::code_context::CodeIndex;
 use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
-use crate::treesitter::{is_supported_extension, parser::parse_file};
-use ignore::WalkBuilder;
 use serde::Deserialize;
-use std::path::Path;
 
 /// Input for `repo_map`: the directory root to scan, path fragments to
 /// prioritise, and a token budget that caps the output size.
@@ -19,20 +15,7 @@ pub struct RepoMapInput {
     pub max_tokens: Option<usize>,
 }
 
-/// Internal representation of one extracted symbol before ranking and formatting.
-#[derive(Default)]
-struct Symbol {
-    name: String,
-    kind: String,
-    file: String,
-    line: usize,
-    /// Pseudo-importance score -- boosted for symbols in focus paths.
-    references: usize,
-}
-
-/// Scan the repository at `input.path`, extract all named symbols, boost those
-/// in focus paths, sort by importance, and format the top symbols into a
-/// newline-delimited map that fits within `max_tokens` (default 4000).
+/// Refresh the repository incrementally and format indexed symbols within the budget.
 pub fn repo_map(_db: &Database, input: RepoMapInput) -> ToolResult {
     let path = input
         .path
@@ -41,129 +24,38 @@ pub fn repo_map(_db: &Database, input: RepoMapInput) -> ToolResult {
     let max_tokens = input.max_tokens.unwrap_or(4000);
     let focus = input.focus.unwrap_or_default();
 
-    let root = Path::new(&path);
-    if !root.exists() {
-        return Err(ToolError::IoError(format!("Path does not exist: {}", path)));
-    }
-
-    let mut symbols: Vec<Symbol> = Vec::new();
-    let mut file_count = 0;
-
-    // Walk directory respecting gitignore
-    for entry in WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .build()
-        .filter_map(|e| e.ok())
-    {
-        let entry_path = entry.path();
-        if !entry_path.is_file() {
-            continue;
-        }
-
-        let ext = match entry_path.extension().and_then(|e| e.to_str()) {
-            Some(e) => e,
-            None => continue,
-        };
-
-        if !is_supported_extension(ext) {
-            continue;
-        }
-
-        file_count += 1;
-
-        if let Some(parsed) = parse_file(entry_path) {
-            extract_symbols(&parsed, &mut symbols);
-        }
-    }
-
-    // Boost focus files
-    for sym in &mut symbols {
-        if focus.iter().any(|f| sym.file.contains(f)) {
-            sym.references += 100;
-        }
-    }
-
-    // Sort by references (importance)
-    symbols.sort_by_key(|s| std::cmp::Reverse(s.references));
-
-    // Format output within token budget
-    let mut output_lines: Vec<String> = Vec::new();
-    let mut tokens_used = 0;
-
-    for sym in symbols {
-        let line = format!("{} {} ({}:{})", sym.kind, sym.name, sym.file, sym.line);
-        let line_tokens = line.len() / 4; // rough estimate
-
-        if tokens_used + line_tokens > max_tokens {
-            break;
-        }
-
-        output_lines.push(line);
-        tokens_used += line_tokens;
-    }
+    let index = CodeIndex::open_default().map_err(index_error)?;
+    let (refresh, symbols) = index
+        .repository_symbols(&path, &focus, max_tokens)
+        .map_err(index_error)?;
+    let output_lines: Vec<String> = symbols
+        .iter()
+        .map(|symbol| {
+            format!(
+                "{} {} ({}:{})",
+                symbol.kind, symbol.name, symbol.path, symbol.line
+            )
+        })
+        .collect();
 
     let mut result = Output::ok(format!(
         "Mapped {} files, {} symbols (top {} shown)",
-        file_count,
+        refresh.files_seen,
         output_lines.len(),
         output_lines.len()
     ));
 
     result.data = Some(serde_json::json!({
-        "files_scanned": file_count,
+        "files_scanned": refresh.files_seen,
         "symbols_shown": output_lines.len(),
         "map": output_lines.join("\n"),
+        "index_revision": refresh.index_revision,
     }));
 
     Ok(result)
 }
 
-/// Walk every node in `parsed`'s syntax tree and push a `Symbol` entry for
-/// each named declaration (fn, struct, impl, trait, enum, const) found.
-fn extract_symbols(parsed: &crate::treesitter::parser::ParsedFile, symbols: &mut Vec<Symbol>) {
-    let mut cursor = parsed.tree.walk();
-
-    loop {
-        let node = cursor.node();
-        let kind = node.kind();
-
-        // Extract function/class/struct definitions
-        let symbol_kind = match kind {
-            "function_item"
-            | "function_definition"
-            | "function_declaration"
-            | "method_definition" => Some("fn"),
-            "struct_item" | "class_definition" | "class_declaration" => Some("struct"),
-            "impl_item" => Some("impl"),
-            "trait_item" | "interface_declaration" => Some("trait"),
-            "enum_item" => Some("enum"),
-            "const_item" | "static_item" => Some("const"),
-            _ => None,
-        };
-
-        if let Some(sk) = symbol_kind {
-            // Try to find name child
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = &parsed.source[name_node.byte_range()];
-                symbols.push(Symbol {
-                    name: name.to_string(),
-                    kind: sk.to_string(),
-                    file: parsed.path.clone(),
-                    line: node.start_position().row + 1,
-                    references: 1,
-                });
-            }
-        }
-
-        // Traverse
-        if cursor.goto_first_child() {
-            continue;
-        }
-        while !cursor.goto_next_sibling() {
-            if !cursor.goto_parent() {
-                return;
-            }
-        }
-    }
+/// Translate local index failures into the standard tool error envelope.
+fn index_error(error: crate::code_context::IndexError) -> ToolError {
+    ToolError::DatabaseError(error.to_string())
 }

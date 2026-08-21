@@ -1,4 +1,4 @@
-// Memory Galaxy renders the live Kleos knowledge graph as an interactive cosmic instrument.
+// The memory graph renders Kleos relationships as a direct interactive 3D force layout.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   getCommunities,
@@ -6,9 +6,9 @@ import {
   getMemoryGraph,
   getStats,
   searchGraph,
-  // CategoryCount describes the category ledger returned by graph statistics.
+  // CategoryCount describes one category total displayed in the graph legend.
   type CategoryCount,
-  // GraphSearchResult describes a memory returned by galaxy search.
+  // GraphSearchResult describes one memory returned by graph search.
   type GraphSearchResult,
   // MemoryDetail describes the selected memory inspector payload.
   type MemoryDetail
@@ -16,17 +16,23 @@ import {
 import { selectRenderEdges } from '$lib/graph/selectRenderEdges';
 import {
   buildGalaxyTargets,
-  seedGalaxyPositions,
   // GalaxyTarget carries the stable guide position consumed by the live force.
   type GalaxyTarget
 } from '$lib/graph/galaxyLayout';
+import {
+  buildSemanticRegions,
+  selectSemanticRegionEdges,
+  // SemanticRegion is one selectable overview landmark backed by real memories.
+  type SemanticRegion,
+  // SemanticRegionAtlas retains the lossless memory-to-region lookup.
+  type SemanticRegionAtlas
+} from '$lib/graph/semanticRegions';
 import './graph.css';
 
 // ── Working types ──────────────────────────────────────────
 // The graph mutates nodes in place (neighbors/links/positions), so these are
 // looser than the API GraphNode/GraphEdge and own the runtime-only fields.
 
-// One memory as the force simulation sees it, including runtime-only fields.
 interface GNode {
   id: string;
   label: string;
@@ -52,7 +58,7 @@ interface GNode {
   links?: GLink[];
 }
 
-// GLink carries the mutable source and target references used by the force simulation.
+// GLink carries the mutable node references used by the force simulation.
 interface GLink {
   source: string | GNode;
   target: string | GNode;
@@ -60,24 +66,28 @@ interface GLink {
   weight: number;
 }
 
+// RegionSummary is the lightweight drilldown context surfaced in the control panel.
+interface RegionSummary {
+  label: string;
+  memberCount: number;
+  internalEdgeCount: number;
+}
+
 // ── Constants ──────────────────────────────────────────────
 
-// Palette cycled by community id so neighbouring clusters get distinct hues.
 const COMMUNITY_COLORS = [
-  '#00d7ff', '#6d7cff', '#22e87a', '#ff7a1a',
-  '#1463ff', '#b46cff', '#ffd166', '#00f0c8',
-  '#ff5e7a', '#7aa2ff', '#a6ff6a', '#ff9f43'
+  '#00d7ff', '#34d8ff', '#00c5ef', '#7aa2ff',
+  '#00f0c8', '#b46cff', '#5e91ff', '#25d9c1'
 ];
 
-// Fixed colour per known category, used before falling back to community hue.
 const CATEGORY_FALLBACK: Record<string, string> = {
-  general: '#00d7ff', decision: '#b46cff', task: '#22e87a',
-  state: '#ff7a1a', discovery: '#1463ff', reference: '#ff5e9f',
-  issue: '#ff5e7a', preference: '#ffd166', credential: '#7aa2ff',
-  infrastructure: '#1463ff', incident: '#ff7a1a', directive: '#22e87a'
+  session: '#00d7ff', general: '#00d7ff', decision: '#b46cff', task: '#00f0c8',
+  state: '#7aa2ff', discovery: '#00c5ef', reference: '#7aa2ff',
+  issue: '#34d8ff', preference: '#b46cff', credential: '#7aa2ff',
+  infrastructure: '#00c5ef', incident: '#34d8ff', directive: '#00f0c8'
 };
 
-// Resolve the group identity used to distinguish dense local links from orbital bridges.
+// Resolve the group identity used to distinguish local links from arm bridges.
 function galaxyGroupId(node: GNode): string {
   if (node.community_id != null) return `community:${node.community_id}`;
   return `category:${node.category || 'general'}`;
@@ -91,7 +101,6 @@ function linkStaysWithinGroup(link: GLink): boolean {
 
 // ── Textures (verbatim from the old graph) ─────────────────
 
-// Draw the soft cell-like glow sprite used for a node, varied by seed.
 function createOrganismTexture(THREE: any, seed: number) {
   const size = 128;
   const c = document.createElement('canvas');
@@ -178,7 +187,7 @@ function createOrganismTexture(THREE: any, seed: number) {
   return new THREE.CanvasTexture(c);
 }
 
-// createRingTexture builds the halo used to mark static memories.
+// Create the halo texture used to mark static memories.
 function createRingTexture(THREE: any) {
   const c = document.createElement('canvas');
   c.width = 64;
@@ -197,7 +206,7 @@ function createRingTexture(THREE: any) {
 
 // ── Galactic guide force ──────────────────────────────────
 
-// Pull live nodes toward stable spiral targets without pinning or replacing force physics.
+// Pull live nodes toward stable spiral targets without pinning force physics.
 function makeGalaxyGuideForce(targets: ReadonlyMap<string, GalaxyTarget>, strength: number) {
   let nodes: GNode[] = [];
   const force: any = (alpha: number) => {
@@ -215,45 +224,125 @@ function makeGalaxyGuideForce(targets: ReadonlyMap<string, GalaxyTarget>, streng
   return force;
 }
 
-// The guide is strong enough to preserve arms but weak enough for links and drag
-// to deform them. At production scale the link forces overwhelmed the weaker
-// original value and pulled the disc back into a ball, erasing the layout, so
-// the guide has to hold its own against ~14k edges of contrary pull.
-const GALAXY_GUIDE_STRENGTH = 0.38;
+// Preserve readable arms while allowing stored links to deform the structure.
+const GALAXY_GUIDE_STRENGTH = 1.15;
 
-// Fraction of edges hidden by default. Every edge drawn at once additively
-// blends into a single saturated mass that hides node colour entirely, so the
-// default view shows the strongest connections and the slider reveals the rest.
-const DEFAULT_EDGE_FLOOR_QUANTILE = 0.2;
+// Switch to fixed-cost GPU batches before the live dataset reaches sprite lag.
+const GPU_BATCH_THRESHOLD = 600;
 
-// Extra room left around the graph when framing it, as a multiple of the
-// bounding radius, so the outermost nodes are not flush against the viewport.
-const FIT_PADDING_FACTOR = 1.06;
+// Leave enough negative space for the graph to read as a galaxy instead of a chart.
+const FIT_PADDING_FACTOR = 1.3;
 
-// Describe the range of edge weights actually present, plus the default floor.
-// Weights sit in a narrow band near 1.0, so the slider is calibrated to the
-// observed spread instead of a nominal 0..1 that would be mostly inert.
-function describeEdgeWeights(edges: readonly GLink[]): { min: number; max: number; defaultFloor: number } {
-  const weights = edges
-    .map((edge) => edge.weight)
-    .filter((weight): weight is number => Number.isFinite(weight))
-    .sort((left, right) => left - right);
+// FitPoint is the finite coordinate contract used by projected camera fitting.
+export interface FitPoint {
+  x: number;
+  y: number;
+  z: number;
+}
 
-  if (!weights.length) return { min: 0, max: 1, defaultFloor: 0 };
+// ProjectedCameraFit describes a camera move that tightly frames a flat atlas.
+export interface ProjectedCameraFit {
+  center: FitPoint;
+  distance: number;
+  position: FitPoint;
+}
 
-  const min = weights[0];
-  const max = weights[weights.length - 1];
-  // A degenerate range (every edge sharing one weight) must not collapse the
-  // slider to zero width, which would make it impossible to grab.
-  if (!(max > min)) return { min, max: min + 1, defaultFloor: min };
+// Fit a point cloud in the camera's current orientation without treating a
+// flattened galaxy as a sphere and wasting most of a widescreen viewport.
+export function calculateProjectedCameraFit(
+  points: readonly FitPoint[],
+  cameraPosition: FitPoint,
+  verticalFovDegrees: number,
+  aspect: number,
+  padding = FIT_PADDING_FACTOR
+): ProjectedCameraFit | null {
+  if (!points.length) return null;
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+    minZ = Math.min(minZ, point.z);
+    maxZ = Math.max(maxZ, point.z);
+  }
+  const center = {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+    z: (minZ + maxZ) / 2
+  };
 
-  const quantile = weights[Math.min(weights.length - 1, Math.floor(weights.length * DEFAULT_EDGE_FLOOR_QUANTILE))];
-  return { min, max, defaultFloor: quantile };
+  let outwardX = cameraPosition.x - center.x;
+  let outwardY = cameraPosition.y - center.y;
+  let outwardZ = cameraPosition.z - center.z;
+  const outwardLength = Math.hypot(outwardX, outwardY, outwardZ) || 1;
+  outwardX /= outwardLength;
+  outwardY /= outwardLength;
+  outwardZ /= outwardLength;
+
+  // Use Z as the fallback up axis when the camera looks almost vertically.
+  const upX = 0;
+  const upY = Math.abs(outwardY) < 0.98 ? 1 : 0;
+  const upZ = Math.abs(outwardY) < 0.98 ? 0 : 1;
+  let rightX = upY * outwardZ - upZ * outwardY;
+  let rightY = upZ * outwardX - upX * outwardZ;
+  let rightZ = upX * outwardY - upY * outwardX;
+  const rightLength = Math.hypot(rightX, rightY, rightZ) || 1;
+  rightX /= rightLength;
+  rightY /= rightLength;
+  rightZ /= rightLength;
+  const screenUpX = outwardY * rightZ - outwardZ * rightY;
+  const screenUpY = outwardZ * rightX - outwardX * rightZ;
+  const screenUpZ = outwardX * rightY - outwardY * rightX;
+
+  let horizontalExtent = 0;
+  let verticalExtent = 0;
+  let nearDepth = 0;
+  for (const point of points) {
+    const x = point.x - center.x;
+    const y = point.y - center.y;
+    const z = point.z - center.z;
+    horizontalExtent = Math.max(horizontalExtent, Math.abs(x * rightX + y * rightY + z * rightZ));
+    verticalExtent = Math.max(
+      verticalExtent,
+      Math.abs(x * screenUpX + y * screenUpY + z * screenUpZ)
+    );
+    nearDepth = Math.max(nearDepth, x * outwardX + y * outwardY + z * outwardZ);
+  }
+
+  const halfFov = (Math.max(1, verticalFovDegrees) * Math.PI) / 360;
+  const tangent = Math.max(0.1, Math.tan(halfFov));
+  const safeAspect = Math.max(0.5, aspect);
+  const projectedDistance = Math.max(
+    verticalExtent / tangent,
+    horizontalExtent / (tangent * safeAspect)
+  );
+  const distance = Math.max(120, (projectedDistance + nearDepth) * padding);
+  return {
+    center,
+    distance,
+    position: {
+      x: center.x + outwardX * distance,
+      y: center.y + outwardY * distance,
+      z: center.z + outwardZ * distance
+    }
+  };
 }
 
 // ── Cosmic scene ───────────────────────────────────────────
 
-// Create the soft circular point texture shared by both fixed-cost backdrop clouds.
+// GalaxyBackdropControls adjusts decorative depth between overview and memory detail.
+interface GalaxyBackdropControls {
+  setDetail: (active: boolean) => void;
+  dispose: () => void;
+}
+
+// Create the soft point texture shared by the fixed-cost backdrop clouds.
 function createGalaxyPointTexture(THREE: any) {
   const canvas = document.createElement('canvas');
   canvas.width = 64;
@@ -269,56 +358,46 @@ function createGalaxyPointTexture(THREE: any) {
   return new THREE.CanvasTexture(canvas);
 }
 
-// Create the luminous central core texture that anchors the visual hierarchy.
-function createGalaxyCoreTexture(THREE: any) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
-  const context = canvas.getContext('2d')!;
-  const glow = context.createRadialGradient(128, 128, 0, 128, 128, 128);
-  glow.addColorStop(0, 'rgba(240,255,255,1)');
-  glow.addColorStop(0.08, 'rgba(120,245,255,0.98)');
-  glow.addColorStop(0.22, 'rgba(0,215,255,0.72)');
-  glow.addColorStop(0.46, 'rgba(20,99,255,0.26)');
-  glow.addColorStop(0.72, 'rgba(124,77,255,0.08)');
-  glow.addColorStop(1, 'rgba(0,0,0,0)');
-  context.fillStyle = glow;
-  context.fillRect(0, 0, 256, 256);
-  return new THREE.CanvasTexture(canvas);
-}
-
-// Build one star cloud, one spiral cloud, and one core sprite behind the live graph.
-function addGalaxyBackdrop(THREE: any, scene: any) {
+// Build a fixed-cost stellar underlay from real atlas density plus a quiet star field.
+function addGalaxyBackdrop(
+  THREE: any,
+  scene: any,
+  targets: ReadonlyMap<string, GalaxyTarget>
+): GalaxyBackdropControls {
   let seed = 0x4b4c454f;
-  // nextRandom advances a stable linear congruential generator for repeatable frames.
+  // Advance a stable generator so repeated visits keep the same composition.
   const nextRandom = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 0x100000000;
   };
 
   const pointTexture = createGalaxyPointTexture(THREE);
-  const coreTexture = createGalaxyCoreTexture(THREE);
+  const mainTargets = [...targets.values()].filter((target) => target.inMainComponent);
+  const atlasRadius = Math.max(
+    260,
+    ...mainTargets.map((target) => Math.hypot(target.x, target.y))
+  );
   const starCount = 720;
   const starPositions = new Float32Array(starCount * 3);
   const starColors = new Float32Array(starCount * 3);
-  for (let i = 0; i < starCount; i++) {
-    starPositions[i * 3] = (nextRandom() - 0.5) * 2400;
-    starPositions[i * 3 + 1] = (nextRandom() - 0.5) * 1500;
-    starPositions[i * 3 + 2] = -240 - nextRandom() * 1250;
+  for (let index = 0; index < starCount; index++) {
+    starPositions[index * 3] = (nextRandom() - 0.5) * atlasRadius * 3.8;
+    starPositions[index * 3 + 1] = (nextRandom() - 0.5) * atlasRadius * 2.4;
+    starPositions[index * 3 + 2] = -180 - nextRandom() * atlasRadius * 1.8;
     const brightness = 0.24 + nextRandom() * 0.76;
-    starColors[i * 3] = brightness * 0.72;
-    starColors[i * 3 + 1] = brightness * 0.9;
-    starColors[i * 3 + 2] = brightness;
+    starColors[index * 3] = brightness * 0.72;
+    starColors[index * 3 + 1] = brightness * 0.9;
+    starColors[index * 3 + 2] = brightness;
   }
   const starGeometry = new THREE.BufferGeometry();
   starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
   starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
   const starMaterial = new THREE.PointsMaterial({
-    size: 4.2,
+    size: 1.45,
     map: pointTexture,
     vertexColors: true,
     transparent: true,
-    opacity: 0.66,
+    opacity: 0.54,
     sizeAttenuation: true,
     depthWrite: false,
     depthTest: false,
@@ -328,40 +407,42 @@ function addGalaxyBackdrop(THREE: any, scene: any) {
   starPoints.renderOrder = -30;
   scene.add(starPoints);
 
-  const nebulaCount = 4800;
+  // Derive the haze from live node coordinates so it reinforces actual density.
+  const nebulaCount = Math.min(3600, mainTargets.length);
   const nebulaPositions = new Float32Array(nebulaCount * 3);
   const nebulaColors = new Float32Array(nebulaCount * 3);
-  const palette = [
+  const nebulaPalette = [
     new THREE.Color('#00d7ff'),
-    new THREE.Color('#1463ff'),
-    new THREE.Color('#7c4dff'),
-    new THREE.Color('#ff7a1a')
+    new THREE.Color('#00c5ef'),
+    new THREE.Color('#7aa2ff'),
+    new THREE.Color('#00f0c8')
   ];
-  for (let i = 0; i < nebulaCount; i++) {
-    const progress = Math.pow(nextRandom(), 0.68);
-    const arm = i % 2;
-    const radius = 24 + progress * 365;
-    const angle = 0.55 + progress * Math.PI * 4.72 + arm * Math.PI + (nextRandom() - 0.5) * (0.3 + progress * 0.48);
-    const scatter = (nextRandom() - 0.5) * (24 + radius * 0.18);
-    nebulaPositions[i * 3] = Math.cos(angle) * radius + Math.cos(angle + Math.PI / 2) * scatter;
-    nebulaPositions[i * 3 + 1] = Math.sin(angle) * radius * 0.64 + Math.sin(angle + Math.PI / 2) * scatter * 0.7;
-    nebulaPositions[i * 3 + 2] = -175 + (nextRandom() - 0.5) * (24 + radius * 0.16);
-    const colorIndex = i % 43 === 0 ? 3 : (arm + Math.floor(progress * 2)) % 3;
-    const color = palette[colorIndex];
-    const intensity = (0.48 + nextRandom() * 0.72) * (1.12 - progress * 0.24);
-    nebulaColors[i * 3] = color.r * intensity;
-    nebulaColors[i * 3 + 1] = color.g * intensity;
-    nebulaColors[i * 3 + 2] = color.b * intensity;
+  for (let index = 0; index < nebulaCount; index++) {
+    const sourceIndex = Math.floor((index * mainTargets.length) / nebulaCount);
+    const source = mainTargets[sourceIndex];
+    const spread = 5 + nextRandom() * 18;
+    const angle = nextRandom() * Math.PI * 2;
+    nebulaPositions[index * 3] = source.x + Math.cos(angle) * spread;
+    nebulaPositions[index * 3 + 1] = source.y + Math.sin(angle) * spread * 0.68;
+    nebulaPositions[index * 3 + 2] = source.z - 54 - nextRandom() * 54;
+    const color =
+      nebulaPalette[(source.arm + (index % 29 === 0 ? 3 : 0)) % nebulaPalette.length];
+    const intensity = source.diffuse
+      ? 0.2 + nextRandom() * 0.24
+      : 0.32 + nextRandom() * 0.34;
+    nebulaColors[index * 3] = color.r * intensity;
+    nebulaColors[index * 3 + 1] = color.g * intensity;
+    nebulaColors[index * 3 + 2] = color.b * intensity;
   }
   const nebulaGeometry = new THREE.BufferGeometry();
   nebulaGeometry.setAttribute('position', new THREE.BufferAttribute(nebulaPositions, 3));
   nebulaGeometry.setAttribute('color', new THREE.BufferAttribute(nebulaColors, 3));
   const nebulaMaterial = new THREE.PointsMaterial({
-    size: 8.8,
+    size: 3.8,
     map: pointTexture,
     vertexColors: true,
     transparent: true,
-    opacity: 0.76,
+    opacity: 0.09,
     sizeAttenuation: true,
     depthWrite: false,
     depthTest: false,
@@ -371,38 +452,26 @@ function addGalaxyBackdrop(THREE: any, scene: any) {
   nebulaPoints.renderOrder = -20;
   scene.add(nebulaPoints);
 
-  const coreMaterial = new THREE.SpriteMaterial({
-    map:coreTexture,
-    color:new THREE.Color('#c8fbff'),
-    transparent:true,
-    opacity:0.92,
-    depthWrite:false,
-    depthTest:false,
-    blending:THREE.AdditiveBlending
-  });
-  const core = new THREE.Sprite(coreMaterial);
-  core.position.set(0, 0, -155);
-  core.scale.set(132, 132, 1);
-  core.renderOrder = -10;
-  scene.add(core);
-
-  // The returned disposer releases every GPU resource created for the backdrop.
-  return () => {
-    scene.remove(starPoints, nebulaPoints, core);
-    starGeometry.dispose();
-    starMaterial.dispose();
-    nebulaGeometry.dispose();
-    nebulaMaterial.dispose();
-    coreMaterial.dispose();
-    pointTexture.dispose();
-    coreTexture.dispose();
+  return {
+    // Recede decorative points so exact memories own the detail layer.
+    setDetail: (active: boolean) => {
+      starMaterial.opacity = active ? 0.16 : 0.54;
+      nebulaMaterial.opacity = active ? 0.025 : 0.09;
+    },
+    // Release every GPU resource created for the backdrop.
+    dispose: () => {
+      scene.remove(starPoints, nebulaPoints);
+      starGeometry.dispose();
+      starMaterial.dispose();
+      nebulaGeometry.dispose();
+      nebulaMaterial.dispose();
+      pointTexture.dispose();
+    }
   };
 }
 
 // ── Component ──────────────────────────────────────────────
 
-// Full-screen 3D memory galaxy: loads the graph, builds the WebGL scene, and
-// wires the search, inspector, and signal controls around it.
 export function Graph() {
   const containerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
@@ -423,6 +492,11 @@ export function Graph() {
   const [loadError, setLoadError] = useState('');
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
+  const [drawnEdgeCount, setDrawnEdgeCount] = useState(0);
+  const [regionCount, setRegionCount] = useState(0);
+  const [regionEdgeCount, setRegionEdgeCount] = useState(0);
+  const [componentCount, setComponentCount] = useState(0);
+  const [mainComponentCount, setMainComponentCount] = useState(0);
   const [dbSizeMb, setDbSizeMb] = useState<number | undefined>(undefined);
   const [categories, setCategories] = useState<CategoryCount[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -432,12 +506,9 @@ export function Graph() {
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
   const [weightThreshold, setWeightThreshold] = useState(0);
-  // Observed edge-weight range, used to calibrate the Edge Floor slider. Real
-  // similarity scores occupy a narrow band near the top of 0..1 (production
-  // spans roughly 0.68..1.00), so a fixed 0..1 slider leaves most of its travel
-  // filtering nothing at all. Defaults to the full range until data arrives.
-  const [weightBounds, setWeightBounds] = useState<{ min: number; max: number }>({ min: 0, max: 1 });
   const [clusterEnabled, setClusterEnabled] = useState(true);
+  const [viewMode, setViewMode] = useState<'overview' | 'memories'>('overview');
+  const [regionSummary, setRegionSummary] = useState<RegionSummary | null>(null);
 
   // ── Graph lifecycle (init once, imperative) ──────────────
   useEffect(() => {
@@ -456,8 +527,12 @@ export function Graph() {
     let threeRef: any = null;
     let resizeHandler: (() => void) | null = null;
     let cloudRaf: number | undefined;
-    let disposeCosmicScene: (() => void) | null = null;
-    const motionReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let removeBatchInteractions: (() => void) | null = null;
+    let galaxyBackdrop: GalaxyBackdropControls | null = null;
+    // Track custom GPU resources because removing Three.js objects does not
+    // release their textures or sprite materials automatically on remount.
+    const ownedTextures = new Set<any>();
+    const ownedSpriteMaterials = new Set<any>();
 
     // Effect-local mutable graph state (mirrors the old component scope).
     const highlightNodes = new Set<GNode>();
@@ -469,27 +544,84 @@ export function Graph() {
     const nodeSprites = new Map<string, { material: any; baseSize: number; sprite: any }>();
     const nodeLabels = new Map<string, any>();
     const nodeMap = new Map<string, GNode>();
-    // Ids of nodes drawn as background dust, filled in once the galaxy layout
-    // is built. Link styling consults this to keep dust edges from hazing over
-    // the structure they pass through.
-    const dustNodeIds = new Set<string>();
+    let graphNodes: GNode[] = [];
+    let renderEdges: GLink[] = [];
+    let batchedRendering = false;
+    let pointGeom: any = null;
+    let pointMat: any = null;
+    let nodeCloud: any = null;
+    let pointBaseSizes = new Float32Array();
+    let linkGeom: any = null;
+    let linkMat: any = null;
+    let linkLines: any = null;
+    let highlightLinkGeom: any = null;
+    let highlightLinkMat: any = null;
+    let highlightLinkLines: any = null;
+    let regionPointGeom: any = null;
+    let regionPointMat: any = null;
+    let regionPoints: any = null;
+    let regionLineGeom: any = null;
+    let regionLineMat: any = null;
+    let regionLines: any = null;
+    let detailLinkGeom: any = null;
+    let detailLinkMat: any = null;
+    let detailLinkLines: any = null;
+    let refreshRegionDetailLinks: ((regionId: string | null) => void) | null = null;
+    let semanticAtlas: SemanticRegionAtlas | null = null;
+    let overviewActive = false;
+    let activeRegionId: string | null = null;
     let galaxyTargets = new Map<string, GalaxyTarget>();
+    let semanticColorEnabled = clusterEnabled;
 
     // ── Color helpers ──────────────────────────────────────
     const getNodeColor = (node: GNode): string => {
       if (searchHighlights.has(node.id)) return '#ffd700';
+      if (!semanticColorEnabled) {
+        const target = galaxyTargets.get(node.id);
+        if (batchedRendering && target && !target.inMainComponent) {
+          return target.depth === 0 ? '#607d91' : '#31495c';
+        }
+        return '#19aee8';
+      }
       if (node.category && CATEGORY_FALLBACK[node.category]) return CATEGORY_FALLBACK[node.category];
       if (node.community_id != null) return COMMUNITY_COLORS[node.community_id % COMMUNITY_COLORS.length];
-      return '#00d7ff';
+      return '#4fc3f7';
     };
     const getNodeOpacity = (node: GNode): number => {
       if (highlightNodes.has(node) || searchHighlights.has(node.id)) return 1.0;
       const decay = node.decay_score ?? 5;
-      return Math.max(0.5, Math.min(1.0, decay / 6));
+      const baseOpacity = Math.max(0.5, Math.min(1.0, decay / 6));
+      const target = galaxyTargets.get(node.id);
+      if (
+        activeRegionId
+        && semanticAtlas
+        && semanticAtlas.nodeRegion.get(node.id) !== activeRegionId
+      ) {
+        return 0;
+      }
+      if (activeRegionId && semanticAtlas) {
+        return Math.min(1, 0.58 + baseOpacity * 0.4);
+      }
+      if (hoverNode || pinnedNode) {
+        return target?.inMainComponent === false ? 0.025 : 0.06;
+      }
+      // Disconnected components remain visible and selectable as muted islands.
+      return batchedRendering && target && !target.inMainComponent
+        ? target.depth === 0
+          ? Math.min(0.52, baseOpacity)
+          : Math.min(0.18, baseOpacity)
+        : batchedRendering
+          ? target?.diffuse
+            ? Math.min(0.44, 0.11 + baseOpacity * 0.34)
+            : Math.min(0.74, 0.2 + baseOpacity * 0.54)
+          : baseOpacity;
     };
     const getLinkColor = (link: GLink): string => {
-      const src = typeof link.source === 'object' ? (link.source as GNode) : null;
-      return src ? getNodeColor(src) : '#00d7ff';
+      const src =
+        typeof link.source === 'object'
+          ? (link.source as GNode)
+          : nodeMap.get(link.source);
+      return src ? getNodeColor(src) : '#4fc3f7';
     };
     const withAlpha = (color: string, alpha: number): string => {
       const clamped = Math.max(0, Math.min(1, alpha));
@@ -502,69 +634,96 @@ export function Graph() {
       const b = value & 255;
       return `rgba(${r},${g},${b},${clamped})`;
     };
-    // True when either endpoint is background dust. Such edges are the bulk of
-    // the graph and criss-cross the whole disc, so at equal weight they blur
-    // the arms and clusters into a uniform haze.
-    const linkTouchesDust = (link: GLink): boolean => {
-      const source = typeof link.source === 'object' ? (link.source as GNode).id : (link.source as string);
-      const target = typeof link.target === 'object' ? (link.target as GNode).id : (link.target as string);
-      return dustNodeIds.has(source) || dustNodeIds.has(target);
-    };
-
-    // How far diffuse-thread edges recede relative to compact-cluster edges.
-    // Topology placement has made these local rather than cross-disc noise, so
-    // they can remain visible enough to reveal the filaments they now encode.
-    const DUST_EDGE_DIM = 0.48;
-
-    // Resolve one mutable force-edge endpoint back to its stable node id.
-    const linkEndpointId = (endpoint: GLink['source']): string =>
-      typeof endpoint === 'object' ? endpoint.id : endpoint;
-
-    // Attenuate long resting bridges because their screen coverage compounds
-    // far faster than local links. Selection still restores full emphasis.
-    const linkSpanAttenuation = (link: GLink): number => {
-      const source = galaxyTargets.get(linkEndpointId(link.source));
-      const target = galaxyTargets.get(linkEndpointId(link.target));
-      if (!source || !target) return 1;
-      const span = Math.hypot(source.x - target.x, source.y - target.y, source.z - target.z);
-      const fullStrengthSpan = 96;
-      const falloff = Math.pow(fullStrengthSpan / Math.max(fullStrengthSpan, span), 1.7);
-      return Math.max(0.018, Math.min(1, falloff));
-    };
-
-    // Return resting or highlighted alpha for one visible semantic relationship.
     const getLinkAlpha = (link: GLink): number => {
-      if (highlightLinks.has(link)) return Math.max(0.56, (link.weight ?? 0.5) * 0.98);
-      if (hoverNode && !highlightLinks.has(link)) return 0.04 * linkSpanAttenuation(link);
-      // Edges blend additively, so thousands of overlapping strands compound
-      // into flat white-cyan and erase the node colours underneath. Resting
-      // alpha stays low; highlighted edges above still get full presence.
+      if (highlightLinks.has(link)) return Math.max(0.3, (link.weight ?? 0.5) * 0.8);
+      if (activeRegionId && semanticAtlas) {
+        const source = resolveEndpoint(link.source);
+        const target = resolveEndpoint(link.target);
+        if (
+          !source
+          || !target
+          || semanticAtlas.nodeRegion.get(source.id) !== activeRegionId
+          || semanticAtlas.nodeRegion.get(target.id) !== activeRegionId
+        ) {
+          return 0;
+        }
+      }
+      if (hoverNode || pinnedNode) return 0.0002;
       if ((link.weight ?? 0) >= weightThresholdLocal) {
-        const base = 0.09 + (link.weight ?? 0) * 0.2;
-        const dustDim = linkTouchesDust(link) ? DUST_EDGE_DIM : 1;
-        return base * dustDim * linkSpanAttenuation(link);
+        return batchedRendering
+          ? 0.025 + (link.weight ?? 0) * 0.045
+          : 0.012 + (link.weight ?? 0) * 0.035;
       }
       return 0;
     };
-    // Return a width that preserves local threads and de-emphasizes long bridges.
-    const getLinkWidth = (link: GLink): number => {
-      if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-      if ((link.weight ?? 0) < weightThresholdLocal) return 0;
-      const base = linkTouchesDust(link) ? 0.16 : 0.42;
-      return base * Math.max(0.08, Math.sqrt(linkSpanAttenuation(link)));
-    };
-
-    // Return one edge color with the current interaction alpha applied.
     const getVisibleLinkColor = (link: GLink): string => {
       const alpha = getLinkAlpha(link);
       if (alpha <= 0) return 'rgba(0,0,0,0)';
       return withAlpha(getLinkColor(link), alpha);
     };
+    // Resolve an endpoint before or after d3-force replaces its string ID.
+    const resolveEndpoint = (endpoint: string | GNode): GNode | undefined => {
+      return typeof endpoint === 'object' ? endpoint : nodeMap.get(endpoint);
+    };
+    // Rebuild the small interaction layer from every real edge touching the active memory.
+    const refreshHighlightGeometry = () => {
+      if (!batchedRendering || !highlightLinkGeom || !threeRef) return;
+      const activeLinks = [...highlightLinks]
+        .filter((link) => (link.weight ?? 0) >= weightThresholdLocal)
+        .sort((left, right) =>
+          (right.weight ?? 0) - (left.weight ?? 0)
+          || String(left.source).localeCompare(String(right.source))
+          || String(left.target).localeCompare(String(right.target))
+        )
+        .slice(0, 128);
+      const positions = new Float32Array(activeLinks.length * 6);
+      activeLinks.forEach((link, index) => {
+        const source = resolveEndpoint(link.source);
+        const target = resolveEndpoint(link.target);
+        const offset = index * 6;
+        positions[offset] = source?.x ?? 0;
+        positions[offset + 1] = source?.y ?? 0;
+        positions[offset + 2] = source?.z ?? 0;
+        positions[offset + 3] = target?.x ?? 0;
+        positions[offset + 4] = target?.y ?? 0;
+        positions[offset + 5] = target?.z ?? 0;
+      });
+      highlightLinkGeom.setAttribute(
+        'position',
+        new threeRef.BufferAttribute(positions, 3)
+      );
+      highlightLinkGeom.setDrawRange(0, activeLinks.length * 2);
+      highlightLinkGeom.computeBoundingSphere();
+      if (highlightLinkLines) highlightLinkLines.visible = activeLinks.length > 0;
+    };
+    // Refresh the fixed-cost edge buffers or the richer small-graph objects.
     const refreshLinkVisuals = () => {
       if (!graphInstance) return;
+      if (batchedRendering && linkGeom && threeRef) {
+        const colorAttribute = linkGeom.getAttribute('aColor');
+        const alphaAttribute = linkGeom.getAttribute('aAlpha');
+        const color = new threeRef.Color();
+        renderEdges.forEach((link, index) => {
+          color.set('#2385a3');
+          const alpha = getLinkAlpha(link);
+          for (const endpointOffset of [0, 1]) {
+            const vertex = index * 2 + endpointOffset;
+            colorAttribute.setXYZ(vertex, color.r, color.g, color.b);
+            alphaAttribute.setX(vertex, alpha);
+          }
+        });
+        colorAttribute.needsUpdate = true;
+        alphaAttribute.needsUpdate = true;
+        refreshHighlightGeometry();
+        return;
+      }
       graphInstance
         .linkOpacity(1)
-        .linkWidth((link: any) => getLinkWidth(link as GLink))
+        .linkWidth((link: any) => {
+          if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
+          if ((link.weight ?? 0) >= weightThresholdLocal) return 0.15;
+          return 0;
+        })
         .linkColor((link: any) => getVisibleLinkColor(link as GLink))
         .linkVisibility((link: any) => {
           if (highlightLinks.has(link)) return true;
@@ -572,8 +731,28 @@ export function Graph() {
         });
     };
 
+    // Refresh the fixed-cost node buffers or the richer small-graph sprites.
     const updateNodeVisuals = () => {
       if (!threeRef) return;
+      if (batchedRendering && pointGeom) {
+        const colorAttribute = pointGeom.getAttribute('aColor');
+        const opacityAttribute = pointGeom.getAttribute('aOpacity');
+        const sizeAttribute = pointGeom.getAttribute('size');
+        const color = new threeRef.Color();
+        graphNodes.forEach((node, index) => {
+          color.set(getNodeColor(node));
+          colorAttribute.setXYZ(index, color.r, color.g, color.b);
+          opacityAttribute.setX(index, getNodeOpacity(node));
+          sizeAttribute.setX(
+            index,
+            pointBaseSizes[index] * (highlightNodes.has(node) || searchHighlights.has(node.id) ? 1.34 : 1)
+          );
+        });
+        colorAttribute.needsUpdate = true;
+        opacityAttribute.needsUpdate = true;
+        sizeAttribute.needsUpdate = true;
+        return;
+      }
       nodeSprites.forEach((entry, id) => {
         const node = nodeMap.get(id);
         if (!node) return;
@@ -638,10 +817,60 @@ export function Graph() {
       setShowSearchResults(false);
     };
 
-    const zoomToNode = (memId: number | string) => {
-      const id = typeof memId === 'number' ? 'm' + memId : memId;
-      const node = nodeMap.get(id);
-      if (node && graphInstance && node.x != null) {
+    // Switch fixed-cost GPU layers between region overview and exact-memory detail.
+    const applySemanticZoom = (overview: boolean) => {
+      if (!batchedRendering || !semanticAtlas) return;
+      overviewActive = overview;
+      if (overview) {
+        activeRegionId = null;
+        setRegionSummary(null);
+      }
+      if (regionPoints) regionPoints.visible = overview;
+      if (regionLines) regionLines.visible = overview;
+      if (nodeCloud) nodeCloud.visible = !overview;
+      if (linkLines) linkLines.visible = false;
+      if (overview) refreshRegionDetailLinks?.(null);
+      if (highlightLinkLines) highlightLinkLines.visible = false;
+      galaxyBackdrop?.setDetail(!overview);
+      if (overview) handleNodeHover(null);
+      updateNodeVisuals();
+      setViewMode(overview ? 'overview' : 'memories');
+    };
+
+    // Enter one overview region and frame the original memories it represents.
+    const focusRegion = (region: SemanticRegion) => {
+      if (!graphInstance) return;
+      handleNodeHover(null);
+      activeRegionId = region.id;
+      refreshRegionDetailLinks?.(region.id);
+      setRegionSummary({
+        label: region.label,
+        memberCount: region.memberCount,
+        internalEdgeCount: region.internalEdgeCount
+      });
+      applySemanticZoom(false);
+      const distance = Math.max(105, Math.min(420, region.extent * 1.8 + 90));
+      graphInstance.cameraPosition(
+        { x: region.x, y: region.y, z: region.z + distance },
+        { x: region.x, y: region.y, z: region.z },
+        900
+      );
+    };
+
+    // Move the camera toward one point without changing inspector state.
+    const focusLoadedNode = (node: GNode) => {
+      if (graphInstance && node.x != null) {
+        activeRegionId = semanticAtlas?.nodeRegion.get(node.id) ?? null;
+        refreshRegionDetailLinks?.(activeRegionId);
+        const region = semanticAtlas?.regions.find(
+          (candidate) => candidate.id === activeRegionId
+        );
+        setRegionSummary(region ? {
+          label: region.label,
+          memberCount: region.memberCount,
+          internalEdgeCount: region.internalEdgeCount
+        } : null);
+        applySemanticZoom(false);
         const dist = 120;
         const hyp = Math.hypot(node.x!, node.y!, node.z!);
         const ratio = hyp > 0 ? 1 + dist / hyp : 1;
@@ -650,8 +879,47 @@ export function Graph() {
           { x: node.x, y: node.y, z: node.z },
           1500
         );
-        void handleNodeClick(node);
       }
+    };
+
+    // Focus a loaded point, or open an off-screen search result directly.
+    const zoomToNode = async (memId: number | string) => {
+      const id = typeof memId === 'number' ? 'm' + memId : memId;
+      const node = nodeMap.get(id);
+      if (node && graphInstance && node.x != null) {
+        focusLoadedNode(node);
+        await handleNodeClick(node);
+        return;
+      }
+      const numericId = Number.parseInt(id.startsWith('m') ? id.slice(1) : id, 10);
+      if (Number.isNaN(numericId)) return;
+      try {
+        const detail = await getMemoryDetail(numericId);
+        if (destroyed) return;
+        setSelectedMemory(detail);
+        setSidePanelOpen(true);
+        setShowSearchResults(false);
+      } catch (error) {
+        console.error('Failed to fetch memory:', error);
+      }
+    };
+
+    // Frame the custom point batch because ForceGraph cannot measure its bounds.
+    const fitGalaxyView = () => {
+      if (!graphInstance || graphNodes.length === 0) return;
+      applySemanticZoom(true);
+      const positioned = graphNodes.filter(
+        (node) => Number.isFinite(node.x) && Number.isFinite(node.y) && Number.isFinite(node.z)
+      );
+      if (positioned.length === 0) return;
+      const camera = graphInstance.camera();
+      const fit = calculateProjectedCameraFit(
+        positioned as FitPoint[],
+        camera.position ?? { x: 0, y: 0, z: 1000 },
+        camera.fov ?? 60,
+        camera.aspect ?? 1
+      );
+      if (fit) graphInstance.cameraPosition(fit.position, fit.center, 900);
     };
 
     const runSearch = async (query: string): Promise<GraphSearchResult[]> => {
@@ -673,7 +941,7 @@ export function Graph() {
       }
     };
 
-    // init loads graph data, creates the WebGL scene, and publishes control hooks to the interface.
+    // Initialize the Three.js force graph and publish its imperative control surface.
     async function init() {
       try {
         const [FG3D, THREE] = await Promise.all([
@@ -684,10 +952,9 @@ export function Graph() {
         threeRef = THREE;
 
         const [graphData, commData, statsData] = await Promise.all([
-          // min_component=2 prunes singleton "dust" (unlinked memories, mostly
-          // session auto-captures) so the view shows connected structure rather
-          // than a starfield of disconnected points.
-          getMemoryGraph(3, 50000, 2),
+          // Fetch the complete caller-scoped graph. The GPU overview performs
+          // edge level-of-detail without dropping memories from the atlas.
+          getMemoryGraph(),
           getCommunities(),
           getStats()
         ]);
@@ -710,6 +977,7 @@ export function Graph() {
         );
         const allEdges: GLink[] = (graphData.edges as unknown as GLink[]) ?? [];
         setNodeCount(graphData.node_count || nodes.length || 0);
+        setEdgeCount(graphData.edge_count || allEdges.length || 0);
 
         if (!nodes.length) {
           setLoadError('No memories found. Store some memories first.');
@@ -717,48 +985,42 @@ export function Graph() {
           return;
         }
 
-        // Performance: a browser can't draw tens of thousands of edges (or
-        // animate that many sprites) smoothly. Past a threshold we render only a
-        // bounded subset and turn off the per-frame extras (breathing); nodes
-        // collapse to a single GPU point cloud (see below). The Edge Floor slider
-        // filters within the rendered set. All thresholds are constants, so this
-        // scales on its own.
-        //
-        // The subset is chosen to PRESERVE CONNECTIVITY (see selectRenderEdges):
-        // a plain top-N-by-weight slice silently drops every edge of any node
-        // whose links all sit below the global cutoff, fragmenting clusters into
-        // disconnected dust. selectRenderEdges keeps each node's strongest edge
-        // first, then fills the budget by weight -- so the structure survives the
-        // cap. The cap is higher than the old flat 9k because the skeleton pass
-        // spends most of its budget on the connective edges that actually matter.
-        const big = nodes.length > 2500;
-        const MAX_RENDER_EDGES = 14000;
-        const edges: GLink[] = big ? selectRenderEdges(allEdges, MAX_RENDER_EDGES) : allEdges;
-        // Report what's actually drawn so the header isn't misleading.
-        setEdgeCount(edges.length);
-
-        // Calibrate the Edge Floor control to the weights this graph actually
-        // contains, and open on a floor that keeps the strongest connections
-        // legible instead of drawing every edge into one saturated wash.
-        const weightProfile = describeEdgeWeights(edges);
-        setWeightBounds({ min: weightProfile.min, max: weightProfile.max });
-        weightThresholdLocal = weightProfile.defaultFloor;
-        setWeightThreshold(weightProfile.defaultFloor);
-
         // Map community IDs onto nodes
         const commMap = new Map<string, number>();
         (commData.communities || []).forEach((c) => {
           (c.top_memories || []).forEach((mid) => commMap.set('m' + mid, c.id));
         });
 
-        // Build neighbor/link lookups
+        // Initialize every node before topology and interaction indexes are built.
         nodes.forEach((node) => {
           node.neighbors = [];
           node.links = [];
-          node.community_id = commMap.get(node.id);
+          node.community_id = commMap.get(node.id) ?? node.community_id;
           nodeMap.set(node.id, node);
         });
-        edges.forEach((link) => {
+
+        // The stable overview is derived from every stored relationship. Edge
+        // level-of-detail then keeps the maximum-affinity spanning forest and
+        // spends the remainder on short local detail, so it cannot manufacture
+        // detached islands or long decorative beams.
+        galaxyTargets = buildGalaxyTargets(nodes, allEdges);
+        setComponentCount(new Set([...galaxyTargets.values()].map((target) => target.component)).size);
+        setMainComponentCount(
+          [...galaxyTargets.values()].filter((target) => target.inMainComponent).length
+        );
+        const overviewEdgeCap = Math.min(
+          allEdges.length,
+          Math.max(4000, Math.ceil(Math.sqrt(nodes.length) * 32))
+        );
+        const edges: GLink[] = selectRenderEdges(allEdges, overviewEdgeCap, galaxyTargets);
+        graphNodes = nodes;
+        renderEdges = edges;
+        batchedRendering = nodes.length >= GPU_BATCH_THRESHOLD;
+        setDrawnEdgeCount(edges.length);
+
+        // Full neighbor/link lookups preserve selection behavior even when only
+        // a level-of-detail subset of relationships is visible at overview zoom.
+        allEdges.forEach((link) => {
           const src = nodeMap.get(link.source as string);
           const tgt = nodeMap.get(link.target as string);
           if (src && tgt) {
@@ -769,100 +1031,102 @@ export function Graph() {
           }
         });
 
-        // Seed the first visible frame in the final semantic shape. The guide
-        // force can still deform this structure through links, drag, and charge.
-        galaxyTargets = buildGalaxyTargets(nodes, edges);
-        seedGalaxyPositions(nodes, galaxyTargets);
-
-        // Pin the topology-driven layout within the spiral.
-        //
-        // Dust is the overwhelming majority of nodes, but its links still carry
-        // structure. The layout grows those motes from compact semantic anchors
-        // along a maximum-affinity forest, so every endpoint must share the same
-        // fixed coordinate model. Moving only the anchors tears the forest into
-        // long edge beams. The Clusters toggle releases every pin for users who
-        // prefer a pure force-directed view.
-        const pinGalaxyLayout = (pinned: boolean) => {
-          for (const node of nodes) {
-            const target = galaxyTargets.get(node.id);
-            if (!target) continue;
-            if (pinned) {
-              (node as any).fx = target.x;
-              (node as any).fy = target.y;
-              (node as any).fz = target.z;
-            } else {
-              (node as any).fx = undefined;
-              (node as any).fy = undefined;
-              (node as any).fz = undefined;
-            }
-          }
-        };
-        pinGalaxyLayout(true);
-
-        // Record which nodes are dust so their edges can be pushed back.
+        // Seed the complete topology once; large graphs remain static GPU data
+        // while small graphs may continue into the richer force simulation.
         for (const node of nodes) {
-          if (galaxyTargets.get(node.id)?.diffuse) dustNodeIds.add(node.id);
+          const target = galaxyTargets.get(node.id);
+          if (!target) continue;
+          if (!Number.isFinite(node.x)) node.x = target.x;
+          if (!Number.isFinite(node.y)) node.y = target.y;
+          if (!Number.isFinite(node.z)) node.z = target.z;
         }
+        semanticAtlas = batchedRendering
+          ? buildSemanticRegions(nodes, allEdges, galaxyTargets)
+          : null;
+        setRegionCount(semanticAtlas?.regions.length ?? 0);
 
         const ringTexture = createRingTexture(THREE);
-        // Pool of 8 organism textures, reused across nodes
-        const organismTextures = Array.from({ length: 8 }, (_, i) => createOrganismTexture(THREE, i * 137));
+        // Rich organism textures are only legible on the small-graph sprite path.
+        const organismTextures = batchedRendering
+          ? []
+          : Array.from({ length: 8 }, (_, i) => createOrganismTexture(THREE, i * 137));
+        // Production atlases use one compact signal texture instead of
+        // downsampling organism detail into bright butterfly-shaped artifacts.
+        const batchPointTexture = batchedRendering ? createGalaxyPointTexture(THREE) : null;
+        ownedTextures.add(ringTexture);
+        organismTextures.forEach((texture) => ownedTextures.add(texture));
+        if (batchPointTexture) ownedTextures.add(batchPointTexture);
         const breathPhases = new Map<string, number>();
+        const motionReduced =
+          window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
-        // Big-graph node rendering: ONE GPU point cloud (single draw call) with
-        // per-point color + size, using the organism glow as the point sprite.
-        // Positions are synced from the simulation each tick (see onEngineTick).
-        // Small graphs keep the richer per-node sprites with hover/click/breathing.
-        let pointGeom: any = null;
-        let pointMat: any = null;
-        let nodeCloud: any = null;
-        if (big) {
+        // Production-sized graphs use one node draw and one edge draw. Small
+        // graphs keep richer per-node sprites because their fixed cost is modest.
+        if (batchedRendering) {
           const count = nodes.length;
+          const atlasDensityScale = Math.max(
+            0.34,
+            Math.min(1, Math.sqrt(GPU_BATCH_THRESHOLD / count))
+          );
           const positions = new Float32Array(count * 3);
           const colors = new Float32Array(count * 3);
+          const opacities = new Float32Array(count);
           const sizes = new Float32Array(count);
           const phases = new Float32Array(count);
           const col = new THREE.Color();
-          // Background dust is drawn smaller and dimmer than structural nodes.
-          // Bookkeeping categories are the majority of any real instance, so at
-          // equal weight they wash out the communities that carry the meaning;
-          // pushing them back is what lets the clusters read as clusters.
-          // Dust points carry the spiral arms, so they stay bright enough to
-          // draw them. It is the dust EDGES that had to recede, not the motes:
-          // dimming the points instead simply erased the galaxy's shape.
-          const DUST_BRIGHTNESS = 0.95;
-          const DUST_SIZE = 0.9;
           nodes.forEach((node, i) => {
+            positions[i * 3] = node.x ?? 0;
+            positions[i * 3 + 1] = node.y ?? 0;
+            positions[i * 3 + 2] = node.z ?? 0;
             col.set(getNodeColor(node));
-            const isDust = galaxyTargets.get(node.id)?.diffuse === true;
-            const brightness = isDust ? DUST_BRIGHTNESS : 1;
-            colors[i * 3] = col.r * brightness;
-            colors[i * 3 + 1] = col.g * brightness;
-            colors[i * 3 + 2] = col.b * brightness;
-            const baseSize = Math.max(8, ((node.importance || 5) * 1.8 + (node.size || 0) * 0.4) * 2.4);
-            sizes[i] = isDust ? baseSize * DUST_SIZE : baseSize;
+            colors[i * 3] = col.r;
+            colors[i * 3 + 1] = col.g;
+            colors[i * 3 + 2] = col.b;
+            opacities[i] = getNodeOpacity(node);
+            const target = galaxyTargets.get(node.id);
+            const componentScale =
+              target?.inMainComponent === false
+                ? target.depth === 0
+                  ? 1.28
+                  : 0.72
+                : 1;
+            sizes[i] =
+              Math.max(8, ((node.importance || 5) * 1.8 + (node.size || 0) * 0.4) * 2.4) *
+              (node.is_static ? 1.18 : 1) *
+              componentScale *
+              atlasDensityScale;
             phases[i] = (i * 0.7) % (Math.PI * 2);
           });
+          pointBaseSizes = sizes.slice();
           pointGeom = new THREE.BufferGeometry();
           pointGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
           pointGeom.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+          pointGeom.setAttribute('aOpacity', new THREE.BufferAttribute(opacities, 1));
           pointGeom.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
           pointGeom.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
           pointMat = new THREE.ShaderMaterial({
-            uniforms: { uTex: { value: organismTextures[0] }, uTime: { value: 0 } },
+            uniforms: {
+              uTex: { value: batchPointTexture },
+              uTime: { value: 0 },
+              uMotion: { value: motionReduced ? 0 : 1 }
+            },
             transparent: true,
             depthWrite: false,
             blending: THREE.AdditiveBlending,
             vertexShader:
               'attribute float size;\n' +
               'attribute float aPhase;\n' +
+              'attribute float aOpacity;\n' +
               'attribute vec3 aColor;\n' +
               'uniform float uTime;\n' +
+              'uniform float uMotion;\n' +
               'varying vec3 vColor;\n' +
+              'varying float vOpacity;\n' +
               'void main() {\n' +
               '  vColor = aColor;\n' +
+              '  vOpacity = aOpacity;\n' +
               // Gentle per-point breathing pulse, computed on the GPU.
-              '  float breathe = 1.0 + sin(uTime * 0.8 + aPhase) * 0.11;\n' +
+              '  float breathe = 1.0 + sin(uTime * 0.8 + aPhase) * 0.11 * uMotion;\n' +
               '  vec4 mv = modelViewMatrix * vec4(position, 1.0);\n' +
               '  gl_PointSize = size * breathe * (440.0 / max(1.0, -mv.z));\n' +
               '  gl_Position = projectionMatrix * mv;\n' +
@@ -872,18 +1136,305 @@ export function Graph() {
             fragmentShader:
               'uniform sampler2D uTex;\n' +
               'varying vec3 vColor;\n' +
+              'varying float vOpacity;\n' +
               'void main() {\n' +
               '  vec4 tex = texture2D(uTex, gl_PointCoord);\n' +
               '  if (tex.a < 0.02) discard;\n' +
-              '  gl_FragColor = vec4(vColor * 2.3, 1.0) * tex;\n' +
+              '  gl_FragColor = vec4(vColor * 1.15, vOpacity) * tex;\n' +
               '}'
           });
           nodeCloud = new THREE.Points(pointGeom, pointMat);
           nodeCloud.frustumCulled = false;
+
+          const linkPositions = new Float32Array(edges.length * 6);
+          const linkColors = new Float32Array(edges.length * 6);
+          const linkAlphas = new Float32Array(edges.length * 2);
+          edges.forEach((link, index) => {
+            const source = resolveEndpoint(link.source);
+            const target = resolveEndpoint(link.target);
+            const offset = index * 6;
+            linkPositions[offset] = source?.x ?? 0;
+            linkPositions[offset + 1] = source?.y ?? 0;
+            linkPositions[offset + 2] = source?.z ?? 0;
+            linkPositions[offset + 3] = target?.x ?? 0;
+            linkPositions[offset + 4] = target?.y ?? 0;
+            linkPositions[offset + 5] = target?.z ?? 0;
+          });
+          linkGeom = new THREE.BufferGeometry();
+          linkGeom.setAttribute('position', new THREE.BufferAttribute(linkPositions, 3));
+          linkGeom.setAttribute('aColor', new THREE.BufferAttribute(linkColors, 3));
+          linkGeom.setAttribute('aAlpha', new THREE.BufferAttribute(linkAlphas, 1));
+          linkMat = new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.NormalBlending,
+            vertexShader:
+              'attribute vec3 aColor;\n' +
+              'attribute float aAlpha;\n' +
+              'varying vec3 vColor;\n' +
+              'varying float vAlpha;\n' +
+              'void main() {\n' +
+              '  vColor = aColor;\n' +
+              '  vAlpha = aAlpha;\n' +
+              '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n' +
+              '}',
+            fragmentShader:
+              'varying vec3 vColor;\n' +
+              'varying float vAlpha;\n' +
+              'void main() {\n' +
+              '  if (vAlpha <= 0.001) discard;\n' +
+              '  gl_FragColor = vec4(vColor, vAlpha);\n' +
+              '}'
+          });
+          linkLines = new THREE.LineSegments(linkGeom, linkMat);
+          linkLines.frustumCulled = false;
+
+          highlightLinkGeom = new THREE.BufferGeometry();
+          highlightLinkGeom.setAttribute(
+            'position',
+            new THREE.BufferAttribute(new Float32Array(), 3)
+          );
+          highlightLinkMat = new THREE.LineBasicMaterial({
+            color: new THREE.Color('#72ecff'),
+            transparent: true,
+            opacity: 0.72,
+            depthWrite: false,
+            blending: THREE.NormalBlending
+          });
+          highlightLinkLines = new THREE.LineSegments(highlightLinkGeom, highlightLinkMat);
+          highlightLinkLines.frustumCulled = false;
+          highlightLinkLines.visible = false;
+
+          const regionList = semanticAtlas?.regions ?? [];
+          const regionById = new Map(regionList.map((region) => [region.id, region]));
+          const regionPositions = new Float32Array(regionList.length * 3);
+          const regionColors = new Float32Array(regionList.length * 3);
+          const regionSizes = new Float32Array(regionList.length);
+          const regionOpacities = new Float32Array(regionList.length);
+          const regionColor = new THREE.Color();
+          regionList.forEach((region, index) => {
+            regionPositions[index * 3] = region.x;
+            regionPositions[index * 3 + 1] = region.y;
+            regionPositions[index * 3 + 2] = region.z;
+            regionColor.set(
+              region.communityId != null
+                ? COMMUNITY_COLORS[region.communityId % COMMUNITY_COLORS.length]
+                : CATEGORY_FALLBACK[region.category] || '#4fc3f7'
+            );
+            regionColors[index * 3] = regionColor.r;
+            regionColors[index * 3 + 1] = regionColor.g;
+            regionColors[index * 3 + 2] = regionColor.b;
+            regionSizes[index] = region.inMainComponent
+              ? 28
+                + Math.min(34, Math.log2(region.memberCount + 1) * 3.4)
+                + Math.min(9, region.importance * 0.9)
+              : 11
+                + Math.min(12, Math.log2(region.memberCount + 1) * 1.8)
+                + Math.min(4, region.importance * 0.4);
+            regionOpacities[index] = region.inMainComponent ? 0.94 : 0.42;
+          });
+          regionPointGeom = new THREE.BufferGeometry();
+          regionPointGeom.setAttribute(
+            'position',
+            new THREE.BufferAttribute(regionPositions, 3)
+          );
+          regionPointGeom.setAttribute(
+            'aColor',
+            new THREE.BufferAttribute(regionColors, 3)
+          );
+          regionPointGeom.setAttribute(
+            'aOpacity',
+            new THREE.BufferAttribute(regionOpacities, 1)
+          );
+          regionPointGeom.setAttribute(
+            'size',
+            new THREE.BufferAttribute(regionSizes, 1)
+          );
+          regionPointMat = new THREE.ShaderMaterial({
+            uniforms: { uTex: { value: batchPointTexture } },
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            vertexShader:
+              'attribute float size;\n' +
+              'attribute float aOpacity;\n' +
+              'attribute vec3 aColor;\n' +
+              'varying vec3 vColor;\n' +
+              'varying float vOpacity;\n' +
+              'void main() {\n' +
+              '  vColor = aColor;\n' +
+              '  vOpacity = aOpacity;\n' +
+              '  vec4 mv = modelViewMatrix * vec4(position, 1.0);\n' +
+              '  gl_PointSize = size * (440.0 / max(1.0, -mv.z));\n' +
+              '  gl_Position = projectionMatrix * mv;\n' +
+              '}',
+            fragmentShader:
+              'uniform sampler2D uTex;\n' +
+              'varying vec3 vColor;\n' +
+              'varying float vOpacity;\n' +
+              'void main() {\n' +
+              '  vec4 tex = texture2D(uTex, gl_PointCoord);\n' +
+              '  if (tex.a < 0.02) discard;\n' +
+              '  gl_FragColor = vec4(vColor * 1.12, vOpacity) * tex;\n' +
+              '}'
+          });
+          regionPoints = new THREE.Points(regionPointGeom, regionPointMat);
+          regionPoints.frustumCulled = false;
+
+          const overviewEdges = semanticAtlas
+            ? selectSemanticRegionEdges(
+                semanticAtlas,
+                Math.max(48, Math.min(96, Math.ceil(semanticAtlas.regions.length * 0.7)))
+              )
+            : [];
+          setRegionEdgeCount(overviewEdges.length);
+          const regionLinePositions = new Float32Array(overviewEdges.length * 6);
+          const regionLineAlphas = new Float32Array(overviewEdges.length * 2);
+          overviewEdges.forEach((edge, index) => {
+            const source = regionById.get(edge.source);
+            const target = regionById.get(edge.target);
+            const offset = index * 6;
+            regionLinePositions[offset] = source?.x ?? 0;
+            regionLinePositions[offset + 1] = source?.y ?? 0;
+            regionLinePositions[offset + 2] = source?.z ?? 0;
+            regionLinePositions[offset + 3] = target?.x ?? 0;
+            regionLinePositions[offset + 4] = target?.y ?? 0;
+            regionLinePositions[offset + 5] = target?.z ?? 0;
+            const alpha = 0.08 + Math.min(0.16, Math.log2(edge.count + 1) * 0.022);
+            regionLineAlphas[index * 2] = alpha;
+            regionLineAlphas[index * 2 + 1] = alpha;
+          });
+          regionLineGeom = new THREE.BufferGeometry();
+          regionLineGeom.setAttribute(
+            'position',
+            new THREE.BufferAttribute(regionLinePositions, 3)
+          );
+          regionLineGeom.setAttribute(
+            'aAlpha',
+            new THREE.BufferAttribute(regionLineAlphas, 1)
+          );
+          regionLineMat = new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.NormalBlending,
+            vertexShader:
+              'attribute float aAlpha;\n' +
+              'varying float vAlpha;\n' +
+              'void main() {\n' +
+              '  vAlpha = aAlpha;\n' +
+              '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n' +
+              '}',
+            fragmentShader:
+              'varying float vAlpha;\n' +
+              'void main() {\n' +
+              '  gl_FragColor = vec4(0.0, 0.71, 1.0, vAlpha);\n' +
+              '}'
+          });
+          regionLines = new THREE.LineSegments(regionLineGeom, regionLineMat);
+          regionLines.frustumCulled = false;
+
+          detailLinkGeom = new THREE.BufferGeometry();
+          detailLinkGeom.setAttribute(
+            'position',
+            new THREE.BufferAttribute(new Float32Array(), 3)
+          );
+          detailLinkMat = new THREE.LineBasicMaterial({
+            color: new THREE.Color('#38d7f2'),
+            transparent: true,
+            opacity: 0.34,
+            depthWrite: false,
+            blending: THREE.NormalBlending
+          });
+          detailLinkLines = new THREE.LineSegments(detailLinkGeom, detailLinkMat);
+          detailLinkLines.frustumCulled = false;
+          detailLinkLines.visible = false;
+
+          // Rebuild one bounded real-edge batch for the currently expanded region.
+          refreshRegionDetailLinks = (regionId: string | null) => {
+            if (!regionId || !semanticAtlas || !detailLinkGeom || !detailLinkLines) {
+              if (detailLinkLines) detailLinkLines.visible = false;
+              return;
+            }
+            const region = semanticAtlas.regions.find((candidate) => candidate.id === regionId);
+            const regionEdges = allEdges.filter((edge) => {
+              const source = resolveEndpoint(edge.source);
+              const target = resolveEndpoint(edge.target);
+              return Boolean(
+                source
+                && target
+                && (edge.weight ?? 0) >= weightThresholdLocal
+                && semanticAtlas?.nodeRegion.get(source.id) === regionId
+                && semanticAtlas?.nodeRegion.get(target.id) === regionId
+              );
+            });
+            const detailEdgeCap = Math.min(
+              regionEdges.length,
+              Math.max(240, Math.ceil(Math.sqrt(region?.memberCount ?? 1) * 36))
+            );
+            const selected = selectRenderEdges(
+              regionEdges,
+              detailEdgeCap,
+              galaxyTargets
+            );
+            const positions = new Float32Array(selected.length * 6);
+            selected.forEach((edge, index) => {
+              const source = resolveEndpoint(edge.source);
+              const target = resolveEndpoint(edge.target);
+              const offset = index * 6;
+              positions[offset] = source?.x ?? 0;
+              positions[offset + 1] = source?.y ?? 0;
+              positions[offset + 2] = source?.z ?? 0;
+              positions[offset + 3] = target?.x ?? 0;
+              positions[offset + 4] = target?.y ?? 0;
+              positions[offset + 5] = target?.z ?? 0;
+            });
+            detailLinkGeom.setAttribute(
+              'position',
+              new THREE.BufferAttribute(positions, 3)
+            );
+            detailLinkGeom.setDrawRange(0, selected.length * 2);
+            detailLinkGeom.computeBoundingSphere();
+            detailLinkLines.visible = selected.length > 0;
+          };
         }
 
+        // Create one opt-in label sprite for a static memory.
+        const createNodeLabel = (node: GNode, baseSize: number) => {
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d')!;
+          const text = node.label || node.content?.slice(0, 30) || node.id;
+          canvas.width = 256;
+          canvas.height = 40;
+          context.font = '20px Inter, sans-serif';
+          context.fillStyle = 'white';
+          context.textAlign = 'center';
+          context.fillText(text.length > 28 ? text.slice(0, 28) + '...' : text, 128, 28);
+          const texture = new THREE.CanvasTexture(canvas);
+          const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            opacity: 0.7,
+            depthWrite: false
+          });
+          ownedTextures.add(texture);
+          ownedSpriteMaterials.add(material);
+          const label = new THREE.Sprite(material);
+          label.scale.set(baseSize * 2.5, baseSize * 0.4, 1);
+          label.position.set(0, baseSize * 0.8, 0);
+          label.visible = false;
+          nodeLabels.set(node.id, label);
+          return label;
+        };
+
+        // Production-sized atlases are already owned by the fixed-cost Points
+        // and LineSegments batches above. Feeding the same data into ForceGraph
+        // would create a second per-node scene graph and run a duplicate force
+        // simulation even though its native objects and links are hidden.
+        const forceGraphData = batchedRendering
+          ? { nodes: [] as GNode[], links: [] as GLink[] }
+          : { nodes, links: edges };
         const graph = new ForceGraph3D(container)
-          .graphData({ nodes, links: edges })
+          .graphData(forceGraphData)
           .backgroundColor('#05060d')
           .showNavInfo(false)
           .nodeLabel(() => '')
@@ -892,11 +1443,15 @@ export function Graph() {
           .linkTarget('target')
           // Living organism nodes with optional text labels
           .nodeThreeObject((node: any) => {
-            // Big graphs draw nodes via the single point cloud; give the lib an
-            // empty object so it tracks position for the sim without a draw call.
-            if (big) return new THREE.Object3D();
             const n = node as GNode;
-            const baseSize = Math.max(10, (n.importance || 5) * 3.1 + (n.size || 0) * 0.65);
+            const baseSize = Math.max(4, (n.importance || 5) * 1.8 + (n.size || 0) * 0.4);
+            // The point batch draws live nodes; retain only hidden static labels
+            // as scene objects so the Labels control remains useful.
+            if (batchedRendering) {
+              const group = new THREE.Group();
+              if (n.is_static) group.add(createNodeLabel(n, baseSize));
+              return group;
+            }
             const idNum = Number.parseInt(n.id.replace(/\D/g, '') || '0', 10);
             const tex = organismTextures[idNum % organismTextures.length];
             breathPhases.set(n.id, (idNum * 0.7) % (Math.PI * 2));
@@ -906,9 +1461,9 @@ export function Graph() {
               color: new THREE.Color(getNodeColor(n)),
               transparent: true,
               opacity: getNodeOpacity(n),
-              depthWrite: false,
-              blending: THREE.AdditiveBlending
+              depthWrite: false
             });
+            ownedSpriteMaterials.add(material);
             const sprite = new THREE.Sprite(material);
             sprite.scale.set(baseSize, baseSize, baseSize);
             nodeSprites.set(n.id, { material, baseSize, sprite });
@@ -920,41 +1475,22 @@ export function Graph() {
                 map: ringTexture,
                 transparent: true,
                 opacity: 0.15,
-                depthWrite: false,
-                blending: THREE.AdditiveBlending
+                depthWrite: false
               });
+              ownedSpriteMaterials.add(ringMat);
               const ring = new THREE.Sprite(ringMat);
               ring.scale.set(baseSize * 1.15, baseSize * 1.15, baseSize * 1.15);
               group.add(ring);
 
-              // Text label (hidden by default, toggled via showLabels)
-              const canvas = document.createElement('canvas');
-              const ctx = canvas.getContext('2d')!;
-              const text = n.label || n.content?.slice(0, 30) || n.id;
-              canvas.width = 256;
-              canvas.height = 40;
-              ctx.font = '20px Inter, sans-serif';
-              ctx.fillStyle = 'white';
-              ctx.textAlign = 'center';
-              ctx.fillText(text.length > 28 ? text.slice(0, 28) + '...' : text, 128, 28);
-              const labelTex = new THREE.CanvasTexture(canvas);
-              const labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, opacity: 0.7, depthWrite: false });
-              const label = new THREE.Sprite(labelMat);
-              label.scale.set(baseSize * 2.5, baseSize * 0.4, 1);
-              label.position.set(0, baseSize * 0.8, 0);
-              label.visible = false;
+              const label = createNodeLabel(n, baseSize);
               group.add(label);
-              nodeLabels.set(n.id, label);
               return group;
             }
             return sprite;
           })
-          // Breathing animation -- nodes gently pulse like living cells. Skipped
-          // on big graphs: scaling thousands of sprites per tick is too costly
-          // and the pulse is imperceptible at that zoom anyway.
+          // Keep both fixed-cost GPU layers aligned with the force simulation.
           .onEngineTick(() => {
-            if (big) {
-              // Drive the point cloud from the live simulation positions.
+            if (batchedRendering) {
               if (pointGeom) {
                 const arr = pointGeom.attributes.position.array as Float32Array;
                 for (let i = 0; i < nodes.length; i++) {
@@ -965,12 +1501,27 @@ export function Graph() {
                 }
                 pointGeom.attributes.position.needsUpdate = true;
               }
+              if (linkGeom) {
+                const arr = linkGeom.attributes.position.array as Float32Array;
+                renderEdges.forEach((link, index) => {
+                  const source = resolveEndpoint(link.source);
+                  const target = resolveEndpoint(link.target);
+                  const offset = index * 6;
+                  arr[offset] = source?.x ?? 0;
+                  arr[offset + 1] = source?.y ?? 0;
+                  arr[offset + 2] = source?.z ?? 0;
+                  arr[offset + 3] = target?.x ?? 0;
+                  arr[offset + 4] = target?.y ?? 0;
+                  arr[offset + 5] = target?.z ?? 0;
+                });
+                linkGeom.attributes.position.needsUpdate = true;
+              }
               return;
             }
             const t = motionReduced ? 0 : performance.now() * 0.001;
             nodeSprites.forEach((entry, id) => {
               const phase = breathPhases.get(id) ?? 0;
-              const breathScale = motionReduced ? 1 : 1 + Math.sin(t * 0.8 + phase) * 0.08;
+              const breathScale = 1 + Math.sin(t * 0.8 + phase) * 0.08;
               const sizeVal = entry.baseSize * breathScale;
               const isHovered = highlightNodes.has(nodeMap.get(id)!);
               const scale = isHovered ? sizeVal * 1.3 : sizeVal;
@@ -978,51 +1529,188 @@ export function Graph() {
             });
           })
           // Layer 1: faint static edges
-          .linkWidth((link: any) => getLinkWidth(link as GLink))
+          .linkWidth((link: any) => {
+            if (batchedRendering) return 0;
+            if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
+            if ((link.weight ?? 0) >= weightThresholdLocal) return 0.15;
+            return 0;
+          })
           .linkOpacity(1)
           .linkColor((link: any) => getVisibleLinkColor(link as GLink))
+          .linkVisibility((link: any) => {
+            if (batchedRendering) return false;
+            if (highlightLinks.has(link)) return true;
+            return (link.weight ?? 0) >= weightThresholdLocal;
+          })
           // Flow-trail particles were removed: they only ever rendered on the
           // small-graph path (big graphs disable them), so they never appeared
           // in production and read as an unstyled default. Hover/selection
           // feedback comes from link colour + opacity (see getVisibleLinkColor).
           // Interactions
-          .onNodeHover((node: any) => handleNodeHover(node as GNode | null))
-          .onNodeClick((node: any) => void handleNodeClick(node as GNode))
+          .onNodeHover((node: any) => {
+            if (!batchedRendering) handleNodeHover(node as GNode | null);
+          })
+          .onNodeClick((node: any) => {
+            if (!batchedRendering) {
+              focusLoadedNode(node as GNode);
+              void handleNodeClick(node as GNode);
+            }
+          })
           .onBackgroundClick(() => {
             if (!showSearchResultsRef.current) closePanel();
           })
-          // Seeded positions make blocking pre-warm unnecessary. Both paths
-          // paint immediately and settle within a bounded amount of work.
+          // Deterministic starting coordinates remove the blocking pre-warm.
           .warmupTicks(0)
-          .cooldownTicks(big ? 36 : 120)
-          .d3AlphaDecay(big ? 0.075 : 0.036)
-          .d3VelocityDecay(big ? 0.58 : 0.48);
+          .cooldownTicks(batchedRendering ? 0 : 120)
+          .d3AlphaDecay(batchedRendering ? 0.06 : 0.036)
+          .d3VelocityDecay(batchedRendering ? 0.55 : 0.48);
 
         graphInstance = graph;
 
-        // Force canvas background to the same deep-space black as the interface shell.
+        // Prepare the canvas as both a visual surface and a keyboard target.
         const canvas = graph.renderer().domElement;
         canvas.style.backgroundColor = '#05060d';
+        canvas.tabIndex = 0;
+        canvas.setAttribute('role', 'application');
+        canvas.setAttribute(
+          'aria-label',
+          'Interactive memory galaxy. Use the pointer or arrow keys to select memories.'
+        );
 
-        disposeCosmicScene = addGalaxyBackdrop(THREE, graph.scene());
+        galaxyBackdrop = addGalaxyBackdrop(THREE, graph.scene(), galaxyTargets);
 
-        // Add the big-graph node point cloud to the live scene, and drive its
-        // breathing pulse from a lightweight rAF (just advances a time uniform;
-        // the GPU does the per-point work, so it stays alive even after settle).
+        // Add both fixed-cost live layers after the backdrop.
+        if (regionLines) graph.scene().add(regionLines);
+        if (regionPoints) graph.scene().add(regionPoints);
+        if (detailLinkLines) graph.scene().add(detailLinkLines);
+        if (linkLines) graph.scene().add(linkLines);
+        if (highlightLinkLines) graph.scene().add(highlightLinkLines);
         if (nodeCloud) {
           graph.scene().add(nodeCloud);
-          // animateCloud advances one shader uniform while the GPU handles every point.
           const animateCloud = () => {
             if (destroyed) return;
             if (pointMat) pointMat.uniforms.uTime.value = performance.now() * 0.001;
             cloudRaf = requestAnimationFrame(animateCloud);
           };
-          if (!motionReduced) cloudRaf = requestAnimationFrame(animateCloud);
+          cloudRaf = requestAnimationFrame(animateCloud);
+        }
+        applySemanticZoom(batchedRendering);
+        refreshLinkVisuals();
+        updateNodeVisuals();
+
+        // Restore point-level hover, click, and keyboard access for the batched
+        // layer because its nodes are no longer individual Three.js objects.
+        if (batchedRendering && nodeCloud) {
+          const raycaster = new THREE.Raycaster();
+          raycaster.params.Points.threshold = 12;
+          const regionRaycaster = new THREE.Raycaster();
+          regionRaycaster.params.Points.threshold = 28;
+          const pointer = new THREE.Vector2();
+          let pointerFrame: number | undefined;
+          let keyboardIndex = -1;
+          // Return the point under a canvas-space pointer event.
+          const pickNode = (event: PointerEvent | MouseEvent): GNode | null => {
+            const rect = canvas.getBoundingClientRect();
+            pointer.x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+            pointer.y = -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+            raycaster.setFromCamera(pointer, graph.camera());
+            const hit = raycaster.intersectObject(nodeCloud, false)[0];
+            return hit?.index == null ? null : nodes[hit.index] ?? null;
+          };
+          // Return the semantic region under a canvas-space pointer event.
+          const pickRegion = (event: PointerEvent | MouseEvent): SemanticRegion | null => {
+            if (!regionPoints || !semanticAtlas) return null;
+            const rect = canvas.getBoundingClientRect();
+            pointer.x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+            pointer.y = -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+            regionRaycaster.setFromCamera(pointer, graph.camera());
+            const hit = regionRaycaster.intersectObject(regionPoints, false)[0];
+            return hit?.index == null ? null : semanticAtlas.regions[hit.index] ?? null;
+          };
+          // Throttle hover picking to one raycast per animation frame.
+          const onPointerMove = (event: PointerEvent) => {
+            if (pointerFrame !== undefined) cancelAnimationFrame(pointerFrame);
+            pointerFrame = requestAnimationFrame(() => {
+              pointerFrame = undefined;
+              if (overviewActive) {
+                const region = pickRegion(event);
+                canvas.style.cursor = region ? 'pointer' : 'grab';
+                return;
+              }
+              const node = pickNode(event);
+              handleNodeHover(node);
+              canvas.style.cursor = node ? 'pointer' : 'grab';
+            });
+          };
+          // Clear transient emphasis when the pointer exits the graph.
+          const onPointerLeave = () => {
+            handleNodeHover(null);
+            canvas.style.cursor = 'grab';
+          };
+          // Open a hit memory while preserving background-close behavior.
+          const onCanvasClick = (event: MouseEvent) => {
+            if (overviewActive) {
+              const region = pickRegion(event);
+              if (region) focusRegion(region);
+              return;
+            }
+            const node = pickNode(event);
+            if (node) {
+              focusLoadedNode(node);
+              void handleNodeClick(node);
+            } else if (!showSearchResultsRef.current) {
+              closePanel();
+            }
+          };
+          // Cycle and open memories without requiring a precise pointer.
+          const onCanvasKeyDown = (event: KeyboardEvent) => {
+            if (overviewActive && semanticAtlas) {
+              const regions = semanticAtlas.regions;
+              if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                event.preventDefault();
+                keyboardIndex = (keyboardIndex + 1 + regions.length) % regions.length;
+              } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                keyboardIndex = (keyboardIndex - 1 + regions.length) % regions.length;
+              } else if (event.key === 'Enter' && keyboardIndex >= 0) {
+                event.preventDefault();
+                focusRegion(regions[keyboardIndex]);
+              }
+              return;
+            }
+            if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+              event.preventDefault();
+              keyboardIndex = (keyboardIndex + 1 + nodes.length) % nodes.length;
+            } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              keyboardIndex = (keyboardIndex - 1 + nodes.length) % nodes.length;
+            } else if (event.key === 'Enter' && keyboardIndex >= 0) {
+              event.preventDefault();
+              focusLoadedNode(nodes[keyboardIndex]);
+              void handleNodeClick(nodes[keyboardIndex]);
+              return;
+            } else {
+              return;
+            }
+            const node = nodes[keyboardIndex];
+            handleNodeHover(node);
+            focusLoadedNode(node);
+          };
+          canvas.addEventListener('pointermove', onPointerMove);
+          canvas.addEventListener('pointerleave', onPointerLeave);
+          canvas.addEventListener('click', onCanvasClick);
+          canvas.addEventListener('keydown', onCanvasKeyDown);
+          removeBatchInteractions = () => {
+            if (pointerFrame !== undefined) cancelAnimationFrame(pointerFrame);
+            canvas.removeEventListener('pointermove', onPointerMove);
+            canvas.removeEventListener('pointerleave', onPointerLeave);
+            canvas.removeEventListener('click', onCanvasClick);
+            canvas.removeEventListener('keydown', onCanvasKeyDown);
+          };
         }
 
-        // ── Guided, scale-invariant force model ───────────────
-        // The O(n) guide keeps semantic groups on two spiral arms while link,
-        // charge, drag, and orbit preserve the graph's live three-dimensional behavior.
+        // The guide supplies the readable spiral; real relationships still
+        // determine local shape and may bend or bridge its arms.
         graph.d3Force('galaxy', makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH));
 
         // Repulsion: bigger (more important) memories push a little harder, so
@@ -1034,18 +1722,21 @@ export function Graph() {
           .distanceMax(700)
           .theta(0.9);
 
-        // Attraction: EVERY link pulls (no zeroed weak links), so the graph
-        // stays one connected organism. Stronger similarity -> shorter, firmer
-        // edge; weak bridges -> longer, softer -- structure emerges from this.
+        // Keep related memories close inside a group and give real cross-group
+        // bridges enough length to remain legible instead of crushing the arms.
         graph
           .d3Force('link')
           ?.distance((link: any) => {
             const weight = Math.min(1, link.weight ?? 0.3);
-            return linkStaysWithinGroup(link as GLink) ? 18 + (1 - weight) * 42 : 118 + (1 - weight) * 96;
+            return linkStaysWithinGroup(link as GLink)
+              ? 18 + (1 - weight) * 42
+              : 118 + (1 - weight) * 96;
           })
           .strength((link: any) => {
             const weight = Math.min(1, link.weight ?? 0.3);
-            return linkStaysWithinGroup(link as GLink) ? 0.16 + weight * 0.32 : 0.025 + weight * 0.075;
+            return linkStaysWithinGroup(link as GLink)
+              ? 0.16 + weight * 0.32
+              : 0.025 + weight * 0.075;
           });
 
         // Light centering so the whole organism stays framed, not drifting.
@@ -1063,85 +1754,9 @@ export function Graph() {
         resizeHandler = sizeToContainer;
         window.addEventListener('resize', resizeHandler);
 
-        // Frame the whole galaxy from the live simulation coordinates.
-        //
-        // graph.zoomToFit() cannot be used here: the library derives its bounding
-        // box from node object GEOMETRY, and this view draws nodes as sprites or
-        // as a single GPU point cloud whose per-point positions are invisible to
-        // that walk, so getGraphBbox() returns null and the call silently does
-        // nothing. Measuring the node coordinates directly is both correct and
-        // independent of how the nodes happen to be rendered.
-        const fitGalaxyView = (durationMs = 800) => {
-          if (destroyed || !graphInstance) return;
-          const positioned = (graphInstance.graphData()?.nodes ?? []).filter(
-            (node: any) => Number.isFinite(node.x) && Number.isFinite(node.y) && Number.isFinite(node.z)
-          );
-          // Nothing to frame yet -- the simulation has not produced coordinates.
-          if (!positioned.length) return;
-
-          let minX = Infinity, minY = Infinity, minZ = Infinity;
-          let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-          for (const node of positioned) {
-            if (node.x < minX) minX = node.x;
-            if (node.y < minY) minY = node.y;
-            if (node.z < minZ) minZ = node.z;
-            if (node.x > maxX) maxX = node.x;
-            if (node.y > maxY) maxY = node.y;
-            if (node.z > maxZ) maxZ = node.z;
-          }
-          const centre = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2 };
-          // True bounding sphere: the furthest node from the centre. The box
-          // diagonal would badly overstate the radius of a wide flat disc --
-          // the galaxy's usual shape -- and leave it marooned in dead space.
-          let furthest = 0;
-          for (const node of positioned) {
-            const away = Math.hypot(node.x - centre.x, node.y - centre.y, node.z - centre.z);
-            if (away > furthest) furthest = away;
-          }
-          // Floored so a single node still yields a sane camera distance
-          // rather than collapsing the camera onto the node itself.
-          const radius = Math.max(40, furthest);
-
-          const camera = graphInstance.camera?.();
-          const verticalFov = ((camera?.fov ?? 50) * Math.PI) / 180;
-          const aspect = camera?.aspect || 1;
-          // Fit the bounding sphere on whichever axis is tighter: for a wide
-          // viewport that is the vertical one, for a tall one the horizontal.
-          const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * aspect);
-          const distance =
-            (radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * FIT_PADDING_FACTOR;
-
-          // Preserve the direction the viewer is already looking from, so
-          // fitting reframes the galaxy without also spinning it.
-          const position = camera?.position;
-          let dirX = (position?.x ?? 0) - centre.x;
-          let dirY = (position?.y ?? 0) - centre.y;
-          let dirZ = (position?.z ?? 0) - centre.z;
-          const length = Math.hypot(dirX, dirY, dirZ);
-          if (!(length > 1e-6)) {
-            dirX = 0;
-            dirY = 0;
-            dirZ = 1;
-          } else {
-            dirX /= length;
-            dirY /= length;
-            dirZ /= length;
-          }
-
-          graphInstance.cameraPosition(
-            {
-              x: centre.x + dirX * distance,
-              y: centre.y + dirY * distance,
-              z: centre.z + dirZ * distance
-            },
-            centre,
-            durationMs
-          );
-        };
-
-        // Fit after settling
+        // Fit after the short live settle without depending on hidden objects.
         setTimeout(() => {
-          fitGalaxyView();
+          if (!destroyed) fitGalaxyView();
         }, 900);
 
         // Publish the imperative handle for the UI controls.
@@ -1149,6 +1764,7 @@ export function Graph() {
           setWeight: (v: number) => {
             weightThresholdLocal = v;
             refreshLinkVisuals();
+            refreshRegionDetailLinks?.(activeRegionId);
           },
           setLabels: (v: boolean) => {
             nodeLabels.forEach((label) => {
@@ -1156,12 +1772,11 @@ export function Graph() {
             });
           },
           setClusters: (v: boolean) => {
-            if (!graphInstance) return;
-            pinGalaxyLayout(v);
-            graphInstance.d3Force('galaxy', v ? makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH) : null);
-            graphInstance.d3ReheatSimulation();
+            semanticColorEnabled = v;
+            updateNodeVisuals();
+            refreshLinkVisuals();
           },
-          fitView: () => fitGalaxyView(),
+          fitView: fitGalaxyView,
           zoomToNode,
           runSearch,
           closePanel
@@ -1179,8 +1794,29 @@ export function Graph() {
     return () => {
       destroyed = true;
       if (cloudRaf !== undefined) cancelAnimationFrame(cloudRaf);
+      removeBatchInteractions?.();
+      galaxyBackdrop?.dispose();
       if (resizeHandler) window.removeEventListener('resize', resizeHandler);
-      disposeCosmicScene?.();
+      if (graphInstance && regionLines) graphInstance.scene().remove(regionLines);
+      if (graphInstance && regionPoints) graphInstance.scene().remove(regionPoints);
+      if (graphInstance && detailLinkLines) graphInstance.scene().remove(detailLinkLines);
+      if (graphInstance && linkLines) graphInstance.scene().remove(linkLines);
+      if (graphInstance && highlightLinkLines) graphInstance.scene().remove(highlightLinkLines);
+      if (graphInstance && nodeCloud) graphInstance.scene().remove(nodeCloud);
+      linkGeom?.dispose?.();
+      linkMat?.dispose?.();
+      highlightLinkGeom?.dispose?.();
+      highlightLinkMat?.dispose?.();
+      pointGeom?.dispose?.();
+      pointMat?.dispose?.();
+      regionPointGeom?.dispose?.();
+      regionPointMat?.dispose?.();
+      regionLineGeom?.dispose?.();
+      regionLineMat?.dispose?.();
+      detailLinkGeom?.dispose?.();
+      detailLinkMat?.dispose?.();
+      ownedSpriteMaterials.forEach((material) => material.dispose?.());
+      ownedTextures.forEach((texture) => texture.dispose?.());
       graphInstance?._destructor?.();
       apiRef.current = null;
       // Allow a genuine remount (incl. StrictMode's dev double-mount) to rebuild.
@@ -1228,34 +1864,35 @@ export function Graph() {
     setSelectedMemory(null);
   };
 
-  // ── Interface shell ─────────────────────────────────────
+  // ── Cosmic instrument shell ──────────────────────────────
   return (
     <div className="memgraph-root fixed inset-0 z-40 overflow-hidden">
       <div
         ref={containerRef}
         className="memgraph-canvas w-full h-full"
         role="img"
-        aria-label={`Interactive memory galaxy with ${nodeCount.toLocaleString()} memories and ${edgeCount.toLocaleString()} links. Use search to select a memory without a pointer.`}
+        aria-label={viewMode === 'overview'
+          ? `Interactive memory galaxy with ${nodeCount.toLocaleString()} memories represented by ${regionCount.toLocaleString()} selectable regions and ${regionEdgeCount.toLocaleString()} stored-link paths.`
+          : `Interactive memory detail with original memories and stored links from the selected region.`}
       />
 
       {loading && (
-        <div className="memgraph-state absolute inset-0 flex items-center justify-center z-50">
-          <div className="memgraph-state__card text-center">
-            <div className="memgraph-loader w-12 h-12 rounded-full mx-auto mb-4" />
-            <p className="memgraph-kicker">KLEOS // MEMORY GALAXY</p>
-            <p className="text-gray-500 text-sm">Mapping live memory topology...</p>
+        <div className="absolute inset-0 flex items-center justify-center z-50 bg-[#0a0a0a]">
+          <div className="text-center">
+            <div className="w-12 h-12 border-2 border-teal-500/30 border-t-teal-400 rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-gray-500 text-sm">Loading memory graph...</p>
           </div>
         </div>
       )}
 
       {loadError && (
-        <div className="memgraph-state absolute inset-0 flex items-center justify-center z-50">
-          <div className="memgraph-state__card memgraph-state__card--error p-6 max-w-md text-center">
+        <div className="absolute inset-0 flex items-center justify-center z-50 bg-[#0a0a0a]">
+          <div className="bg-red-900/20 border border-red-800/50 rounded-xl p-6 max-w-md text-center">
             <p className="text-red-400 text-sm mb-2">Failed to load graph</p>
             <p className="text-red-300/60 text-xs font-mono">{loadError}</p>
             <a
               href="/"
-              className="memgraph-return inline-block mt-4 px-4 py-2 text-sm transition-colors"
+              className="inline-block mt-4 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-300 transition-colors"
             >
               Back to Dashboard
             </a>
@@ -1267,7 +1904,11 @@ export function Graph() {
         <>
           {/* Top instrument bar */}
           <header className="memgraph-topbar absolute top-0 left-0 right-0 z-50 flex items-center gap-4">
-            <a href="/" className="memgraph-back flex items-center gap-2 transition-colors shrink-0" aria-label="Back to dashboard">
+            <a
+              href="/"
+              className="memgraph-back flex items-center gap-2 transition-colors shrink-0"
+              aria-label="Back to dashboard"
+            >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
@@ -1279,6 +1920,9 @@ export function Graph() {
             </div>
 
             <span className="memgraph-live shrink-0"><i /> LIVE</span>
+            <span className="memgraph-view-mode shrink-0" aria-live="polite">
+              {viewMode === 'overview' ? 'REGION MAP' : 'MEMORY DETAIL'}
+            </span>
 
             <form className="memgraph-search flex-1 max-w-md" onSubmit={onSearchSubmit} role="search">
               <div className="relative">
@@ -1308,21 +1952,56 @@ export function Graph() {
               <span>
                 <strong>{edgeCount.toLocaleString()}</strong> links
               </span>
+              {regionCount > 0 && viewMode === 'overview' && (
+                <span>
+                  <strong>{regionCount.toLocaleString()}</strong> regions
+                </span>
+              )}
+              {viewMode === 'overview' && regionEdgeCount > 0 && (
+                <span>
+                  <strong>{regionEdgeCount.toLocaleString()}</strong> paths
+                </span>
+              )}
+              {viewMode === 'memories' && drawnEdgeCount !== edgeCount && (
+                <span>
+                  <strong>{drawnEdgeCount.toLocaleString()}</strong> drawn
+                </span>
+              )}
               {dbSizeMb != null && <span><strong>{dbSizeMb.toFixed(1)}</strong> MB</span>}
             </div>
           </header>
 
           {/* Graph controls */}
-          <section className="memgraph-instruments absolute z-50 flex flex-col gap-3 p-4 memgraph-glass-panel" aria-label="Galaxy controls">
+          <section
+            className="memgraph-instruments absolute z-50 flex flex-col gap-3 p-4 memgraph-glass-panel"
+            aria-label="Galaxy controls"
+          >
             <div className="memgraph-panel-heading">SIGNAL CONTROLS</div>
+            <p className="memgraph-zoom-note">
+              {viewMode === 'overview'
+                ? 'Select a region to reveal its memories.'
+                : regionSummary
+                  ? `${regionSummary.label}: ${regionSummary.memberCount.toLocaleString()} memories, ${regionSummary.internalEdgeCount.toLocaleString()} internal links.`
+                  : 'Exact memories and stored links. Fit Galaxy returns to regions.'}
+            </p>
+            <div className="memgraph-topology-note">
+              <strong>{componentCount.toLocaleString()}</strong>{' '}
+              {componentCount === 1 ? 'stored component' : 'stored components'}
+              {componentCount > 1 && (
+                <small>
+                  {(nodeCount - mainComponentCount).toLocaleString()} memories have no stored path
+                  to the main component
+                </small>
+              )}
+            </div>
             <div>
               <div className="memgraph-control-label text-[10px] uppercase tracking-wider mb-1.5">Edge floor</div>
               <div className="flex items-center gap-2">
                 <input
                   type="range"
-                  min={weightBounds.min}
-                  max={weightBounds.max}
-                  step={(weightBounds.max - weightBounds.min) / 100}
+                  min={0}
+                  max={1}
+                  step={0.05}
                   value={weightThreshold}
                   onChange={(e) => setWeightThreshold(Number.parseFloat(e.target.value))}
                   aria-label="Minimum edge weight"
@@ -1332,18 +2011,26 @@ export function Graph() {
               </div>
             </div>
 
-            <button onClick={() => setShowLabels((v) => !v)} aria-pressed={showLabels} className="memgraph-toggle flex items-center gap-2 group">
+            <button
+              onClick={() => setShowLabels((v) => !v)}
+              aria-pressed={showLabels}
+              className="memgraph-toggle flex items-center gap-2 group"
+            >
               <div className={`memgraph-switch w-7 h-4 rounded-full relative transition-colors ${showLabels ? 'is-on' : ''}`}>
                 <div className="memgraph-switch__thumb absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-all" />
               </div>
               <span className="text-[10px] transition-colors">Labels</span>
             </button>
 
-            <button onClick={() => setClusterEnabled((v) => !v)} aria-pressed={clusterEnabled} className="memgraph-toggle flex items-center gap-2 group">
+            <button
+              onClick={() => setClusterEnabled((v) => !v)}
+              aria-pressed={clusterEnabled}
+              className="memgraph-toggle flex items-center gap-2 group"
+            >
               <div className={`memgraph-switch w-7 h-4 rounded-full relative transition-colors ${clusterEnabled ? 'is-on' : ''}`}>
                 <div className="memgraph-switch__thumb absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-all" />
               </div>
-              <span className="text-[10px] transition-colors">Clusters</span>
+                <span className="text-[10px] transition-colors">Color groups</span>
             </button>
 
             <button
@@ -1356,7 +2043,7 @@ export function Graph() {
 
           {/* Side Panel */}
           {sidePanelOpen && (
-            <aside className="memgraph-inspector absolute top-0 right-0 bottom-0 w-[380px] z-50 overflow-y-auto memgraph-side-panel memgraph-glass-panel-solid">
+            <aside className="absolute top-0 right-0 bottom-0 w-[380px] z-50 overflow-y-auto memgraph-side-panel memgraph-glass-panel-solid">
               <button
                 onClick={() => apiRef.current?.closePanel()}
                 aria-label="Close panel"
@@ -1386,8 +2073,8 @@ export function Graph() {
                               <span
                                 className="px-1.5 py-0.5 rounded text-[9px] font-medium"
                                 style={{
-                                  background: `${CATEGORY_FALLBACK[result.category] || '#00d7ff'}20`,
-                                  color: CATEGORY_FALLBACK[result.category] || '#00d7ff'
+                                  background: `${CATEGORY_FALLBACK[result.category] || '#4fc3f7'}20`,
+                                  color: CATEGORY_FALLBACK[result.category] || '#4fc3f7'
                                 }}
                               >
                                 {result.category}
@@ -1410,8 +2097,8 @@ export function Graph() {
                       <span
                         className="px-2 py-0.5 rounded-full text-[10px] font-medium"
                         style={{
-                          background: `${CATEGORY_FALLBACK[selectedMemory.category] || '#00d7ff'}20`,
-                          color: CATEGORY_FALLBACK[selectedMemory.category] || '#00d7ff'
+                          background: `${CATEGORY_FALLBACK[selectedMemory.category] || '#4fc3f7'}20`,
+                          color: CATEGORY_FALLBACK[selectedMemory.category] || '#4fc3f7'
                         }}
                       >
                         {selectedMemory.category}
@@ -1431,7 +2118,7 @@ export function Graph() {
                             className="h-full rounded-full transition-all"
                             style={{
                               width: `${selectedMemory.importance * 10}%`,
-                              background: CATEGORY_FALLBACK[selectedMemory.category] || '#00d7ff'
+                              background: CATEGORY_FALLBACK[selectedMemory.category] || '#4fc3f7'
                             }}
                           />
                         </div>
@@ -1539,25 +2226,24 @@ export function Graph() {
             </aside>
           )}
 
-          {/* Live category ledger */}
+          {/* Category Legend (bottom-right, hidden when panel open) */}
           {categories.length > 0 && !sidePanelOpen && (
-            <section className="memgraph-category-ledger absolute z-40 p-3 memgraph-glass-panel-light" aria-label="Memory categories">
+            <div className="memgraph-category-ledger absolute z-40 p-3 memgraph-glass-panel-light">
               <div className="memgraph-panel-heading mb-2">MEMORY LEDGER</div>
               <div className="space-y-1">
                 {categories.slice(0, 8).map((cat) => (
-                  <div key={cat.category} className="memgraph-ledger-row flex items-center gap-2">
-                    <div className="memgraph-ledger-dot w-2 h-2 rounded-full" style={{ background: CATEGORY_FALLBACK[cat.category] || '#00d7ff' }} />
-                    <span className="text-[10px]">{cat.category}</span>
-                    <span className="text-[10px] ml-auto">{cat.count.toLocaleString()}</span>
+                  <div key={cat.category} className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full" style={{ background: CATEGORY_FALLBACK[cat.category] || '#4fc3f7' }} />
+                    <span className="text-[10px] text-gray-500">{cat.category}</span>
+                    <span className="text-[10px] text-gray-700 ml-auto">{cat.count}</span>
                   </div>
                 ))}
               </div>
-            </section>
+            </div>
           )}
-
-          <div className="memgraph-gesture-hint absolute z-40" aria-hidden="true">
-            DRAG TO ORBIT <span>·</span> SCROLL TO ZOOM <span>·</span> SELECT A MEMORY
-          </div>
+          <p className="memgraph-interaction-hint" aria-hidden="true">
+            DRAG TO ORBIT · SCROLL TO ZOOM · SELECT A REGION · SEARCH ANY MEMORY
+          </p>
         </>
       )}
     </div>

@@ -225,7 +225,8 @@ async fn handle_single_rpc(
 
 /// Builds a client-safe error message for a failed internal dispatch.
 /// Full details are logged server-side; the client sees only the tool name
-/// and HTTP status to prevent leaking handler internals (CWE-209).
+/// and HTTP status unless the handler returned a narrowly recognized Forge
+/// validation message that is safe and necessary for the caller to correct.
 fn sanitize_dispatch_error(tool_name: &str, status_code: u16, internal_msg: &str) -> String {
     tracing::warn!(
         tool = tool_name,
@@ -233,7 +234,60 @@ fn sanitize_dispatch_error(tool_name: &str, status_code: u16, internal_msg: &str
         detail = internal_msg,
         "MCP tool dispatch failed"
     );
+    if tool_name.starts_with("forge_") {
+        if safe_forge_missing_spec(status_code, internal_msg) {
+            return format!(
+                "tool '{tool_name}' could not find that spec in remote Kleos; \
+                 local and remote Forge spec IDs are separate"
+            );
+        }
+        if let Some(detail) = safe_forge_validation_detail(status_code, internal_msg) {
+            return format!("tool '{tool_name}' rejected input: {detail}");
+        }
+    }
     format!("tool '{}' failed (HTTP {})", tool_name, status_code)
+}
+
+/// Recognize a bounded Forge missing-spec error without exposing backend details.
+fn safe_forge_missing_spec(status_code: u16, internal_msg: &str) -> bool {
+    if status_code != 404 {
+        return false;
+    }
+    let Some(spec_id) = internal_msg.trim().strip_prefix("Spec not found: ") else {
+        return false;
+    };
+    spec_id.starts_with("spec_")
+        && spec_id.len() <= 80
+        && spec_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+/// Return a bounded allowlisted Forge validation detail for 400-class input errors.
+fn safe_forge_validation_detail(status_code: u16, internal_msg: &str) -> Option<&str> {
+    if !matches!(status_code, 400 | 422) {
+        return None;
+    }
+    let detail = internal_msg.trim();
+    if detail.is_empty()
+        || detail.len() > 300
+        || detail.chars().any(char::is_control)
+        || detail.contains('/')
+        || detail.contains('\\')
+        || detail.contains("://")
+    {
+        return None;
+    }
+    const SAFE_PREFIXES: &[&str] = &[
+        "Minimum 2 acceptance criteria required",
+        "Minimum 3 edge cases required",
+        "task_type must be one of:",
+        "status must be one of:",
+    ];
+    SAFE_PREFIXES
+        .iter()
+        .any(|prefix| detail.starts_with(prefix))
+        .then_some(detail)
 }
 
 /// Dispatches a single tool call through the internal router.
@@ -595,6 +649,46 @@ mod tests {
         assert_eq!(sanitized, "tool 'test_tool' failed (HTTP 500)");
         assert!(!sanitized.contains("SQLITE"));
         assert!(!sanitized.contains("/data"));
+    }
+
+    /// Forge input errors expose only allowlisted, actionable validation details.
+    #[test]
+    fn forge_validation_error_is_actionable_and_bounded() {
+        let actionable = sanitize_dispatch_error(
+            "forge_spec_task",
+            400,
+            "Minimum 2 acceptance criteria required",
+        );
+        assert_eq!(
+            actionable,
+            "tool 'forge_spec_task' rejected input: Minimum 2 acceptance criteria required"
+        );
+
+        let sensitive = sanitize_dispatch_error(
+            "forge_spec_task",
+            400,
+            "Minimum 2 acceptance criteria required at /data/private.db",
+        );
+        assert_eq!(sensitive, "tool 'forge_spec_task' failed (HTTP 400)");
+    }
+
+    /// Forge missing-spec errors explain the local and remote identifier boundary.
+    #[test]
+    fn forge_missing_spec_error_explains_identifier_scope() {
+        let actionable =
+            sanitize_dispatch_error("forge_update_spec", 404, "Spec not found: spec_3a807975");
+        assert_eq!(
+            actionable,
+            "tool 'forge_update_spec' could not find that spec in remote Kleos; \
+             local and remote Forge spec IDs are separate"
+        );
+
+        let sensitive = sanitize_dispatch_error(
+            "forge_update_spec",
+            404,
+            "Spec not found: spec_3a807975 at /data/private.db",
+        );
+        assert_eq!(sensitive, "tool 'forge_update_spec' failed (HTTP 404)");
     }
 
     /// Verifies multibyte output previews truncate without panicking.

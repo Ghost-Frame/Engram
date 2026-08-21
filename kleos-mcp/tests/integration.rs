@@ -37,6 +37,8 @@ fn registry_includes_core_tools() {
         "loom_list_runs",
         "thymus_get_metrics",
         "handoffs_store",
+        "handoffs_get",
+        "handoffs_candidates",
         "scratchpad_put",
         "skills_find_skills",
         "agents_verify",

@@ -361,25 +361,41 @@ pub static ROUTES: &[Route] = &[
         Write,
         "handoffs.store",
         "/handoffs",
-        "Store a new handoff dump.",
+        "Store a repository or standalone handoff with stable session identity.",
         ["handoffs.dump"],
-        r#"{"type":"object","properties":{"project":{"type":"string"},"content":{"type":"string"},"agent":{"type":"string"},"type":{"type":"string"},"branch":{"type":"string"},"directory":{"type":"string"},"session_id":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"metadata":{"type":"object"},"atoms":{"type":"array","items":{"type":"object"}}},"required":["content","project"]}"#
+        r#"{"type":"object","properties":{"project":{"type":"string"},"scope":{"type":"string","enum":["repository","standalone"]},"workstream":{"type":"string","minLength":1},"title":{"type":"string"},"content":{"type":"string","minLength":1},"agent":{"type":"string"},"type":{"type":"string"},"branch":{"type":"string"},"directory":{"type":"string"},"session_id":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"metadata":{"type":"object"},"atoms":{"type":"array","items":{"type":"object"}}},"required":["content"]}"#
     ),
     route!(
         Get,
         Read,
         "handoffs.list",
         "/handoffs",
-        "List handoffs.",
-        r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+        "List handoffs by exact repository, scope, workstream, or session filters.",
+        r#"{"type": "object", "properties": {"project": {"type":"string"}, "scope":{"type":"string","enum":["legacy","repository","standalone"]}, "workstream":{"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
     ),
     route!(
         Get,
         Read,
         "handoffs.latest",
         "/handoffs/latest",
-        "Fetch the most recent handoff.",
-        r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+        "Fetch the most recent exact filter match without cross-project fallback.",
+        r#"{"type": "object", "properties": {"project": {"type":"string"}, "scope":{"type":"string","enum":["legacy","repository","standalone"]}, "workstream":{"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "handoffs.get",
+        "/handoffs/{id}",
+        "Fetch one exact caller-owned handoff by id.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "handoffs.candidates",
+        "/handoffs/candidates",
+        "List the newest checkpoint for each stable session identity.",
+        r#"{"type":"object","properties":{"scope":{"type":"string","enum":["legacy","repository","standalone"]},"workstream":{"type":"string"},"project":{"type":"string"},"agent":{"type":"string"},"type":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"since":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     route!(
         Get,
@@ -2064,7 +2080,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/spec-task",
         "Create a new task spec with acceptance criteria and file coverage for gate enforcement.",
         ["forge_spec_task"],
-        r#"{"type":"object","properties":{"session_id":{"type":"string"},"task_description":{"type":"string"},"task_type":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"interface_contract":{"type":"string"},"edge_cases":{"type":"array","items":{"type":"string"}},"files_to_touch":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"string"}},"required":["task_description","task_type","acceptance_criteria","interface_contract","edge_cases"]}"#
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"task_description":{"type":"string","minLength":1},"task_type":{"type":"string","enum":["feature","bugfix","refactor","enhancement","test","docs"]},"acceptance_criteria":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}},"interface_contract":{"type":"string","minLength":1},"edge_cases":{"type":"array","minItems":3,"items":{"type":"string","minLength":1}},"files_to_touch":{"type":"array","items":{"type":"string","minLength":1}},"dependencies":{"type":"string"}},"required":["task_description","task_type","acceptance_criteria","interface_contract","edge_cases"]}"#
     ),
     route!(
         Post,
@@ -2073,7 +2089,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/update-spec",
         "Transition a spec to a new lifecycle status (active, completed, failed, blocked).",
         ["forge_update_spec"],
-        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"status":{"type":"string"},"note":{"type":"string"}},"required":["spec_id","status"]}"#
+        r#"{"type":"object","properties":{"spec_id":{"type":"string","minLength":1},"status":{"type":"string","enum":["active","completed","failed","blocked"]},"note":{"type":"string"}},"required":["spec_id","status"]}"#
     ),
     route!(
         Get,
@@ -2082,7 +2098,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/specs",
         "List forge specs for the authenticated user, optionally filtered by status.",
         ["forge_list_specs"],
-        r#"{"type":"object","properties":{"status":{"type":"string"},"limit":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"status":{"type":"string","enum":["active","completed","failed","blocked"]},"limit":{"type":"integer","minimum":1}}}"#
     ),
     route!(
         Get,
@@ -2100,7 +2116,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/log-hypothesis",
         "Record a new hypothesis before touching code in response to a bug.",
         ["forge_log_hypothesis"],
-        r#"{"type":"object","properties":{"session_id":{"type":"string"},"bug_description":{"type":"string"},"hypothesis":{"type":"string"},"confidence":{"type":"number"},"spec_id":{"type":"string"}},"required":["bug_description","hypothesis"]}"#
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"bug_description":{"type":"string","minLength":1},"hypothesis":{"type":"string","minLength":1},"confidence":{"type":"number","minimum":0,"maximum":1},"spec_id":{"type":"string"}},"required":["bug_description","hypothesis"]}"#
     ),
     route!(
         Post,
@@ -2109,7 +2125,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/log-outcome",
         "Record the outcome of an existing hypothesis (correct, incorrect, or partial).",
         ["forge_log_outcome"],
-        r#"{"type":"object","properties":{"hypothesis_id":{"type":"string"},"outcome":{"type":"string"},"notes":{"type":"string"}},"required":["hypothesis_id","outcome"]}"#
+        r#"{"type":"object","properties":{"hypothesis_id":{"type":"string","minLength":1},"outcome":{"type":"string","enum":["correct","incorrect","partial"]},"notes":{"type":"string"}},"required":["hypothesis_id","outcome"]}"#
     ),
     route!(
         Get,
@@ -2118,7 +2134,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/recall-errors",
         "Search past hypotheses by keyword across bug description and hypothesis text.",
         ["forge_recall_errors"],
-        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     route!(
         Post,
@@ -2127,7 +2143,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/consider-approaches",
         "Store two or more named design alternatives and return a structured comparison prompt.",
         ["forge_consider_approaches"],
-        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"problem":{"type":"string"},"approaches":{"type":"array","items":{"type":"object"}},"chosen_index":{"type":"integer"}},"required":["problem","approaches"]}"#
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"problem":{"type":"string","minLength":1},"approaches":{"type":"array","minItems":2,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"pros":{"type":"array","items":{"type":"string"}},"cons":{"type":"array","items":{"type":"string"}},"score":{"type":"number"}},"required":["name","description"]}},"chosen_index":{"type":"integer","minimum":0}},"required":["problem","approaches"]}"#
     ),
     route!(
         Post,
@@ -2145,7 +2161,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/session-learn",
         "Persist a mid-session discovery to forge_session_learns.",
         ["forge_session_learn"],
-        r#"{"type":"object","properties":{"discovery":{"type":"string"},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"spec_id":{"type":"string"}},"required":["discovery"]}"#
+        r#"{"type":"object","properties":{"discovery":{"type":"string","minLength":1},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"spec_id":{"type":"string"}},"required":["discovery"]}"#
     ),
     route!(
         Get,
@@ -2154,7 +2170,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/session-recall",
         "Search forge_session_learns by keyword in the discovery text.",
         ["forge_session_recall"],
-        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     // -- forge compute (stateless, backed by agent_forge library) ---------
     route!(
@@ -2173,7 +2189,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/declare-unknowns",
         "Partition unknowns into blocking and non-blocking sets and return a clear action directive.",
         ["forge_declare_unknowns"],
-        r#"{"type":"object","properties":{"unknowns":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"blocking":{"type":"boolean"},"resolution_hint":{"type":"string"}},"required":["description","blocking"]}}}}"#
+        r#"{"type":"object","properties":{"unknowns":{"type":"array","minItems":1,"items":{"type":"object","properties":{"description":{"type":"string","minLength":1},"blocking":{"type":"boolean"},"resolution_hint":{"type":"string"}},"required":["description","blocking"]}}},"required":["unknowns"]}"#
     ),
     route!(
         Post,
@@ -4364,6 +4380,33 @@ mod tests {
         // The read-side artifact tools must resolve for MCP dispatch.
         assert!(resolve_tool_name("artifacts_list_for_memory").is_some());
         assert!(resolve_tool_name("artifacts_search").is_some());
+    }
+
+    /// Remote Forge schemas must advertise the constraints enforced by handlers.
+    #[test]
+    fn forge_schemas_match_lifecycle_validation() {
+        let spec_route = find_by_name("forge.spec_task").expect("forge spec route");
+        let spec_schema: serde_json::Value =
+            serde_json::from_str(spec_route.input_schema).expect("spec schema parses");
+        assert_eq!(
+            spec_schema["properties"]["acceptance_criteria"]["minItems"],
+            2
+        );
+        assert_eq!(spec_schema["properties"]["edge_cases"]["minItems"], 3);
+        assert!(spec_schema["properties"]["task_type"]["enum"]
+            .as_array()
+            .expect("task type enum")
+            .iter()
+            .any(|value| value == "bugfix"));
+
+        let update_route = find_by_name("forge.update_spec").expect("forge update route");
+        let update_schema: serde_json::Value =
+            serde_json::from_str(update_route.input_schema).expect("update schema parses");
+        assert!(update_schema["properties"]["status"]["enum"]
+            .as_array()
+            .expect("status enum")
+            .iter()
+            .any(|value| value == "completed"));
     }
 
     /// The underscore alias must not become a block-list bypass: the underscore

@@ -34,6 +34,7 @@ use crate::db::Database;
 use crate::vector::VectorHit;
 use crate::Result;
 use serde::Serialize;
+use std::collections::HashSet;
 use tracing::warn;
 
 /// Minimum cosine similarity for an auto-link. Matches the pre-regression value.
@@ -44,6 +45,9 @@ pub const AUTO_LINK_MAX: usize = 6;
 
 /// Nearest-neighbour fetch width before threshold/truncation are applied.
 const ANN_K: usize = 50;
+
+/// Over-fetch factor that prevents stale Lance rows from starving valid targets.
+const ANN_POOL_INFLATION: usize = 8;
 
 /// Outcome of a batch linking pass over one tenant.
 #[derive(Debug, Default, Clone, Serialize)]
@@ -97,6 +101,61 @@ fn rank_candidates(
     scored
 }
 
+/// Keep ANN hits that still resolve to active, graph-visible memories owned by
+/// `user_id`, preserving the index's distance order.
+///
+/// Lance is eventually consistent with SQLite. Forgotten, archived, superseded,
+/// or pending rows can therefore remain in its nearest-neighbour window after
+/// SQLite stops treating them as linkable. Filtering before ranking prevents
+/// those stale rows from consuming every auto-link slot.
+async fn filter_linkable_hits(
+    db: &Database,
+    hits: Vec<VectorHit>,
+    user_id: i64,
+) -> Result<Vec<VectorHit>> {
+    if hits.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<i64> = hits.iter().map(|hit| hit.memory_id).collect();
+    let linkable: HashSet<i64> = db
+        .read(move |conn| {
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id FROM memories \
+                 WHERE id IN ({placeholders}) AND user_id = ? \
+                   AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                   AND status != 'pending'"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
+            for id in &ids {
+                params.push(id);
+            }
+            params.push(&user_id);
+
+            let mut rows = stmt.query(params.as_slice())?;
+            let mut out = HashSet::with_capacity(ids.len());
+            while let Some(row) = rows.next()? {
+                out.insert(row.get::<_, i64>(0)?);
+            }
+            Ok(out)
+        })
+        .await?;
+
+    let mut filtered: Vec<VectorHit> = hits
+        .into_iter()
+        .filter(|hit| linkable.contains(&hit.memory_id))
+        .collect();
+    for (rank, hit) in filtered.iter_mut().enumerate() {
+        // SQLite-vec hits carry no distance, so their similarity fallback uses
+        // rank. Re-densify after filtering or stale rows would still depress the
+        // surviving candidates below the threshold.
+        hit.rank = rank;
+    }
+    Ok(filtered)
+}
+
 /// Link a single memory to its nearest neighbours. Returns the number of
 /// neighbour links created (each neighbour counted once). When `dry_run` is set,
 /// nothing is written and the return value is the count that WOULD be created.
@@ -107,15 +166,19 @@ pub async fn auto_link(
     user_id: i64,
     dry_run: bool,
 ) -> Result<usize> {
-    // Primary path: the tenant's ANN index (cosine distance available). Falls
-    // back to sqlite-vec, which is already user-scoped, when no index is loaded.
-    let targets = if let Some(index) = db.vector_index.as_ref() {
-        let hits = index.search(embedding, ANN_K).await.unwrap_or_default();
-        rank_candidates(&hits, memory_id, AUTO_LINK_THRESHOLD, AUTO_LINK_MAX)
+    // Primary path: the tenant's ANN index (cosine distance available). Search
+    // a wider pool, then validate every hit against SQLite before ranking:
+    // Lance may retain forgotten or superseded rows until its sync catches up.
+    // Falls back to sqlite-vec when no index is loaded.
+    let ranked_hits = if let Some(index) = db.vector_index.as_ref() {
+        let pool = ANN_K.saturating_mul(ANN_POOL_INFLATION);
+        let hits = index.search(embedding, pool).await.unwrap_or_default();
+        filter_linkable_hits(db, hits, user_id).await?
     } else {
-        let hits = crate::memory::vector::vector_search(db, embedding, ANN_K, user_id).await?;
-        // The fallback's VectorHit carries no distance, so rank approximation is
-        // used; reuse the same ranking rules via a lightweight adapter.
+        let pool = ANN_K.saturating_mul(ANN_POOL_INFLATION);
+        let hits = crate::memory::vector::vector_search(db, embedding, pool, user_id).await?;
+        // The fallback's hit type carries the same distance/rank information;
+        // adapt it before applying the stricter graph-visibility filter.
         let adapted: Vec<VectorHit> = hits
             .iter()
             .map(|h| VectorHit {
@@ -124,8 +187,9 @@ pub async fn auto_link(
                 rank: h.rank,
             })
             .collect();
-        rank_candidates(&adapted, memory_id, AUTO_LINK_THRESHOLD, AUTO_LINK_MAX)
+        filter_linkable_hits(db, adapted, user_id).await?
     };
+    let targets = rank_candidates(&ranked_hits, memory_id, AUTO_LINK_THRESHOLD, AUTO_LINK_MAX);
 
     if dry_run {
         return Ok(targets.len());
@@ -181,11 +245,56 @@ fn decode_embedding(blob: &[u8]) -> Option<Vec<f32>> {
     )
 }
 
-/// Link a throttled batch of the user's still-unlinked memories.
+/// Select a throttled batch of graph-visible memories missing an outgoing
+/// associative link.
 ///
-/// Selects up to `limit` active memories that have an embedding but appear in no
-/// `memory_links` row, newest first (so freshly stored memories link promptly
-/// and the historical backlog drains over subsequent calls), and links each.
+/// A memory with only a cite, hierarchy, or generalization edge still needs a
+/// semantic link or it remains trapped inside a legacy graph island. Selecting
+/// specifically on `type = 'similarity'` lets the backfill bridge those islands
+/// while remaining resumable: once a pass creates the bidirectional link, both
+/// endpoints disappear from future batches.
+async fn select_link_candidates(
+    db: &Database,
+    user_id: i64,
+    limit: usize,
+) -> Result<Vec<(i64, Vec<u8>)>> {
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, embedding_vec_1024 \
+                 FROM memories \
+                 WHERE user_id = ?1 \
+                   AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                   AND status != 'pending' \
+                   AND embedding_vec_1024 IS NOT NULL \
+                   AND NOT EXISTS ( \
+                       SELECT 1 \
+                       FROM memory_links ml \
+                       JOIN memories target ON target.id = ml.target_id \
+                       WHERE ml.source_id = memories.id \
+                         AND ml.type = 'similarity' \
+                         AND target.user_id = ?1 \
+                         AND target.is_forgotten = 0 \
+                         AND target.is_archived = 0 \
+                         AND target.is_latest = 1 \
+                         AND target.status != 'pending' \
+                   ) \
+                 ORDER BY id DESC \
+                 LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![user_id, limit as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Link a throttled batch of the user's memories still missing associative
+/// similarity links.
 pub async fn link_unlinked_batch(
     db: &Database,
     user_id: i64,
@@ -199,35 +308,7 @@ pub async fn link_unlinked_batch(
         });
     }
 
-    // Unlinked = present in neither endpoint of any link. memory_links only ever
-    // connects same-user memories (enforced at insert), so the un-scoped subquery
-    // is safe; the candidate set itself is user-scoped.
-    let candidates: Vec<(i64, Vec<u8>)> = db
-        .read(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, embedding_vec_1024 \
-                 FROM memories \
-                 WHERE user_id = ?1 \
-                   AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                   AND embedding_vec_1024 IS NOT NULL \
-                   AND id NOT IN ( \
-                       SELECT source_id FROM memory_links \
-                       UNION \
-                       SELECT target_id FROM memory_links \
-                   ) \
-                 ORDER BY id DESC \
-                 LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![user_id, limit as i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })?;
-            let mut out = Vec::new();
-            for r in rows {
-                out.push(r?);
-            }
-            Ok(out)
-        })
-        .await?;
+    let candidates = select_link_candidates(db, user_id, limit).await?;
 
     let mut report = LinkBatchReport {
         dry_run,
@@ -267,6 +348,39 @@ mod tests {
             distance,
             rank,
         }
+    }
+
+    /// Insert a memory row with a minimal valid embedding for linker selection
+    /// tests and return its generated id.
+    async fn insert_memory(
+        db: &crate::db::Database,
+        user_id: i64,
+        status: &str,
+        is_archived: bool,
+        is_latest: bool,
+        is_forgotten: bool,
+    ) -> i64 {
+        let status = status.to_string();
+        db.write(move |conn| {
+            Ok(conn.query_row(
+                "INSERT INTO memories \
+                 (content, user_id, status, is_archived, is_latest, is_forgotten, \
+                  embedding_vec_1024) \
+                 VALUES ('linker test', ?1, ?2, ?3, ?4, ?5, ?6) \
+                 RETURNING id",
+                rusqlite::params![
+                    user_id,
+                    status,
+                    is_archived,
+                    is_latest,
+                    is_forgotten,
+                    vec![0_u8; 4],
+                ],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .expect("insert linker test memory")
     }
 
     /// A marginally negative PQ-quantized distance (near-duplicate noise)
@@ -341,5 +455,104 @@ mod tests {
         assert_eq!(decode_embedding(&blob), Some(v.to_vec()));
         assert_eq!(decode_embedding(&[]), None); // empty
         assert_eq!(decode_embedding(&[1, 2, 3]), None); // not a multiple of 4
+    }
+
+    /// ANN candidates must resolve to active graph-visible rows in the caller's
+    /// database before they can consume an auto-link slot.
+    #[tokio::test]
+    async fn filter_linkable_hits_drops_stale_hidden_and_foreign_rows() {
+        let db = crate::db::Database::connect_memory().await.expect("db");
+        let visible = insert_memory(&db, 1, "approved", false, true, false).await;
+        let archived = insert_memory(&db, 1, "approved", true, true, false).await;
+        let superseded = insert_memory(&db, 1, "approved", false, false, false).await;
+        let forgotten = insert_memory(&db, 1, "approved", false, true, true).await;
+        let pending = insert_memory(&db, 1, "pending", false, true, false).await;
+        let foreign = insert_memory(&db, 2, "approved", false, true, false).await;
+        let missing = foreign + 10_000;
+
+        let hits = vec![
+            hit(archived, Some(0.01), 0),
+            hit(superseded, Some(0.02), 1),
+            hit(forgotten, Some(0.03), 2),
+            hit(pending, Some(0.04), 3),
+            hit(foreign, Some(0.05), 4),
+            hit(missing, Some(0.06), 5),
+            hit(visible, Some(0.07), 6),
+        ];
+
+        let filtered = filter_linkable_hits(&db, hits, 1)
+            .await
+            .expect("filter hits");
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|entry| entry.memory_id)
+                .collect::<Vec<_>>(),
+            vec![visible]
+        );
+    }
+
+    /// Existing structural edges do not satisfy associative connectivity:
+    /// cite-only memories remain eligible, while a source with an outgoing
+    /// similarity edge is omitted from the resumable batch.
+    #[tokio::test]
+    async fn select_link_candidates_targets_missing_similarity_not_missing_any_edge() {
+        let db = crate::db::Database::connect_memory().await.expect("db");
+        let cite_source = insert_memory(&db, 1, "approved", false, true, false).await;
+        let cite_target = insert_memory(&db, 1, "approved", false, true, false).await;
+        let similarity_source = insert_memory(&db, 1, "approved", false, true, false).await;
+        let similarity_target = insert_memory(&db, 1, "approved", false, true, false).await;
+        let stale_similarity_source = insert_memory(&db, 1, "approved", false, true, false).await;
+        let pending = insert_memory(&db, 1, "pending", false, true, false).await;
+        let archived = insert_memory(&db, 1, "approved", true, true, false).await;
+
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memory_links (source_id, target_id, similarity, type) \
+                 VALUES (?1, ?2, 0.8, 'cite')",
+                rusqlite::params![cite_source, cite_target],
+            )?;
+            conn.execute(
+                "INSERT INTO memory_links (source_id, target_id, similarity, type) \
+                 VALUES (?1, ?2, 0.9, 'similarity')",
+                rusqlite::params![similarity_source, similarity_target],
+            )?;
+            conn.execute(
+                "INSERT INTO memory_links (source_id, target_id, similarity, type) \
+                 VALUES (?1, ?2, 0.9, 'similarity')",
+                rusqlite::params![stale_similarity_source, archived],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("insert test links");
+
+        let candidates = select_link_candidates(&db, 1, 20)
+            .await
+            .expect("select candidates");
+        let ids: HashSet<i64> = candidates.into_iter().map(|(id, _)| id).collect();
+
+        assert!(
+            ids.contains(&cite_source),
+            "cite-only source remains eligible"
+        );
+        assert!(
+            ids.contains(&cite_target),
+            "cite-only target remains eligible"
+        );
+        assert!(
+            !ids.contains(&similarity_source),
+            "outgoing similarity source is already linked"
+        );
+        assert!(
+            ids.contains(&similarity_target),
+            "incoming-only rows are repaired into the normal bidirectional shape"
+        );
+        assert!(
+            ids.contains(&stale_similarity_source),
+            "a similarity edge to a hidden target does not satisfy visible connectivity"
+        );
+        assert!(!ids.contains(&pending), "pending memory stays review-gated");
+        assert!(!ids.contains(&archived), "archived memory stays hidden");
     }
 }

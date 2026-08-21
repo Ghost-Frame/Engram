@@ -9,6 +9,9 @@
 /// Database access: SQLite forge DB open/migrate/query.
 pub mod db;
 
+/// Persistent, repository-local code indexing and context retrieval.
+pub mod code_context;
+
 /// Emission layer: renders the captured audit trail into committed markdown.
 /// Compiled only under the `fluency` feature, which is off by default.
 #[cfg(feature = "fluency")]
@@ -19,6 +22,9 @@ pub mod json_io;
 
 /// Blocking HTTP client for the Kleos skills API.
 pub mod kleos_client;
+
+/// Structured fields shared by task specifications and Fluency renderers.
+pub mod spec_types;
 
 /// Local MCP transport and tool registry. Fluency is required because this
 /// surface exists to keep repository-local checkpoint and review in one DB.

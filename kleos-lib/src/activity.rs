@@ -263,7 +263,7 @@ async fn fanout_broca(
         db,
         LogActionRequest {
             agent: report.agent.clone(),
-            service: Some("engram".to_string()),
+            service: Some("kleos".to_string()),
             action: report.action.clone(),
             narrative: None,
             payload: Some(serde_json::json!({"summary": report.summary})),
@@ -630,5 +630,23 @@ mod tests {
             result.err()
         );
         assert!(result.unwrap() > 0, "should return a positive memory ID");
+
+        let actions = crate::services::broca::query_actions(
+            &db,
+            Some("test-agent"),
+            None,
+            Some("task.started"),
+            None,
+            10,
+            0,
+            1,
+        )
+        .await
+        .expect("activity broca rows");
+        assert_eq!(actions.len(), 1, "activity should create one Broca row");
+        assert_eq!(
+            actions[0].service, "kleos",
+            "new activity rows must use the current product identity"
+        );
     }
 }

@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use kleos_lib::handoffs::{ExtractedAtom, HandoffFilters, HandoffsDb, StoreParams};
 use kleos_lib::tenant::HANDOFFS_TENANT_ID;
@@ -17,10 +17,11 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/handoffs", post(store_handoff).get(list_handoffs))
         .route("/handoffs/latest", get(get_latest))
+        .route("/handoffs/candidates", get(list_candidates))
         .route("/handoffs/search", get(search_handoffs))
         .route("/handoffs/stats", get(get_stats))
         .route("/handoffs/gc", post(run_gc))
-        .route("/handoffs/{id}", delete(delete_handoff))
+        .route("/handoffs/{id}", get(get_handoff).delete(delete_handoff))
         .route("/handoffs/atoms", get(list_atoms))
         .route("/handoffs/atoms/packed", get(get_packed_context))
         .route("/handoffs/atoms/supersede", post(supersede_atom))
@@ -59,6 +60,7 @@ struct StoreHandoffRequest {
 }
 
 #[tracing::instrument(skip_all)]
+/// Stores a validated repository or standalone handoff for the caller.
 async fn store_handoff(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -75,6 +77,7 @@ async fn store_handoff(
 }
 
 #[tracing::instrument(skip_all)]
+/// Lists handoffs matching the caller's exact filters.
 async fn list_handoffs(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -87,6 +90,7 @@ async fn list_handoffs(
 }
 
 #[tracing::instrument(skip_all)]
+/// Returns the newest exact filter match without cross-project fallback.
 async fn get_latest(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -99,6 +103,36 @@ async fn get_latest(
     }
 }
 
+#[tracing::instrument(skip_all)]
+/// Returns the newest checkpoint for every stable session identity.
+async fn list_candidates(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(filters): Query<HandoffFilters>,
+) -> Result<Json<Value>, AppError> {
+    let db = get_db(&state).await?;
+    let handoffs = db.candidates(filters, auth.effective_user_id()).await?;
+    let count = handoffs.len();
+    Ok(Json(json!({ "handoffs": handoffs, "count": count })))
+}
+
+#[tracing::instrument(skip_all)]
+/// Returns one exact handoff id when it belongs to the caller.
+async fn get_handoff(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let db = get_db(&state).await?;
+    match db.get(id, auth.effective_user_id()).await? {
+        Some(handoff) => Ok(Json(json!(handoff))),
+        None => Err(AppError(EngError::NotFound(format!(
+            "handoff {id} not found"
+        )))),
+    }
+}
+
+/// Query parameters accepted by full-text handoff search.
 #[derive(Deserialize)]
 struct SearchQuery {
     q: String,
@@ -107,11 +141,13 @@ struct SearchQuery {
     limit: usize,
 }
 
+/// Supplies the default FTS result limit.
 fn default_limit() -> usize {
     10
 }
 
 #[tracing::instrument(skip_all)]
+/// Searches handoff content within the caller's tenant.
 async fn search_handoffs(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -131,6 +167,7 @@ async fn search_handoffs(
 }
 
 #[tracing::instrument(skip_all)]
+/// Returns aggregate handoff statistics for the caller.
 async fn get_stats(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -140,6 +177,7 @@ async fn get_stats(
     Ok(Json(json!(stats)))
 }
 
+/// Optional retention controls accepted by the handoff GC endpoint.
 #[derive(Deserialize)]
 struct GcParams {
     #[serde(default)]
@@ -148,6 +186,7 @@ struct GcParams {
 }
 
 #[tracing::instrument(skip_all)]
+/// Applies caller-scoped handoff retention.
 async fn run_gc(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -165,6 +204,7 @@ async fn run_gc(
 }
 
 #[tracing::instrument(skip_all)]
+/// Deletes one exact caller-owned handoff.
 async fn delete_handoff(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -186,10 +226,12 @@ struct ListAtomsQuery {
     limit: i64,
 }
 
+/// Supplies the default active atom status filter.
 fn default_atom_status() -> String {
     "active".to_string()
 }
 
+/// Supplies the default atom listing limit.
 fn default_atom_limit() -> i64 {
     100
 }
@@ -223,6 +265,7 @@ struct PackedContextQuery {
     max_tokens: i64,
 }
 
+/// Supplies the default packed-context token budget.
 fn default_max_tokens() -> i64 {
     4000
 }
@@ -279,6 +322,7 @@ struct ApplyDecayRequest {
     sessions_elapsed: u32,
 }
 
+/// Supplies the default decay interval.
 fn default_sessions_elapsed() -> u32 {
     1
 }

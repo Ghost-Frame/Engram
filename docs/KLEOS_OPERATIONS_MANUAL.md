@@ -386,20 +386,40 @@ tenant.
 
 ### Handoffs
 
-#### `kleos-cli handoff dump [--project P] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
+Handoff identity has three independent parts:
+
+- `scope`: `repository` or `standalone` for new writes; migrated rows retain
+  `legacy`.
+- `workstream`: the logical subject that groups related sessions.
+- `session_id`: the stable identity of one agent thread within a workstream.
+
+`project` remains a compatibility and repository label. `directory` is
+provenance only and is never promoted to identity outside a Git worktree.
+
+#### `kleos-cli handoff dump [--project P] [--workstream W] [--title TEXT] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
 
 - Stores a handoff via `POST /handoffs`.
 - If `--content` is omitted, reads stdin.
-- Auto-detects project from `SESSION_HANDOFF_PROJECT`, git origin, or cwd name.
+- Inside Git, detects a repository project from `SESSION_HANDOFF_PROJECT`, the
+  origin URL, or the Git root name.
+- Outside Git, stores a semantic `standalone` handoff and requires a logical
+  workstream plus a stable session id. The CLI resolves session identity from
+  `--session`, `SESSION_ID`, or `CODEX_THREAD_ID`.
+- `SESSION_HANDOFF_WORKSTREAM` supplies a reusable default workstream.
 
 #### `kleos-cli handoff restore [filters...]`
 
-- Calls `GET /handoffs`.
+- `--id ID` calls `GET /handoffs/{id}` for an exact restore.
+- Filtered restore calls `GET /handoffs`.
 - Prints only the handoff content bodies.
+- Outside Git, restore requires an exact handoff id or stable session id. It
+  never guesses from the global newest row.
 
 #### `kleos-cli handoff latest [--project P] [--dir PATH]`
 
 - Calls `GET /handoffs/latest`.
+- Requires a repository project. A missing exact project match returns not
+  found instead of falling back to a different project.
 
 #### `kleos-cli handoff mechanical [--project P] [--agent A] [--dir PATH] [--session S] [--model M] [--host H]`
 
@@ -408,15 +428,23 @@ How it works:
 - Collects git status, recent commits, diff stats, stashes, and recently
   modified files from the working tree.
 - Stores that bundle as a `mechanical` handoff via `POST /handoffs`.
+- Refuses to run outside a Git worktree, even when `--project` is supplied.
 
 Use for:
 
 - Mechanical state capture at session boundaries.
 
-#### `kleos-cli handoff list [--limit N] [--project P] [--agent A] [--handoff-type T]`
+#### `kleos-cli handoff list [--limit N] [--project P] [--scope S] [--workstream W] [--agent A] [--handoff-type T]`
 
 - Calls `GET /handoffs`.
 - Prints a summary table.
+
+#### `kleos-cli handoff candidates [--limit N] [--scope S] [--workstream W] [--agent A] [--since TIME]`
+
+- Calls `GET /handoffs/candidates`.
+- Returns only the newest checkpoint for each stable session id.
+- Prints complete ids and session identities so an ambiguous standalone
+  restore can be selected explicitly with `handoff restore --id ID`.
 
 #### `kleos-cli handoff search QUERY [--project P] [--limit N]`
 
@@ -1296,13 +1324,14 @@ Deep reference:
 Synopsis:
 
 ```bash
-kleos-sidecar [--config sidecar.toml] [--port N] [--host HOST] [--watch]
+kleos-sidecar [--config sidecar.toml] [--port N] [--host HOST] \
+  [--code-context-mode off|shadow|inject] [--code-max-tokens N]
 ```
 
 Purpose:
 
-- Local batching proxy for observations, session traffic, and optional
-  Claude session-file watching.
+- Local batching proxy for observations, session traffic, and deterministic
+  repository context selected from Agent-Forge's persistent syntax index.
 
 Config precedence:
 
@@ -1322,16 +1351,31 @@ Important options:
 - `--token`
 - `--kleos-url`
 - `--kleos-api-key`
-- `--watch`
-- `--watch-dir`, default `~/.claude/projects`
-- batch sizing, compression, idle TTL, and log format controls
+- `--code-context-mode`, default `shadow`
+- `--code-max-tokens`, default `2000`
+- batch sizing, retention, idle TTL, and log format controls
+
+Code-context modes:
+
+- `off` disables index refresh and retrieval.
+- `shadow` refreshes and measures selected snippets but does not add them to
+  prompt context.
+- `inject` adds high-confidence snippets under the separate code token budget.
 
 How it works:
 
 - Generates a bearer token at startup if one is not supplied.
 - Queues observations per session and flushes them in batches.
-- Can watch Claude session JSONL files directly and ingest those changes.
-- Uses a local LLM path for `/compress` when configured.
+- Uses session-start, post-tool, and user-prompt hooks to refresh changed Git
+  repositories and retrieve bounded snippets.
+- Serializes refresh writes, coalesces duplicate refreshes for the same
+  repository, and serves prompts from the latest completed index revision.
+- Revalidates source hashes before direct ranking or relation expansion, so a
+  changed file cannot seed stale graph context while refresh is in progress.
+- Stores the code index locally in SQLite. Bulk indexed source is never sent to
+  Kleos memory endpoints.
+- Suppresses unchanged repeated snippets in inject mode unless the prompt names
+  the exact symbol or the underlying file changed.
 
 ## `kleos-server`
 
