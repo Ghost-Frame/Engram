@@ -7,7 +7,7 @@
 use clap::Subcommand;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::time::Duration;
 
 use crate::Client;
@@ -55,6 +55,12 @@ const SIDECAR_RECALL_TIMEOUT: Duration = Duration::from_secs(12);
 const SIDECAR_OBSERVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for sidecar /end requests (session teardown notification).
 const SIDECAR_END_TIMEOUT: Duration = Duration::from_secs(15);
+/// Maximum transcript tail read for per-prompt dialogue context.
+const RECALL_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
+/// Maximum number of prior user or assistant messages added to a recall query.
+const RECALL_DIALOGUE_MESSAGES: usize = 2;
+/// Maximum characters contributed by any one prior dialogue message.
+const RECALL_DIALOGUE_MESSAGE_CHARS: usize = 260;
 
 // --- Policy fetch with cache ---
 
@@ -137,6 +143,116 @@ fn extract_session_id(input: &Value) -> String {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
+}
+
+/// Extracts plain text from a Claude or Codex transcript message payload.
+fn transcript_message(value: &Value) -> Option<(&str, String)> {
+    let message = value.get("message").or_else(|| {
+        let payload = value.get("payload")?;
+        (payload.get("type").and_then(Value::as_str) == Some("message")).then_some(payload)
+    })?;
+    let role = message.get("role").and_then(Value::as_str)?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+
+    let content = message.get("content")?;
+    let text = match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    (!text.trim().is_empty()).then_some((role, text))
+}
+
+/// Reads a bounded transcript tail and returns recent dialogue before the current prompt.
+fn recent_dialogue(input: &Value, current_prompt: &str) -> Vec<(String, String)> {
+    let Some(path) = input.get("transcript_path").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return Vec::new();
+    };
+    let start = length.saturating_sub(RECALL_TRANSCRIPT_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::with_capacity((length - start) as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let tail = String::from_utf8_lossy(&bytes);
+    let complete_tail = if start == 0 {
+        tail.as_ref()
+    } else {
+        tail.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    };
+
+    let mut skipped_current = false;
+    let mut dialogue = Vec::new();
+    for line in complete_tail.lines().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some((role, text)) = transcript_message(&value) else {
+            continue;
+        };
+        if !skipped_current && role == "user" && text.trim() == current_prompt.trim() {
+            skipped_current = true;
+            continue;
+        }
+        dialogue.push((role.to_string(), text));
+        if dialogue.len() == RECALL_DIALOGUE_MESSAGES {
+            break;
+        }
+    }
+    dialogue
+}
+
+/// Truncates recall text by Unicode scalar count without splitting UTF-8.
+fn truncate_recall_text(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+/// Builds a bounded recall query that preserves the current prompt and recent subject context.
+fn contextual_recall_message(input: &Value, current_prompt: &str, max_chars: usize) -> String {
+    if current_prompt.chars().count() >= max_chars / 2 {
+        return truncate_recall_text(current_prompt, max_chars);
+    }
+    let dialogue = recent_dialogue(input, current_prompt);
+    if dialogue.is_empty() {
+        return current_prompt.to_string();
+    }
+
+    let mut query = format!(
+        "Current prompt: {}\nRecent dialogue (newest first):",
+        current_prompt
+    );
+    for (role, text) in dialogue {
+        let remaining = max_chars.saturating_sub(query.chars().count());
+        if remaining <= role.len() + 5 {
+            break;
+        }
+        let prefix = format!("\n[{role}] ");
+        query.push_str(&prefix);
+        let remaining = max_chars.saturating_sub(query.chars().count());
+        query.push_str(&truncate_recall_text(
+            &text,
+            remaining.min(RECALL_DIALOGUE_MESSAGE_CHARS),
+        ));
+    }
+    query
 }
 
 /// Legacy fixed bootstrap query, kept as the fallback when no cwd is available.
@@ -629,8 +745,9 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(800);
 
+            let recall_message = contextual_recall_message(input, user_message, max_query_chars);
             let recall_body = json!({
-                "message": user_message,
+                "message": recall_message,
                 "budget": budget,
                 "context_turns": context_turns,
                 "max_tokens": max_tokens,
@@ -980,6 +1097,60 @@ mod tests {
         let input = json!({});
         let id = extract_session_id(&input);
         assert!(!id.is_empty());
+    }
+
+    /// Verifies Codex rollout messages expose their role and textual content.
+    #[test]
+    fn test_transcript_message_reads_codex_payload() {
+        let value = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Codex Remote Control is failing"}]
+            }
+        });
+        let (role, text) = transcript_message(&value).expect("message should parse");
+        assert_eq!(role, "assistant");
+        assert_eq!(text, "Codex Remote Control is failing");
+    }
+
+    /// Verifies a short follow-up gains its prior subject while skipping itself.
+    #[test]
+    fn test_contextual_recall_message_uses_recent_dialogue() {
+        let path = std::env::temp_dir().join(format!(
+            "kleos-recall-transcript-{}-{}.jsonl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        let lines = [
+            json!({"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Remote Control broke on every phone"}]}}),
+            json!({"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I am checking Codex Remote Control versions"}]}}),
+            json!({"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"it worked yesterday"}]}}),
+        ];
+        let transcript = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, transcript).expect("transcript fixture should write");
+        let input = json!({"transcript_path": path});
+
+        let query = contextual_recall_message(&input, "it worked yesterday", 800);
+
+        let _ = std::fs::remove_file(input["transcript_path"].as_str().unwrap_or_default());
+        assert!(query.starts_with("Current prompt: it worked yesterday"));
+        assert!(query.contains("Codex Remote Control versions"));
+        assert!(query.contains("Remote Control broke on every phone"));
+        assert_eq!(query.matches("it worked yesterday").count(), 1);
+    }
+
+    /// Verifies self-contained long prompts are not diluted with transcript history.
+    #[test]
+    fn test_contextual_recall_message_preserves_long_prompt() {
+        let prompt = "x".repeat(500);
+        let query = contextual_recall_message(&json!({}), &prompt, 800);
+        assert_eq!(query, prompt);
     }
 
     #[test]

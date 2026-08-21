@@ -612,12 +612,17 @@ fn is_curated_source(source: &str) -> bool {
 /// boosts -- so a "hot" but off-topic memory (Discord banter, personal facts)
 /// scores high on `score` while its cosine to the prompt is near zero. Results
 /// with no `semantic_score` are kept only when they are an exact lexical hit
-/// (`fts_score` present), which is itself a strong relevance signal; purely
-/// graph- or boost-derived candidates are dropped.
+/// (`fts_score` present), which is itself a strong relevance signal. Curated
+/// plan chunks still require semantic evidence because broad evidence files can
+/// contain exact conversational phrases. Purely graph- or boost-derived
+/// candidates are dropped.
 fn recall_result_is_relevant(result: &Value, min_semantic: f64) -> bool {
     match result.get("semantic_score").and_then(|v| v.as_f64()) {
         Some(sem) => sem >= min_semantic,
-        None => result.get("fts_score").and_then(|v| v.as_f64()).is_some(),
+        None => {
+            let source = result.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            !is_curated_source(source) && result.get("fts_score").and_then(|v| v.as_f64()).is_some()
+        }
     }
 }
 
@@ -815,7 +820,7 @@ async fn recall(
         truncate_chars(&query, max_query_chars)
     } else {
         truncate_chars(
-            &format!("{}\n\n{}", format_recent_context(&recent_context), query),
+            &format!("{}\n\n{}", query, format_recent_context(&recent_context)),
             max_query_chars,
         )
     };
@@ -1574,6 +1579,7 @@ pub async fn flush_all_sessions(state: &SidecarState) {
     }
 }
 
+/// Regression tests for per-prompt recall relevance filtering.
 #[cfg(test)]
 mod recall_gate_tests {
     use super::*;
@@ -1601,6 +1607,21 @@ mod recall_gate_tests {
     fn keeps_exact_lexical_when_no_embedding() {
         let r = json!({"content": "exact term", "category": "technical", "fts_score": 4.2});
         assert!(recall_result_is_relevant(&r, default_recall_min_semantic()));
+    }
+
+    /// A lexical-only plan chunk is not strong enough to inject without semantic evidence.
+    #[test]
+    fn drops_plan_lexical_when_no_embedding() {
+        let r = json!({
+            "content": "it worked before",
+            "category": "general",
+            "fts_score": 20.0,
+            "source": "plan:bav-website/live-blog.txt"
+        });
+        assert!(!recall_result_is_relevant(
+            &r,
+            default_recall_min_semantic()
+        ));
     }
 
     /// A graph/boost-only candidate with no semantic or lexical signal is dropped.
