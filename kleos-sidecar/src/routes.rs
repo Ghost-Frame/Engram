@@ -1616,7 +1616,7 @@ mod recall_gate_tests {
             "content": "it worked before",
             "category": "general",
             "fts_score": 20.0,
-            "source": "plan:bav-website/live-blog.txt"
+            "source": "plan:website/live-blog.txt"
         });
         assert!(!recall_result_is_relevant(
             &r,
